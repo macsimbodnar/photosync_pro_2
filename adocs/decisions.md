@@ -246,7 +246,7 @@ Why: each is the smallest choice that keeps the prime directive.
 
 ## DEC-020  2026-10-28  copy hardening details left open by S013
 Tags: safety, copy, tests
-Decision: agent's pick in S013, not yet confirmed by the user.
+Decision: agent's pick in S013; the user confirmed it.
 (1) A session or `<TYPE>` folder that is a symlink (or a file) fails each
 file that would go there, as a write error (`NotADirectory`) at that
 folder; other types still copy. The run is not refused as a whole. Folders
@@ -267,7 +267,7 @@ stays green, and no hook can observe an fsync.
 
 ## DEC-021  2026-10-28  progress and cancel details left open by S005
 Tags: progress, cancel, api
-Decision: agent's pick in S005, not yet confirmed by the user.
+Decision: agent's pick in S005; the user confirmed it.
 (1) API: `plan_sync` and `copy_plan` take a `&mut Monitor`, which holds a
 `Send` observer `FnMut(Event)`, a `Cancel` (a shared `Arc<AtomicBool>`) and
 an injectable clock. Each event carries a full `Progress` snapshot (overall
@@ -296,7 +296,7 @@ thread alike, and none touches the prime directive.
 
 ## DEC-022  2026-10-28  sync report details left open by S006
 Tags: report, api, failures
-Decision: agent's pick in S006, not yet confirmed by the user. Points (1),
+Decision: agent's pick in S006; the user confirmed it. Points (1),
 (5) and (9) amended in S014, prompted by the S006 fast check (DEC-023).
 (1) API: `Report::new(scans, plan, outcome)` takes the scans, plan and
 `CopyOutcome` by value, so each reason keeps its `io::Error` (not `Clone`)
@@ -334,7 +334,7 @@ CLI, TUI and GUI alike; none touches the prime directive.
 
 ## DEC-023  2026-10-28  report hardening details left open by S014
 Tags: report, api, failures
-Decision: agent's pick in S014, not yet confirmed by the user.
+Decision: agent's pick in S014; the user confirmed it.
 (1) Twin sources are found by the new `SourceScan::resolved_root`, which
 `scan_source` resolves while the card is there. `Report::new` does no I/O,
 so a card pulled after the copy cannot block its report. macOS folds case
