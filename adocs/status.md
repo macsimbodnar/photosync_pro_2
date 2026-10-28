@@ -4,14 +4,14 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-28, by Claude agent (S008)
+Updated: 2026-10-28, by Claude (S008 done, hand checks deferred)
 
-- Last done: S016  enforce INV-10: e2e card test, read-only device, re-check before copy
-- In progress: S008  CLI commands: code, tests and docs done (DEC-028, not
+- Last done: S008  CLI commands
+- In progress: none
   yet confirmed); waiting for the user's hand checks on Mac (real X-T5 card
   in a reader, X-T5 over USB in card reader mode, root refusal)
 - Next: S009  TUI
-- Blocked: none
+- Blocked: S017 waits for the user's hardware (DEC-029)
 - Parked:
   - The camera's PTP mode (USB without card-reader mode) is unsupported
     (DEC-004). Revisit if card-reader mode proves unreliable.

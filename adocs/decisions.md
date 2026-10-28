@@ -45,6 +45,7 @@ Why: one line.
 - DEC-026 2026-10-28 — strict INV-10 details left open by DEC-025 (S015)
 - DEC-027 2026-10-28 — INV-10 enforcement: read-only device, test-support seam, re-check before copy (S016)
 - DEC-028 2026-10-28 — CLI details left open by S008
+- DEC-029 2026-10-28 — hardware hand checks deferred to S017
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -525,3 +526,13 @@ empty lists); `tests/exfat_e2e.rs` syncs for real on the images of
 only: the suite never runs as root.
 Why: each picks the reading that keeps a photo safe and the output
 scriptable, with no new dependency.
+
+## DEC-029  2026-10-28  hardware hand checks deferred to S017
+Tags: plan, verification
+Decision: the user can't do the hand checks now and asked to go on without
+them. S008 is done on the automated proof (a real exFAT card image to a
+drive image, end to end). Its hand checks (SD card, X-T5 over USB, sudo,
+Ctrl-C) move to S017, which waits for the user. Audit F09 now closes with
+S017.
+Why: the user asked; the risk is noted, since real card mounts are proven
+only on disk images until S017.
