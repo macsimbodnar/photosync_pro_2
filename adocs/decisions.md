@@ -31,6 +31,7 @@ Why: one line.
 - DEC-012 2026-10-28 — copy verification may read from the OS cache
 - DEC-013 2026-10-28 — name collision fails the file; never rename
 - DEC-014 2026-10-28 — dot-files and dot-folders on a source are ignored
+- DEC-015 2026-10-28 — unreadable library candidate: copy, do not skip
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -153,3 +154,13 @@ entries are counted as ignored, and dot folders are not walked. Rejected:
 ignoring only `._*` (too narrow), and copying them (the S002 fast check
 found that `._DSCF0001.RAF` would be classed as RAW and copied).
 Why: these are OS metadata, never photos.
+
+## DEC-015  2026-10-28  unreadable library candidate: copy, do not skip
+Tags: dedup, failures
+Decision: agent's pick in S003, not yet confirmed by the user. A library
+file or folder that cannot be read is reported as a library failure. A
+source file whose same name + size candidates cannot all be hashed, and
+none matches, is planned for copy. Rejected: skipping it (the photo may have
+no readable copy), and failing it (the user loses the backup). The library
+folder must exist before planning; a missing one is an error.
+Why: a second copy in the library is safe; a photo left uncopied is not.

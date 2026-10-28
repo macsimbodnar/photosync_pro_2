@@ -1,0 +1,85 @@
+//! Temp-dir and file helpers shared by the integration tests.
+
+// Each test file is its own crate and uses only some of these.
+#![allow(dead_code)]
+
+use std::collections::BTreeMap;
+use std::fs::{self, File};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// A fresh directory under the system temp dir, removed on drop.
+pub struct TempDir(pub PathBuf);
+
+impl TempDir {
+    pub fn new() -> TempDir {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir()
+            .join(format!("photosync-test-{}-{n}", std::process::id()));
+        let _ = fs::remove_dir_all(&path); // left over from a killed run
+        fs::create_dir_all(&path).unwrap();
+        TempDir(path)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+pub fn write_file(root: &Path, rel: &str, bytes: &[u8], modified: SystemTime) -> PathBuf {
+    let path = root.join(rel);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, bytes).unwrap();
+    File::options().write(true).open(&path).unwrap().set_modified(modified).unwrap();
+    path
+}
+
+pub fn at(secs: u64) -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(secs)
+}
+
+/// Every path under `root` (files and folders) with its mtime, and full
+/// contents for files. Contents stand in for INV-1's hash: stricter, and
+/// needs no hashing crate.
+pub fn manifest(root: &Path) -> BTreeMap<PathBuf, (SystemTime, Option<Vec<u8>>)> {
+    fn walk(dir: &Path, out: &mut BTreeMap<PathBuf, (SystemTime, Option<Vec<u8>>)>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let meta = fs::symlink_metadata(&path).unwrap();
+            let bytes = meta.is_file().then(|| fs::read(&path).unwrap());
+            out.insert(path.clone(), (meta.modified().unwrap(), bytes));
+            if meta.is_dir() {
+                walk(&path, out);
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(root, &mut out);
+    out
+}
+
+/// Sets `path`'s permission bits for the guard's lifetime. Declared after the
+/// `TempDir`, so it drops first and `remove_dir_all` can clean up.
+#[cfg(unix)]
+pub struct Mode(PathBuf);
+
+#[cfg(unix)]
+impl Mode {
+    pub fn set(path: &Path, mode: u32) -> Mode {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        Mode(path.to_path_buf())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Mode {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+    }
+}

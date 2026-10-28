@@ -136,6 +136,9 @@ picks. It is simple to use.
   the same name and size and the same content (hash). Name + size picks
   the candidates, and the hash confirms them. So a photo synced earlier into
   a different folder is still skipped.
+- An unreadable library file or folder does not stop the sync: it is
+  reported with its path and error. A source file that matches no readable
+  candidate is copied (DEC-015).
 
 ### Progress
 

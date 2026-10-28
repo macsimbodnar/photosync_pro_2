@@ -1,8 +1,12 @@
 //! Sync logic for photosync. UI-free by contract (INV-8): front-ends get
 //! everything through this API, never through stdout or stderr.
 
+mod hash;
+mod library;
+mod plan;
 mod source;
 
+pub use plan::{Duplicate, PlanError, Skipped, SyncPlan, plan_sync};
 pub use source::{MediaType, ScanError, SourceFile, SourceScan, scan_source};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
