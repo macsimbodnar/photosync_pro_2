@@ -17,8 +17,9 @@ not change the order.
 
 ## Open
 
-1. S010  multi-source and one-by-one session
-2. S017  hardware hand checks (waits for the user)
+1. S018  TUI hardening (S009 fast check)
+2. S010  multi-source and one-by-one session
+3. S017  hardware hand checks (waits for the user)
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.
