@@ -21,7 +21,7 @@ mod common;
 extern crate self as photosync_core;
 
 pub use copy::{
-    Copied, CopyError, CopyOutcome, FailReason, Failed, FolderError, SyncFolder,
+    Copied, CopyError, CopyOutcome, FailReason, Failed, Fallback, FolderError, SyncFolder,
     TempCleanup, copy_plan, remove_stale_temps, sync_folder,
 };
 pub use plan::{Duplicate, PlanError, Planned, Skipped, SyncPlan, plan_sync};

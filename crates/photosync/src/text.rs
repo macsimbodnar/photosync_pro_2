@@ -493,6 +493,13 @@ fn table(by_type: &BTreeMap<MediaType, Tally>, totals: &Tally) -> Vec<String> {
             totals.not_flushed.files
         ));
     }
+    if totals.unread.files > 0 {
+        out.push(format!(
+            "  of the skipped, {} could not be read and {} copied from another card",
+            totals.unread.files,
+            if totals.unread.files == 1 { "was" } else { "were" }
+        ));
+    }
     out
 }
 
@@ -527,8 +534,9 @@ fn ignored_line(source: &SourceReport) -> Option<String> {
     })
 }
 
-/// One line for a file that is not copied or skipped, with its reason;
-/// `None` for one that is OK.
+/// One line for a file that is not copied or skipped, with its reason, and
+/// for one skipped because its card could not be read (its twin was
+/// copied); `None` for one that is OK.
 pub fn problem_line(entry: &FileReport) -> Option<String> {
     let path = entry.file.path.display();
     Some(match &entry.outcome {
@@ -536,6 +544,10 @@ pub fn problem_line(entry: &FileReport) -> Option<String> {
         | FileOutcome::AlreadySynced { .. }
         | FileOutcome::DuplicateInSession { .. }
         | FileOutcome::Ignored => return None,
+        FileOutcome::DuplicateUnread { of, error } => format!(
+            "  read error  {path}: {error}; copied from its twin {}",
+            of.display()
+        ),
         FileOutcome::Failed(FailReason::NotFlushed { to, error }) => format!(
             "  in place, flush not confirmed  {path} -> {}: {error}",
             to.display()
@@ -597,12 +609,25 @@ pub fn result_line(totals: &Tally, sources: &[SourceReport]) -> String {
         if supported.files == 0 {
             return "Result: no photos or videos found.".to_string();
         }
-        return format!(
+        let mut line = format!(
             "Result: all {} on the drive ({} copied, {} already there).",
             plural(supported.files, MEDIA.0, MEDIA.1),
             totals.copied.files,
             totals.skipped.files
         );
+        // Every photo is safe, but the card had a read error.
+        if totals.unread.files > 0 {
+            line.push_str(&match totals.unread.files {
+                1 => " 1 could not be read on its card and was copied from another card: \
+                       check that card."
+                    .to_string(),
+                n => format!(
+                    " {n} could not be read on their card and were copied from another \
+                     card: check those cards."
+                ),
+            });
+        }
+        return line;
     }
     let unreadable: usize = sources.iter().map(|s| s.unreadable.len()).sum();
     let mut line = format!(
@@ -985,6 +1010,39 @@ mod tests {
         assert!(!text.contains("  failed      /c/DCIM/D.RAF"), "{text}");
         let result = result_line(&source.totals(), std::slice::from_ref(&source));
         assert!(result.starts_with("Result: NOT COMPLETE: 1 failed, 0 cancelled, 0 unreadable. 1 of the failed in place, flush not confirmed."), "{result}");
+    }
+
+    /// F07: a file read from its twin on another card is skipped, as the
+    /// photo is on the drive, but its card's read error is shown: on its
+    /// line, under the totals and in the result, which stays complete.
+    #[test]
+    fn a_file_copied_from_its_twin_shows_its_read_error() {
+        let unread = FileOutcome::DuplicateUnread {
+            of: PathBuf::from("/d/DCIM/D.RAF"),
+            error: eio(),
+        };
+        let source = SourceReport {
+            root: PathBuf::from("/c"),
+            files: vec![entry("/c/DCIM/D.RAF", unread)],
+            unreadable: Vec::new(),
+        };
+
+        let text = source_section(&source).join("\n");
+        let line = format!(
+            "  read error  /c/DCIM/D.RAF: {}; copied from its twin /d/DCIM/D.RAF",
+            eio()
+        );
+        assert!(text.contains(&line), "{text}");
+        assert!(
+            text.contains("  of the skipped, 1 could not be read and was copied from another card"),
+            "{text}"
+        );
+        let result = result_line(&source.totals(), std::slice::from_ref(&source));
+        assert_eq!(
+            result,
+            "Result: all 1 photo or video on the drive (0 copied, 1 already there). \
+             1 could not be read on its card and was copied from another card: check that card."
+        );
     }
 
     #[test]

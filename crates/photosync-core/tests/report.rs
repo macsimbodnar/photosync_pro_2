@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use photosync_core::{
-    Bucket, Cancel, Copied, Counts, CopyOutcome, EventKind, FailReason, Failed, FileOutcome, MediaType, Monitor,
+    Bucket, Cancel, Copied, Counts, CopyOutcome, EventKind, FailReason, Failed, Fallback, FileOutcome, MediaType, Monitor,
     PlanError, Report, ReportError, SourceReport, SourceScan, SyncPlan, copy_plan, plan_sync,
     remove_stale_temps, sync_folder,
 };
@@ -351,7 +351,8 @@ fn report_refuses_a_plan_or_outcome_that_does_not_match_the_scans() {
 
 /// A duplicate is safe only if its original is. One whose original failed
 /// to read while copying is failed too, never skipped: the card holds the
-/// only copy.
+/// only copy. Both copies are unreadable, so the twin fallback (F07) has
+/// nothing to read either (DEC-033).
 #[cfg(unix)]
 #[test]
 fn duplicate_of_an_original_that_failed_to_read_is_failed_not_skipped() {
@@ -365,6 +366,7 @@ fn duplicate_of_an_original_that_failed_to_read_is_failed_not_skipped() {
     // Hashed while planning, so the twin is a duplicate; unreadable by the copy.
     let original = a.join("DCIM/100_FUJI/DSCF0001.RAF");
     let _lock = Mode::set(&original, 0o000);
+    let _twin_lock = Mode::set(&b.join("DCIM/100_FUJI/DSCF0001.RAF"), 0o000);
     let copied = copy(&plan, None);
 
     let report = Report::new(scans, plan, copied).unwrap();
@@ -377,6 +379,101 @@ fn duplicate_of_an_original_that_failed_to_read_is_failed_not_skipped() {
         FileOutcome::DuplicateOfFailed { of } if *of == original
     ));
     assert_eq!(report.totals().skipped.files, 0);
+}
+
+/// F07, DEC-033: backup slots, and the original cannot be read when it is
+/// copied. Its twin on the other card is read instead, checked against
+/// the hash planning took, and copied. The unread file is a duplicate in
+/// session of it, with its read error, so the user sees that card had one.
+#[cfg(unix)]
+#[test]
+fn a_readable_twin_of_an_original_that_failed_to_read_is_copied_by_the_fallback() {
+    let dir = TempDir::new();
+    let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"twin"), ("DCIM/100_FUJI/DSCF0002.JPG", b"only a")]);
+    put(&b, &[("DCIM/100_FUJI/DSCF0001.RAF", b"twin")]);
+    std::fs::create_dir_all(&lib).unwrap();
+    let scans = vec![scan(&a), scan(&b)];
+    let plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
+    let original = a.join("DCIM/100_FUJI/DSCF0001.RAF");
+    let twin = b.join("DCIM/100_FUJI/DSCF0001.RAF");
+    let _lock = Mode::set(&original, 0o000);
+    let copied = copy(&plan, None);
+
+    let report = Report::new(scans, plan, copied).unwrap();
+
+    assert_inv6(&report, &[&a, &b]);
+    let to = lib.join(date_command(T0)).join("RAW/DSCF0001.RAF");
+    assert!(matches!(outcome(&report, &twin), FileOutcome::Copied { to: t } if *t == to));
+    assert_eq!(std::fs::read(&to).unwrap(), b"twin");
+    assert!(matches!(
+        outcome(&report, &original),
+        FileOutcome::DuplicateUnread { of, error }
+            if *of == twin && error.kind() == std::io::ErrorKind::PermissionDenied
+    ));
+    use Bucket::*;
+    assert_eq!(
+        buckets(&report.sources()[0]),
+        [("DCIM/100_FUJI/DSCF0001.RAF".into(), Skipped), ("DCIM/100_FUJI/DSCF0002.JPG".into(), Copied)]
+    );
+    assert_eq!(buckets(&report.sources()[1]), [("DCIM/100_FUJI/DSCF0001.RAF".into(), Copied)]);
+    let c = |files: u64, bytes: usize| Counts { files, bytes: bytes as u64 };
+    assert_eq!(report.sources()[0].totals().unread, c(1, 4));
+    assert_eq!(report.sources()[1].totals().unread, c(0, 0));
+    assert_eq!(report.totals().copied, c(2, "twin".len() + "only a".len()));
+    assert!(report.is_complete(), "every photo is on the drive");
+}
+
+/// F07: the outcome may say a file was read in place of a planned one
+/// only if the plan lists it as that file's twin.
+#[test]
+fn report_refuses_a_twin_the_plan_does_not_list() {
+    let dir = TempDir::new();
+    let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"twin")]);
+    put(&b, &[("DCIM/100_FUJI/DSCF0001.RAF", b"twin"), ("DCIM/100_FUJI/DSCF0002.RAF", b"only b")]);
+    std::fs::create_dir_all(&lib).unwrap();
+    let card = |root: &Path, name: &str| root.join("DCIM/100_FUJI").join(name);
+    let (original, twin, other) = (card(&a, "DSCF0001.RAF"), card(&b, "DSCF0001.RAF"), card(&b, "DSCF0002.RAF"));
+    let file = |plan: &SyncPlan, path: &Path| {
+        let planned = plan.to_copy.iter().map(|p| &p.file);
+        let dups = plan.duplicates.iter().map(|d| &d.file);
+        planned.chain(dups).find(|f| f.path == path).unwrap().clone()
+    };
+    // Built by hand, so nothing is read or written. `tried` holds a failed
+    // twin; `read` is the one copied in place of `original`.
+    let build = |original: &Path, tried: Option<&Path>, read: &Path| {
+        let scans = vec![scan(&a), scan(&b)];
+        let plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
+        let error = || std::io::Error::other("injected");
+        let mut outcome = CopyOutcome::nothing_to_copy(Default::default());
+        for planned in &plan.to_copy {
+            if planned.file.path != original && planned.file.path != read && Some(planned.file.path.as_path()) != tried {
+                outcome.copied.push(Copied { file: planned.file.clone(), to: lib.join("x").join(planned.file.path.file_name().unwrap()) });
+            }
+        }
+        outcome.fallbacks.push(Fallback {
+            original: file(&plan, original),
+            error: error(),
+            tried: tried.map(|t| Failed { file: file(&plan, t), reason: FailReason::Read(error()) }).into_iter().collect(),
+            copied: Copied { file: file(&plan, read), to: lib.join("x/RAW/DSCF0001.RAF") },
+        });
+        Report::new(scans, plan, outcome)
+    };
+
+    let report = build(&original, None, &twin).unwrap();
+    assert!(matches!(outcome(&report, &original), FileOutcome::DuplicateUnread { of, .. } if *of == twin));
+    assert!(matches!(outcome(&report, &twin), FileOutcome::Copied { .. }));
+    assert_inv6(&report, &[&a, &b]);
+
+    // A planned file of another photo is not a twin.
+    let err = build(&original, None, &other).unwrap_err();
+    assert!(matches!(&err, ReportError::NotATwin { file, of } if *file == other && *of == original), "{err}");
+    let err = build(&original, Some(&other), &twin).unwrap_err();
+    assert!(matches!(&err, ReportError::NotATwin { file, of } if *file == other && *of == original), "{err}");
+    // A duplicate is no planned file: nothing was read in its place.
+    let err = build(&twin, None, &original).unwrap_err();
+    assert!(matches!(&err, ReportError::NotATwin { file, of } if *file == original && *of == twin), "{err}");
 }
 
 /// The same for an original that collides by name or is cut off by a
@@ -443,7 +540,7 @@ fn not_flushed_is_failed_and_counted_apart() {
         Failed { file: raf, reason: FailReason::NotFlushed { to: lib.join("x/RAW/DSCF0001.RAF"), error: error() } },
         Failed { file: jpg, reason: FailReason::Write { path: lib.join("x/JPEG"), error: error() } },
     ];
-    let copied = CopyOutcome { copied: Vec::new(), failed, cancelled: Vec::new(), temps: Default::default() };
+    let copied = CopyOutcome { failed, ..CopyOutcome::nothing_to_copy(Default::default()) };
 
     let report = Report::new(scans, plan, copied).unwrap();
 

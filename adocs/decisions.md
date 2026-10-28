@@ -52,6 +52,7 @@ Why: one line.
 - DEC-033 2026-10-28 — S010 split accepted; worst outcome wins; F07 test change
 - DEC-034 2026-10-28 — one card after another in the CLI and TUI (S020)
 - DEC-035 2026-10-28 — S022: seam for a refused report, prompt poll, cancel during lookup
+- DEC-036 2026-10-28 — twin fallback on a read error (S021, F07)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -785,3 +786,46 @@ assertions unchanged. Rejected: a bounded wait on a pipe (timing); reading
 only what a pipe holds already (races).
 Why: no test may lean on a seam the binary could ship, and no cancel may
 turn into a recorded sync or a missed one.
+
+## DEC-036  2026-10-28  twin fallback on a read error (S021, F07)
+Tags: copy, report, progress, safety, api, gui
+Decision: agent's pick in S021, not yet confirmed by the user.
+(1) Only a read error of the planned file falls back to its twins
+(`Planned::twins`, plan order); each twin is copied as the file is, its
+read checked against the planning hash, so nothing is hashed again. A
+twin that cannot be read, or reads otherwise (`SourceChanged`), is passed
+for the next. A drive-side failure (write, flush, collision, INV-10
+re-check) is not retried: of the planned file, nor after a twin's, which
+ends the tries; the file then fails with its own read error and the
+twin's drive error is not reported (a copy left in place unflushed is
+found by the next sync, DEC-017 (4)). A planned file that read otherwise
+than planned does not fall back: it fails and so do its duplicates, as
+INV-3 and the kept test `a_file_changed_between_planning_and_copy_fails`
+say. Rejected: falling back on `SourceChanged` too (the S021 brief
+suggested it; it breaks that test, and the card's file is not what
+planning read).
+(2) Outcome: `CopyOutcome::fallbacks`, each `Fallback { original, error,
+tried, copied }`. Report: the copied twin is `Copied`; the unread file,
+and each tried twin with a read error, is the new
+`FileOutcome::DuplicateUnread { of, error }` (skipped, `of` = the copied
+twin), counted apart in `Tally::unread`; a tried twin that read otherwise
+is `Failed(SourceChanged)`; untried twins are `DuplicateInSession` of the
+copied twin. With no twin copied: the file `Failed(Read)`, its twins
+`DuplicateOfFailed`. A cancel while a twin is read: `Cancelled`, its twins
+`DuplicateOfCancelled`. INV-6 per card holds: each file is counted on
+its own card. Rejected: a new bucket (breaks the INV-6 sum and every
+front-end's table).
+(3) A sync whose only problem is `DuplicateUnread` is complete, exit 0:
+the drive holds the very bytes planning read from that file. The CLI and
+TUI show its line ("read error ... copied from its twin ..."), a line
+under the totals, and "check that card" in the result.
+(4) Progress: a fallback stays one file of the planned file's card; no
+event names the twin; the twin's bytes count only past what the failed
+read counted, so total never changes and done never goes back.
+Rejected: moving the file to the twin's card mid-copy (changes totals).
+(5) `Report::new` now reads `plan.to_copy` for the twins (amends DEC-023
+(4)) and refuses a twin the plan does not list (`ReportError::NotATwin`).
+(6) Two tests built `CopyOutcome` by struct literal; they now start from
+`CopyOutcome::nothing_to_copy`, no assertion changed.
+Why: backup mode must use the good card, and a card with a read error
+must never be hidden, nor a changed file be called safe.

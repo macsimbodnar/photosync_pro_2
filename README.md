@@ -64,7 +64,9 @@ connection mode, not in the default PTP mode. `--source` can be given
 several times; the cards are copied one after another into one sync folder,
 `<library>/<date>[ - <name>]/<RAW|JPEG|HEIF|VIDEO>/`. A photo on two cards
 (backup slots) is copied once; the other card's copy is a "duplicate in
-session". The library folder must exist. It is never on a card, nor on the
+session". If one card cannot be read, the photo is copied from the other,
+checked against what was read before: the report names the card it came
+from and shows the read error ("check that card"). The library folder must exist. It is never on a card, nor on the
 same drive as a source. Photos already anywhere in the library are
 skipped. A photo that changed on the card after it was compared with the
 library fails, and so does its copy on the other card. A `--name` that
@@ -95,7 +97,8 @@ Result: all 3 photos or videos on the drive (3 copied, 0 already there).
 ```
 
 Every file that was not copied or skipped gets its own line with the
-reason; a copy whose folder flush failed shows as "in place, flush not
+reason, and so does one copied from its twin ("read error ... copied from
+its twin ..."); a copy whose folder flush failed shows as "in place, flush not
 confirmed". On a terminal the progress line is cut to its width. A closed
 stdout (e.g. `| head`) does not stop the sync: photosync says on stderr that
 the report could not be written and keeps the exit code.

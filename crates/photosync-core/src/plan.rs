@@ -66,8 +66,8 @@ pub struct Planned {
     /// for its duplicates.
     pub(crate) hash: Option<Hash>,
     /// The plan's duplicates of it, in plan order: the same content on
-    /// other sources, which a copy can read instead with no new hashing
-    /// (F07: the copy does not fall back yet, S021).
+    /// other sources, which the copy reads instead, with no new hashing,
+    /// when this file cannot be read (F07).
     pub(crate) twins: Vec<SourceFile>,
 }
 

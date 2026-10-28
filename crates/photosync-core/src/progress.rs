@@ -139,8 +139,16 @@ pub(crate) struct Tracker<'m, 'a> {
     monitor: &'m mut Monitor<'a>,
     progress: Progress,
     start: Duration,
-    /// The current file: its source, scanned size and bytes read so far.
-    current: Option<(Option<usize>, u64, u64)>,
+    /// The current file: its source, scanned size, bytes counted and bytes
+    /// read by this read of it.
+    current: Option<Current>,
+}
+
+struct Current {
+    source: Option<usize>,
+    size: u64,
+    counted: u64,
+    read: u64,
 }
 
 impl<'m, 'a> Tracker<'m, 'a> {
@@ -176,27 +184,36 @@ impl<'m, 'a> Tracker<'m, 'a> {
     }
 
     pub(crate) fn file_started(&mut self, path: &Path, source: Option<usize>, size: u64) {
-        self.current = Some((source, size, 0));
+        self.current = Some(Current { source, size, counted: 0, read: 0 });
         self.send(EventKind::FileStarted(path.to_path_buf()));
     }
 
     /// `n` more bytes of the current file were read. Counted up to the
     /// file's scanned size, so a file that grew cannot push done past total.
     pub(crate) fn bytes(&mut self, n: u64) {
-        let Some((source, size, read)) = self.current.as_mut() else { return };
-        let before = (*read).min(*size);
-        *read = read.saturating_add(n);
-        let more = (*read).min(*size) - before;
-        let source = *source;
+        let Some(c) = self.current.as_mut() else { return };
+        c.read = c.read.saturating_add(n);
+        let now = c.read.min(c.size).max(c.counted);
+        let (source, more) = (c.source, now - c.counted);
+        c.counted = now;
         self.count(source, 0, more);
         self.send(EventKind::Bytes);
+    }
+
+    /// The current file is read again from its start, from a twin (F07).
+    /// It stays one file of its own source: the bytes read again count
+    /// only past what the failed read counted, so done never goes back.
+    pub(crate) fn reread(&mut self) {
+        if let Some(c) = self.current.as_mut() {
+            c.read = 0;
+        }
     }
 
     /// The current file is done: whatever of its size was not read counts
     /// as done too, so done meets total at the end.
     pub(crate) fn file_done(&mut self, path: &Path) {
-        if let Some((source, size, read)) = self.current.take() {
-            self.count(source, 1, size - read.min(size));
+        if let Some(c) = self.current.take() {
+            self.count(c.source, 1, c.size - c.counted);
         }
         self.send(EventKind::FileDone(path.to_path_buf()));
     }

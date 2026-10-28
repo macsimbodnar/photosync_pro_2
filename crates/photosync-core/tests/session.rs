@@ -474,3 +474,51 @@ fn a_recorded_refusal_is_never_complete() {
     assert_eq!(session.verdict(), Verdict::NotComplete);
     assert_eq!(session.not_complete().count(), 2);
 }
+
+/// F07 in a session: the twin the fallback copied is what the session
+/// remembers, so the same photo on a later card is a duplicate in session
+/// of it, the card whose file is on the drive now.
+#[cfg(unix)]
+#[test]
+fn a_twin_the_fallback_copied_is_the_original_for_later_cards() {
+    let dir = TempDir::new();
+    let (a, b, c, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("c"), dir.0.join("lib"));
+    for card in [&a, &b, &c] {
+        put(card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"backup")]);
+    }
+    fs::create_dir_all(&lib).unwrap();
+    let raf = |card: &Path| card.join("DCIM/100_FUJI/DSCF0001.RAF");
+    let mut session = Session::new(&lib, None).unwrap();
+
+    // Readable while planning, which scans and hashes first; not after.
+    let scans = vec![scan_elsewhere(&a), scan_elsewhere(&b)];
+    let unread = raf(&a);
+    let mut lock = None;
+    let mut watch = LockOnCopy { path: unread.clone(), lock: &mut lock };
+    let first = session.sync_scans(scans, &Cancel::new(), &mut watch);
+    drop(lock);
+    let first = report(first);
+    assert!(matches!(outcome(first, &raf(&b)), FileOutcome::Copied { .. }));
+    assert!(matches!(outcome(first, &unread), FileOutcome::DuplicateUnread { of, .. } if *of == raf(&b)));
+    assert!(first.is_complete());
+
+    let later = report(sync(&mut session, &[&c]));
+    assert!(matches!(outcome(later, &raf(&c)), FileOutcome::DuplicateInSession { of } if *of == raf(&b)));
+    assert_eq!(session.verdict(), Verdict::Complete);
+}
+
+/// Makes `path` unreadable once copying starts.
+#[cfg(unix)]
+struct LockOnCopy<'l> {
+    path: PathBuf,
+    lock: &'l mut Option<common::Mode>,
+}
+
+#[cfg(unix)]
+impl Watch for LockOnCopy<'_> {
+    fn event(&mut self, event: Event) {
+        if event.progress.phase == Phase::Copying && event.kind == EventKind::Started {
+            *self.lock = Some(common::Mode::set(&self.path, 0o000));
+        }
+    }
+}

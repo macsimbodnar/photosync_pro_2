@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::hash::{CHUNK, Hash, hash_file};
-use crate::plan::SyncPlan;
+use crate::plan::{Planned, SyncPlan};
 use crate::progress::{Cancel, Monitor, Phase, Tracker};
 use crate::source::{ScanError, SourceFile};
 use crate::volume::{device_id, volume_root};
@@ -174,6 +174,9 @@ pub struct CopyOutcome {
     /// (its temp file removed) and every file after it. Nothing is left
     /// under a final name (INV-7).
     pub cancelled: Vec<SourceFile>,
+    /// Planned files whose read failed, each copied from a twin on another
+    /// card instead (F07), in plan order.
+    pub fallbacks: Vec<Fallback>,
     /// Stale temp files removed at the start, and temp files that could not
     /// be removed.
     pub temps: TempCleanup,
@@ -184,7 +187,13 @@ impl CopyOutcome {
     /// run (no folder): only the stale temp cleanup, from
     /// `remove_stale_temps`, which the caller runs instead.
     pub fn nothing_to_copy(temps: TempCleanup) -> CopyOutcome {
-        CopyOutcome { copied: Vec::new(), failed: Vec::new(), cancelled: Vec::new(), temps }
+        CopyOutcome {
+            copied: Vec::new(),
+            failed: Vec::new(),
+            cancelled: Vec::new(),
+            fallbacks: Vec::new(),
+            temps,
+        }
     }
 }
 
@@ -193,6 +202,22 @@ pub struct Copied {
     pub file: SourceFile,
     /// Where the verified copy is.
     pub to: PathBuf,
+}
+
+/// A planned file whose read failed, copied from one of its twins instead:
+/// the same name, size and planning hash on another card (F07). The copy
+/// read the twin's bytes as that hash, so the drive holds exactly what
+/// planning read from `original`.
+#[derive(Debug)]
+pub struct Fallback {
+    /// The planned file, which could not be read.
+    pub original: SourceFile,
+    pub error: io::Error,
+    /// The twins tried before `copied`, in plan order, and why each failed:
+    /// a read error, or content not as planned (`SourceChanged`).
+    pub tried: Vec<Failed>,
+    /// The twin whose bytes are on the drive now.
+    pub copied: Copied,
 }
 
 #[derive(Debug)]
@@ -348,12 +373,17 @@ pub struct TempCleanup {
 /// deleting anything if not. Stale temp files in the library are removed
 /// next; so this must not run beside another copy into the same library.
 /// A `Session` cleans once and copies through `copy_files`. A failure
-/// fails that file only; the outcome lists each file once.
+/// fails that file only; the outcome lists each file once. A file whose
+/// read fails is copied from its first twin that reads as the planning
+/// hash, if it has one (`Planned::twins`, F07); a failure on the drive's
+/// side is never retried on a twin.
 ///
-/// Progress counts the files in `plan.to_copy` (`Phase::Copying`). A cancel
-/// is checked between files and before each chunk read: a file cut short
-/// loses its temp file, and it and the rest go to `cancelled`. A file past
-/// its last read finishes.
+/// Progress counts the files in `plan.to_copy` (`Phase::Copying`). A file
+/// read from a twin is still that one file of its own source: no event
+/// names the twin, and its bytes count only past what the failed read
+/// counted (DEC-036). A cancel is checked between files, between twins and
+/// before each chunk read: a file cut short loses its temp file, and it
+/// and the rest go to `cancelled`. A file past its last read finishes.
 pub fn copy_plan(
     plan: &SyncPlan,
     folder: &SyncFolder,
@@ -389,8 +419,28 @@ pub(crate) fn copy_files(
             break;
         }
         tracker.file_started(&file.path, Some(planned.source), file.size);
-        match copier.copy_file(file, planned.hash, &mut tracker) {
-            Ok(to) => outcome.copied.push(Copied { file: file.clone(), to }),
+        let copied = match copier.copy_file(file, planned.hash, &mut tracker) {
+            // Only a read of the card: the twin is on another card, but a
+            // failure on the drive would fail its copy the same way.
+            Err(Stop::Failed(FailReason::Read(error))) if planned.hash.is_some() => {
+                match copier.copy_twin(planned, &mut tracker) {
+                    Ok(Some((tried, copied))) => {
+                        let original = file.clone();
+                        outcome.fallbacks.push(Fallback { original, error, tried, copied });
+                        Ok(())
+                    }
+                    Ok(None) => Err(Stop::Failed(FailReason::Read(error))),
+                    Err(stop) => Err(stop),
+                }
+            }
+            Ok(to) => {
+                outcome.copied.push(Copied { file: file.clone(), to });
+                Ok(())
+            }
+            Err(stop) => Err(stop),
+        };
+        match copied {
+            Ok(()) => {}
             Err(Stop::Failed(reason)) => outcome.failed.push(Failed { file: file.clone(), reason }),
             Err(Stop::Cancelled) => {
                 outcome.cancelled.extend(plan.to_copy[i..].iter().map(|p| p.file.clone()));
@@ -514,6 +564,35 @@ struct Copier<'p> {
 }
 
 impl Copier<'_> {
+    /// F07: `planned` could not be read, so its twins are copied instead,
+    /// in plan order, until one is read as the hash planning took. A twin
+    /// that cannot be read, or reads otherwise, is passed for the next.
+    /// `None`: no twin could be copied, or a failure on the drive's side
+    /// ended the tries; the file fails with its own read error then.
+    fn copy_twin(
+        &mut self,
+        planned: &Planned,
+        tracker: &mut Tracker,
+    ) -> Result<Option<(Vec<Failed>, Copied)>, Stop> {
+        let mut tried = Vec::new();
+        for twin in &planned.twins {
+            if self.cancel.is_cancelled() {
+                return Err(Stop::Cancelled);
+            }
+            tracker.reread();
+            match self.copy_file(twin, planned.hash, tracker) {
+                Ok(to) => return Ok(Some((tried, Copied { file: twin.clone(), to }))),
+                Err(Stop::Failed(reason @ (FailReason::Read(_) | FailReason::SourceChanged))) => {
+                    tried.push(Failed { file: twin.clone(), reason });
+                }
+                // The drive, not the card: the next twin would fail alike.
+                Err(Stop::Failed(_)) => return Ok(None),
+                Err(Stop::Cancelled) => return Err(Stop::Cancelled),
+            }
+        }
+        Ok(None)
+    }
+
     /// Copies `file` to `<folder>/<TYPE>/<name>`. `expected`: the hash
     /// planning took, which the bytes read must match.
     fn copy_file(
@@ -1489,6 +1568,299 @@ mod tests {
             other => panic!("expected Library, got {other:?}"),
         }
         assert!(!lib.exists());
+    }
+
+    /// F07: `n` cards in backup slots, each with the same RAF of two
+    /// chunks, so the first card's file is planned and the others are its
+    /// twins, in card order.
+    fn backup_cards(dir: &Path, n: usize) -> (Vec<PathBuf>, PathBuf, Vec<u8>) {
+        let lib = dir.join("lib");
+        fs::create_dir_all(&lib).unwrap();
+        let bytes: Vec<u8> = (0..CHUNK + CHUNK / 2).map(|i| (i % 251) as u8).collect();
+        let cards: Vec<PathBuf> = (0..n).map(|i| dir.join(format!("card{i}"))).collect();
+        for card in &cards {
+            write_file(card, "DCIM/100_FUJI/DSCF0001.RAF", &bytes, at(1_700_000_000));
+        }
+        (cards, lib, bytes)
+    }
+
+    fn raf(card: &Path) -> PathBuf {
+        card.join("DCIM/100_FUJI/DSCF0001.RAF")
+    }
+
+    /// One planned run of `cards` into `lib`.
+    struct Run {
+        scans: Vec<crate::SourceScan>,
+        plan: SyncPlan,
+        outcome: CopyOutcome,
+        folder: SyncFolder,
+        /// Chunks written to temp files, over every file of the run.
+        written: usize,
+    }
+
+    /// Plans and copies `cards`. Each `(n, fault)` arms `fault` once the
+    /// n-th chunk of the run (from 1) is written, so the file being copied
+    /// fails at its next read (`Read`) or folder flush (`SyncDir`). The
+    /// run is cancelled once chunk `cancel_at` is written, if given.
+    fn run_failing(
+        cards: &[PathBuf],
+        lib: &Path,
+        faults: &[(usize, Fault)],
+        cancel_at: Option<usize>,
+        monitor: impl FnOnce(Cancel) -> Monitor<'static>,
+    ) -> Run {
+        let scans: Vec<_> = cards.iter().map(|c| scan_elsewhere(c)).collect();
+        let plan = plan_sync(lib, &scans, &mut Monitor::default()).unwrap();
+        let folder = sync_folder(&plan, None).unwrap().unwrap();
+        let written = std::rc::Rc::new(std::cell::Cell::new(0));
+        let (count, faults) = (written.clone(), faults.to_vec());
+        let cancel = Cancel::new();
+        let flag = cancel.clone();
+        set_hook(move |stage, _| {
+            if stage == Stage::Written {
+                count.set(count.get() + 1);
+                if let Some((_, fault)) = faults.iter().find(|(n, _)| *n == count.get()) {
+                    FAULT.with(|f| f.set(Some(*fault)));
+                }
+                if cancel_at == Some(count.get()) {
+                    flag.cancel();
+                }
+            }
+        });
+        let outcome = copy_plan(&plan, &folder, &mut monitor(cancel));
+        clear_hook();
+        FAULT.with(|f| f.set(None));
+        Run { scans, plan, outcome: outcome.unwrap(), folder, written: written.get() }
+    }
+
+    fn quiet(cancel: Cancel) -> Monitor<'static> {
+        Monitor::new(cancel, |_| {})
+    }
+
+    fn eio(e: &io::Error) -> bool {
+        e.raw_os_error() == Some(libc::EIO)
+    }
+
+    /// The report entry of `path`.
+    fn entry<'r>(report: &'r crate::Report, path: &Path) -> &'r crate::FileOutcome {
+        let mut entries = report.sources().iter().flat_map(|s| &s.files);
+        &entries.find(|e| e.file.path == path).expect("listed").outcome
+    }
+
+    /// F07: the first card's file fails partway through its read, so the
+    /// copy reads its twin on the second card instead, checked against
+    /// the hash planning took. The third card is never read. The twin is
+    /// copied; the unread file is a duplicate in session with its error.
+    #[test]
+    fn f07_a_file_whose_read_fails_is_copied_from_its_first_readable_twin() {
+        use crate::{Bucket, FileOutcome, Report};
+        let dir = TempDir::new();
+        let (cards, lib, bytes) = backup_cards(&dir.0, 3);
+
+        let run = run_failing(&cards, &lib, &[(1, Fault::Read)], None, quiet);
+
+        let target = run.folder.path().join("RAW/DSCF0001.RAF");
+        let o = &run.outcome;
+        assert!(o.copied.is_empty() && o.failed.is_empty() && o.cancelled.is_empty(), "{o:?}");
+        let [fallback] = &o.fallbacks[..] else { panic!("{:?}", o.fallbacks) };
+        assert_eq!(fallback.original.path, raf(&cards[0]));
+        assert!(eio(&fallback.error), "{:?}", fallback.error);
+        assert!(fallback.tried.is_empty(), "{:?}", fallback.tried);
+        assert_eq!((&fallback.copied.file.path, &fallback.copied.to), (&raf(&cards[1]), &target));
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        assert_eq!(run.written, 1 + 2, "one chunk of the first card, then the twin, read once");
+        assert!(temps_under(&lib).is_empty());
+
+        let report = Report::new(run.scans, run.plan, run.outcome).unwrap();
+        assert!(matches!(entry(&report, &raf(&cards[0])),
+            FileOutcome::DuplicateUnread { of, error } if *of == raf(&cards[1]) && eio(error)));
+        assert!(matches!(entry(&report, &raf(&cards[1])), FileOutcome::Copied { to } if *to == target));
+        assert!(matches!(entry(&report, &raf(&cards[2])),
+            FileOutcome::DuplicateInSession { of } if *of == raf(&cards[1])));
+        let size = bytes.len() as u64;
+        let buckets: Vec<Bucket> = report.sources().iter().map(|s| s.files[0].outcome.bucket()).collect();
+        assert_eq!(buckets, [Bucket::Skipped, Bucket::Copied, Bucket::Skipped]);
+        for source in report.sources() {
+            assert_eq!(source.totals().supported().files, 1, "INV-6 per card");
+        }
+        let t = report.totals();
+        assert_eq!((t.copied.bytes, t.skipped.bytes, t.unread.bytes), (size, 2 * size, size));
+        assert_eq!(report.sources()[0].totals().unread.files, 1, "counted under the unread card");
+        assert!(report.is_complete(), "the photo is on the drive");
+    }
+
+    /// F07: a twin that cannot be read, or whose content is not what
+    /// planning read, is skipped for the next one. A twin that read fine
+    /// before is a duplicate with its error; one that changed fails, as
+    /// its bytes now are not the ones on the drive (INV-3).
+    #[test]
+    fn f07_a_twin_whose_read_fails_or_whose_content_changed_is_skipped_for_the_next() {
+        use crate::{FileOutcome, Report};
+        let dir = TempDir::new();
+        let (cards, lib, bytes) = backup_cards(&dir.0, 4);
+        let mut changed = bytes.clone();
+        changed[CHUNK + 1] ^= 1;
+        // `run_failing` plans and copies at once; the third card changes in
+        // between, so this run is spelled out.
+        let run = {
+            let scans: Vec<_> = cards.iter().map(|c| scan_elsewhere(c)).collect();
+            let plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
+            write_file(&cards[2], "DCIM/100_FUJI/DSCF0001.RAF", &changed, at(1_700_000_000));
+            let folder = sync_folder(&plan, None).unwrap().unwrap();
+            let written = std::rc::Rc::new(std::cell::Cell::new(0));
+            let count = written.clone();
+            set_hook(move |stage, _| {
+                if stage == Stage::Written {
+                    count.set(count.get() + 1);
+                    if count.get() <= 2 {
+                        FAULT.with(|f| f.set(Some(Fault::Read)));
+                    }
+                }
+            });
+            let outcome = copy_plan(&plan, &folder, &mut Monitor::default());
+            clear_hook();
+            FAULT.with(|f| f.set(None));
+            Run { scans, plan, outcome: outcome.unwrap(), folder, written: written.get() }
+        };
+
+        let target = run.folder.path().join("RAW/DSCF0001.RAF");
+        let [fallback] = &run.outcome.fallbacks[..] else { panic!("{:?}", run.outcome) };
+        assert_eq!(fallback.original.path, raf(&cards[0]));
+        let tried: Vec<&Path> = fallback.tried.iter().map(|f| f.file.path.as_path()).collect();
+        assert_eq!(tried, [raf(&cards[1]), raf(&cards[2])]);
+        assert!(matches!(&fallback.tried[0].reason, FailReason::Read(e) if eio(e)));
+        assert!(matches!(fallback.tried[1].reason, FailReason::SourceChanged));
+        assert_eq!(fallback.copied.file.path, raf(&cards[3]));
+        assert_eq!(fs::read(&target).unwrap(), bytes, "the planned bytes, not the changed ones");
+        assert_eq!(run.written, 1 + 1 + 2 + 2);
+        assert!(temps_under(&lib).is_empty());
+
+        let report = Report::new(run.scans, run.plan, run.outcome).unwrap();
+        for unread in [&cards[0], &cards[1]] {
+            assert!(matches!(entry(&report, &raf(unread)),
+                FileOutcome::DuplicateUnread { of, error } if *of == raf(&cards[3]) && eio(error)));
+        }
+        assert!(matches!(entry(&report, &raf(&cards[2])), FileOutcome::Failed(FailReason::SourceChanged)));
+        assert!(matches!(entry(&report, &raf(&cards[3])), FileOutcome::Copied { .. }));
+        assert!(!report.is_complete(), "the changed card's bytes are not on the drive");
+    }
+
+    /// F07: only a read of the card is retried on a twin. A failure on the
+    /// drive's side (here a folder flush) would fail the same way for the
+    /// twin: the original's is not retried, and a twin's ends the
+    /// fallback, so the file fails with its own read error.
+    #[test]
+    fn f07_a_drive_side_failure_is_not_retried_on_a_twin() {
+        use crate::{FileOutcome, Report};
+        let dir = TempDir::new();
+        let (cards, lib, _) = backup_cards(&dir.0, 3);
+
+        let run = run_failing(&cards, &lib, &[(2, Fault::SyncDir)], None, quiet);
+        let [failed] = &run.outcome.failed[..] else { panic!("{:?}", run.outcome) };
+        assert_eq!(failed.file.path, raf(&cards[0]));
+        assert!(matches!(&failed.reason, FailReason::Write { error, .. } if eio(error)), "{failed}");
+        assert!(run.outcome.fallbacks.is_empty() && run.outcome.copied.is_empty());
+        assert_eq!(run.written, 2, "no twin was read");
+
+        let run = run_failing(&cards, &lib, &[(1, Fault::Read), (3, Fault::SyncDir)], None, quiet);
+        let [failed] = &run.outcome.failed[..] else { panic!("{:?}", run.outcome) };
+        assert_eq!(failed.file.path, raf(&cards[0]));
+        assert!(matches!(&failed.reason, FailReason::Read(e) if eio(e)), "{failed}");
+        assert!(run.outcome.fallbacks.is_empty() && run.outcome.copied.is_empty());
+        assert_eq!(run.written, 1 + 2, "the third card was not read");
+        assert!(!run.folder.path().join("RAW/DSCF0001.RAF").exists());
+        assert!(temps_under(&lib).is_empty());
+        let report = Report::new(run.scans, run.plan, run.outcome).unwrap();
+        for twin in &cards[1..] {
+            assert!(matches!(entry(&report, &raf(twin)),
+                FileOutcome::DuplicateOfFailed { of } if *of == raf(&cards[0])));
+        }
+    }
+
+    /// F07: with every twin unreadable too, the file fails with its own
+    /// read error and its twins are failed duplicates of it.
+    #[test]
+    fn f07_with_every_twin_unreadable_the_file_fails_with_its_own_read_error() {
+        use crate::{FileOutcome, Report};
+        let dir = TempDir::new();
+        let (cards, lib, _) = backup_cards(&dir.0, 3);
+
+        let faults = [(1, Fault::Read), (2, Fault::Read), (3, Fault::Read)];
+        let run = run_failing(&cards, &lib, &faults, None, quiet);
+
+        let [failed] = &run.outcome.failed[..] else { panic!("{:?}", run.outcome) };
+        assert_eq!(failed.file.path, raf(&cards[0]));
+        assert!(matches!(&failed.reason, FailReason::Read(e) if eio(e)), "{failed}");
+        assert!(run.outcome.fallbacks.is_empty() && run.outcome.copied.is_empty());
+        assert_eq!(run.written, 3, "each card was tried once");
+        assert!(!run.folder.path().join("RAW/DSCF0001.RAF").exists());
+        assert!(temps_under(&lib).is_empty());
+        let report = Report::new(run.scans, run.plan, run.outcome).unwrap();
+        assert!(matches!(entry(&report, &raf(&cards[0])), FileOutcome::Failed(FailReason::Read(_))));
+        for twin in &cards[1..] {
+            assert!(matches!(entry(&report, &raf(twin)),
+                FileOutcome::DuplicateOfFailed { of } if *of == raf(&cards[0])));
+        }
+        assert!(!report.is_complete());
+    }
+
+    /// F07: a cancel while a twin is read cancels the file, as any cut
+    /// short copy: no temp, nothing under the final name.
+    #[test]
+    fn f07_cancel_while_reading_a_twin_cancels_the_file_and_leaves_no_temp() {
+        use crate::{FileOutcome, Report};
+        let dir = TempDir::new();
+        let (cards, lib, _) = backup_cards(&dir.0, 2);
+
+        let run = run_failing(&cards, &lib, &[(1, Fault::Read)], Some(2), quiet);
+
+        let cancelled: Vec<&Path> = run.outcome.cancelled.iter().map(|f| f.path.as_path()).collect();
+        assert_eq!(cancelled, [raf(&cards[0])]);
+        assert!(run.outcome.fallbacks.is_empty() && run.outcome.failed.is_empty());
+        assert!(!run.folder.path().join("RAW/DSCF0001.RAF").exists());
+        assert!(temps_under(&lib).is_empty());
+        let report = Report::new(run.scans, run.plan, run.outcome).unwrap();
+        assert!(matches!(entry(&report, &raf(&cards[1])),
+            FileOutcome::DuplicateOfCancelled { of } if *of == raf(&cards[0])));
+    }
+
+    /// F07: a fallback is still one planned file to progress. Its bytes
+    /// count under the planned file's card (DEC-036), and the twin's first
+    /// bytes, as many as the failed read had counted, count nothing
+    /// again: done never goes back nor past the total, and meets it.
+    #[test]
+    fn f07_fallback_progress_counts_the_file_once_under_its_planned_card() {
+        use crate::progress::Event;
+        let dir = TempDir::new();
+        let (cards, lib, bytes) = backup_cards(&dir.0, 2);
+        let events = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let log = events.clone();
+
+        let run = run_failing(&cards, &lib, &[(1, Fault::Read)], None, move |cancel| {
+            Monitor::new(cancel, move |e: Event| log.lock().unwrap().push(e))
+        });
+
+        assert_eq!(run.outcome.fallbacks.len(), 1);
+        let events = events.lock().unwrap();
+        let size = bytes.len() as u64;
+        let whole = crate::Counts { files: 1, bytes: size };
+        for pair in events.windows(2) {
+            let (p, q) = (&pair[0].progress, &pair[1].progress);
+            assert_eq!(q.total, whole, "total never changes");
+            assert!(q.done.files >= p.done.files && q.done.bytes >= p.done.bytes, "done went back");
+            assert!(q.done.bytes <= size);
+        }
+        let started: Vec<&crate::EventKind> =
+            events.iter().map(|e| &e.kind).filter(|k| !matches!(k, crate::EventKind::Bytes)).collect();
+        use crate::EventKind::*;
+        assert_eq!(
+            started,
+            [&Started, &FileStarted(raf(&cards[0])), &FileDone(raf(&cards[0])), &Finished]
+        );
+        let last = &events.last().unwrap().progress;
+        assert_eq!(last.done, whole);
+        assert_eq!((last.sources[0].done, last.sources[0].total), (whole, whole));
+        assert_eq!(last.sources[1].total, crate::Counts::default());
     }
 
     #[test]

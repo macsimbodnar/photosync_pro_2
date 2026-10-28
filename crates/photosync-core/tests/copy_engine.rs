@@ -37,12 +37,7 @@ fn sync(card: &Path, lib: &Path, name: Option<&str>) -> (SyncPlan, CopyOutcome) 
     let plan = plan(card, lib);
     let outcome = match sync_folder(&plan, name).unwrap() {
         Some(folder) => copy_plan(&plan, &folder, &mut Monitor::default()).unwrap(),
-        None => CopyOutcome {
-            copied: Vec::new(),
-            failed: Vec::new(),
-            cancelled: Vec::new(),
-            temps: remove_stale_temps(lib),
-        },
+        None => CopyOutcome::nothing_to_copy(remove_stale_temps(lib)),
     };
     (plan, outcome)
 }

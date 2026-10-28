@@ -30,7 +30,11 @@ stays listed as retired.
   hash. Copies are written under a temporary name and moved into place only
   after that check, by a rename that fails if the target exists. A file
   that planning hashed must also read as that hash when copied: one that
-  changed since fails, and so does its duplicate.
+  changed since fails, and so do its duplicates. One that cannot be read
+  is copied from its first twin (same name, size and planning hash, on
+  another source) that reads as that hash; a twin that cannot be read or
+  reads otherwise is passed for the next. A failure on the drive's side
+  is never retried on a twin (DEC-036).
 - INV-4 Idempotent. Syncing the same source to the same destination twice
   copies zero files the second time, whatever target folder is picked.
 - INV-5 Type separation. Every RAW file lands in a RAW folder and every JPEG
@@ -41,7 +45,13 @@ stays listed as retired.
   "already on drive" and "duplicate in session", each with its own reason.
   A duplicate in session is skipped only if its original is copied or
   already on drive; one whose original failed or was cancelled takes the
-  original's bucket, with a reason naming the original. Failed holds read,
+  original's bucket, with a reason naming the original. A file that could
+  not be read while copying, whose twin was copied instead (INV-3), is a
+  duplicate in session of that twin, with its read error; it is also
+  counted apart ("could not be read"), so a front-end shows that its card
+  had a read error. Its other twins are duplicates in session of the
+  copied twin too, except one passed because it read otherwise than
+  planned: that one fails. Failed holds read,
   write and verify errors and name collisions, whether found while planning
   or copying, and "not flushed": a copy in place whose folder flush failed.
   Not flushed stays in failed and is also counted apart, so it can be shown
@@ -151,8 +161,9 @@ picks. It is simple to use.
   (identical cards), or overflow. Each file goes to the folder for its type,
   whatever card it came from. A file found on two sources in one session is
   copied once. If reading it from one source fails, the copy on the other
-  source is tried. The report lists the extra copies as "duplicate in
-  session".
+  source is tried, and must read as what planning read (INV-3). The report
+  lists the extra copies as "duplicate in session", names the card whose
+  file was copied, and shows the read error of the card that failed.
 
 ### Destination
 
@@ -229,15 +240,18 @@ picks. It is simple to use.
 ### Report
 
 - At the end, shows what was done: copied, skipped (already on drive, or
-  duplicate in session), failed with a reason (name collisions included),
+  duplicate in session, with the read error of a file copied from its
+  twin), failed with a reason (name collisions included),
   cancelled, ignored types, and the entries the scan could not read. Totals
   per source and per type (INV-6). The CLI's report names the library and
   the session folder. After several syncs in a session, the report ends
   with the totals of all of them and the session's result.
 - The report is never built from inputs that would make it wrong: a source
   given twice (in any spelling), or a plan or copy that is not of these
-  scans (a file not listed, listed with another size or mtime, left out, or
-  a duplicate whose original is not reported) is refused with the reason.
+  scans (a file not listed, listed with another size or mtime, left out, a
+  duplicate whose original is not reported, or a file read in place of a
+  planned one that the plan does not list as its twin) is refused with the
+  reason.
 
 ## Non-goals
 

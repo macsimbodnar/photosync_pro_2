@@ -66,6 +66,11 @@ pub enum FileOutcome {
     /// Skipped: same content as `of`, a file earlier in the session, which
     /// was planned instead and is on the drive ("duplicate in session").
     DuplicateInSession { of: PathBuf },
+    /// Skipped: reading this file failed with `error`, so its twin `of`, on
+    /// another card, was copied instead (F07). `of` has the same name, size
+    /// and content as planning read here, so the photo is on the drive; the
+    /// error is kept, as this card could not be read.
+    DuplicateUnread { of: PathBuf, error: std::io::Error },
     /// Failed: same content as `of`, which was planned instead and failed
     /// (its entry has the reason). This card may hold the only copy.
     DuplicateOfFailed { of: PathBuf },
@@ -94,9 +99,9 @@ impl FileOutcome {
     pub fn bucket(&self) -> Bucket {
         match self {
             FileOutcome::Copied { .. } => Bucket::Copied,
-            FileOutcome::AlreadySynced { .. } | FileOutcome::DuplicateInSession { .. } => {
-                Bucket::Skipped
-            }
+            FileOutcome::AlreadySynced { .. }
+            | FileOutcome::DuplicateInSession { .. }
+            | FileOutcome::DuplicateUnread { .. } => Bucket::Skipped,
             FileOutcome::Failed(_) | FileOutcome::DuplicateOfFailed { .. } => Bucket::Failed,
             FileOutcome::Cancelled | FileOutcome::DuplicateOfCancelled { .. } => Bucket::Cancelled,
             FileOutcome::Ignored => Bucket::Ignored,
@@ -125,6 +130,11 @@ pub struct Tally {
     /// (`FailReason::NotFlushed`): a front-end can show them as "in place,
     /// flush not confirmed". Already in `failed`, so not in the sum again.
     pub not_flushed: Counts,
+    /// Of `skipped`, the files that could not be read and were copied from
+    /// a twin on another card (`FileOutcome::DuplicateUnread`): the photo
+    /// is on the drive, but a front-end shows that the card had a read
+    /// error. Already in `skipped`, so not in the sum again.
+    pub unread: Counts,
 }
 
 impl Tally {
@@ -137,6 +147,7 @@ impl Tally {
             (&mut self.cancelled, other.cancelled),
             (&mut self.ignored, other.ignored),
             (&mut self.not_flushed, other.not_flushed),
+            (&mut self.unread, other.unread),
         ] {
             add(to, from.files, from.bytes);
         }
@@ -161,8 +172,10 @@ impl Tally {
             Bucket::Ignored => &mut self.ignored,
         };
         add(c, 1, entry.file.size);
-        if matches!(entry.outcome, FileOutcome::Failed(FailReason::NotFlushed { .. })) {
-            add(&mut self.not_flushed, 1, entry.file.size);
+        match entry.outcome {
+            FileOutcome::Failed(FailReason::NotFlushed { .. }) => add(&mut self.not_flushed, 1, entry.file.size),
+            FileOutcome::DuplicateUnread { .. } => add(&mut self.unread, 1, entry.file.size),
+            _ => {}
         }
     }
 }
@@ -217,6 +230,9 @@ pub enum ReportError {
     /// A duplicate in session whose original `of` is not copied, already
     /// synced, failed or cancelled, so nothing tells whether it is safe.
     NoOriginal { file: PathBuf, of: PathBuf },
+    /// The outcome says `file` was read in place of `of`, but the plan does
+    /// not list it as a twin of `of`, a file it planned to copy.
+    NotATwin { file: PathBuf, of: PathBuf },
 }
 
 impl fmt::Display for ReportError {
@@ -240,6 +256,12 @@ impl fmt::Display for ReportError {
                 file.display(),
                 of.display()
             ),
+            ReportError::NotATwin { file, of } => write!(
+                f,
+                "{} is reported as read instead of {}, but the plan has it as no twin of it",
+                file.display(),
+                of.display()
+            ),
         }
     }
 }
@@ -254,7 +276,10 @@ impl Report {
     /// it, and that no source is given twice.
     ///
     /// A duplicate in session is skipped only if its original is on the
-    /// drive; otherwise it takes the original's bucket.
+    /// drive; otherwise it takes the original's bucket. A planned file the
+    /// copy read from a twin instead (`CopyOutcome::fallbacks`) is a
+    /// duplicate of that twin, and so are its other twins; the plan must
+    /// list each twin the outcome names.
     pub fn new(
         scans: Vec<SourceScan>,
         plan: SyncPlan,
@@ -291,6 +316,22 @@ impl Report {
         for file in &outcome.cancelled {
             originals.insert(file.path.clone(), Original::Cancelled);
         }
+        // F07: each planned file read from a twin, mapped to that twin, and
+        // the twins the outcome reports itself, with the file they stood in
+        // for. The plan must list each as a twin of that file.
+        let mut read_from = HashMap::new();
+        let mut stood_in = HashSet::new();
+        for f in &outcome.fallbacks {
+            let of = &f.original.path;
+            let twins = plan.to_copy.iter().find(|p| p.file.path == *of).map_or(&[][..], |p| p.twins());
+            for file in f.tried.iter().map(|t| &t.file).chain([&f.copied.file]) {
+                if !twins.iter().any(|t| t.path == file.path) {
+                    return Err(ReportError::NotATwin { file: file.path.clone(), of: of.clone() });
+                }
+                stood_in.insert((file.path.clone(), of.clone()));
+            }
+            read_from.insert(of.clone(), f.copied.file.path.clone());
+        }
 
         let mut slots = Slots::new(&scans);
         for s in plan.skipped {
@@ -303,6 +344,13 @@ impl Report {
             slots.put(d.file, FileOutcome::DuplicateInSession { of: d.of })?;
         }
         for d in plan.duplicates {
+            if stood_in.contains(&(d.file.path.clone(), d.of.clone())) {
+                continue; // the fallback's entry below reports it
+            }
+            if let Some(twin) = read_from.get(&d.of) {
+                slots.put(d.file, FileOutcome::DuplicateInSession { of: twin.clone() })?;
+                continue;
+            }
             let entry = match originals.get(&d.of) {
                 Some(Original::OnDrive) => FileOutcome::DuplicateInSession { of: d.of },
                 Some(Original::Failed) => FileOutcome::DuplicateOfFailed { of: d.of },
@@ -322,6 +370,19 @@ impl Report {
         }
         for file in outcome.cancelled {
             slots.put(file, FileOutcome::Cancelled)?;
+        }
+        for f in outcome.fallbacks {
+            let of = f.copied.file.path.clone();
+            slots.put(f.original, FileOutcome::DuplicateUnread { of: of.clone(), error: f.error })?;
+            for t in f.tried {
+                let entry = match t.reason {
+                    FailReason::Read(error) => FileOutcome::DuplicateUnread { of: of.clone(), error },
+                    // Not what planning read, so not what is on the drive.
+                    reason => FileOutcome::Failed(reason),
+                };
+                slots.put(t.file, entry)?;
+            }
+            slots.put(f.copied.file, FileOutcome::Copied { to: f.copied.to })?;
         }
         let sources = slots.finish(scans)?;
         Ok(Report { sources, library_failures: plan.library_failures, temps: outcome.temps })

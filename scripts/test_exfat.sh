@@ -31,6 +31,8 @@ skip=(
     inv6_holds_per_source_over_every_kind_of_outcome            # report
     unreadable_scan_entries_are_listed_and_only_folders_have_unknown_contents  # report
     duplicate_of_an_original_that_failed_to_read_is_failed_not_skipped        # report
+    a_readable_twin_of_an_original_that_failed_to_read_is_copied_by_the_fallback  # report
+    a_twin_the_fallback_copied_is_the_original_for_later_cards                # session
     volume::tests::read_only_volume_is_not_a_destination                      # unit
     volume::tests::volume_whose_dcim_cannot_be_checked_is_a_failure_not_a_destination
     plan::tests::inv10_library_whose_volume_top_cannot_be_checked_is_refused   # unit
