@@ -40,6 +40,7 @@ Why: one line.
 - DEC-021 2026-10-28 — progress and cancel details left open by S005
 - DEC-022 2026-10-28 — sync report details left open by S006
 - DEC-023 2026-10-28 — report hardening details left open by S014
+- DEC-024 2026-10-28 — volume discovery and the INV-10 device check (S007)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -353,3 +354,39 @@ read by `Report::new`: the outcome accounts for those files.
 cancelled, so it claims nothing safe.
 Why: the report is what decides whether a card is safe to format, so each
 choice errs toward "not safe" and toward refusing over guessing.
+
+## DEC-024  2026-10-28  volume discovery and the INV-10 device check (S007)
+Tags: sources, destination, safety, api
+Decision: agent's pick in S007, not yet confirmed by the user.
+(1) A volume is a direct entry of a search root that is a folder (a symlink
+is not followed) and a mount point: on another device than its parent, or
+`/`. The symlink rule keeps out the macOS boot volume (`Macintosh HD -> /`);
+the mount rule keeps out a folder left by an unclean eject, which would
+send photos to the boot disk. Rejected: matching the name "Macintosh HD"
+(the user can rename it), and comparing with the device of `/` (misses
+leftover folders).
+(2) Dot entries in a search root (`/Volumes/.timemachine`) are skipped, as
+DEC-014 does on a card.
+(3) A destination is a volume without `DCIM` whose root the effective user
+may write to (`faccessat(W_OK, AT_EACCESS)`): this drops read-only mounts,
+locked cards, macOS NTFS drives, and root-owned internal volumes such as
+`/Volumes/Recovery`. Known limits: there is no internal/external test (it
+needs DiskArbitration or udev); a Linux drive whose root folder is
+root-owned (e.g. a fresh ext4) is not listed. A volume whose `DCIM` cannot
+be checked is a failure only, never a destination: it may be a card.
+(4) A missing search root holds no volumes and is not a failure (Linux
+usually has one of its two). The Linux roots come from `$USER`; unset or
+empty is an error.
+(5) `scan_source` records `SourceScan::device`: the `st_dev` of the
+resolved root when it is a mount point, else `None`, taken while the card
+is there (as `resolved_root`, DEC-023). `plan_sync` refuses a library on
+that device as `PlanError::LibraryOnSource`. A plain-folder source is
+checked by path only, so temp-dir tests (one device, no mount points) are
+not refused; a test sets the public field to inject a device. Rejected: a
+device check for every source (refuses every library on the same disk as a
+folder source, every test included), and an injectable device function on
+`plan_sync` (API for tests only).
+(6) The mount test in discovery is injected through a private function, so
+unit tests treat temp folders as volumes; the real one is tested on `/`,
+`/dev` and a temp folder.
+Why: each picks what keeps a photo off the wrong disk, with the least API.

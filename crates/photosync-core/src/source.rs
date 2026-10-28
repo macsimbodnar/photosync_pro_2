@@ -9,6 +9,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::volume::mount_device;
+
 /// The supported file types, per specs Layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MediaType {
@@ -64,6 +66,11 @@ pub struct SourceScan {
     /// there, so two spellings of one source compare equal even after it is
     /// removed.
     pub resolved_root: PathBuf,
+    /// The device id (`st_dev`) of the source volume when `resolved_root` is
+    /// a mount point, as every discovered volume is; `None` for a plain
+    /// folder. Taken while the card was there. INV-10 refuses a library on
+    /// this device, whatever path reaches it.
+    pub device: Option<u64>,
     pub files: Vec<SourceFile>,
     /// Files and folders under `DCIM` that could not be read. A folder whose
     /// listing broke partway keeps the files it gave before the break in
@@ -120,6 +127,8 @@ pub fn scan_source(root: &Path) -> Result<SourceScan, ScanError> {
     walk(&dcim, &mut files, &mut failures).map_err(|source| ScanError { path: dcim, source })?;
     let resolved_root = fs::canonicalize(root)
         .map_err(|source| ScanError { path: root.to_path_buf(), source })?;
+    let device = mount_device(&resolved_root)
+        .map_err(|source| ScanError { path: root.to_path_buf(), source })?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let Failures { mut errors, mut folders } = failures;
     errors.sort_by(|a, b| a.path.cmp(&b.path));
@@ -127,6 +136,7 @@ pub fn scan_source(root: &Path) -> Result<SourceScan, ScanError> {
     Ok(SourceScan {
         root: root.to_path_buf(),
         resolved_root,
+        device,
         files,
         failures: errors,
         failed_folders: folders,

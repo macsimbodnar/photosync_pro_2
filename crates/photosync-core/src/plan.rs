@@ -13,6 +13,7 @@ use crate::hash::{Hash, hash_file_with};
 use crate::library::scan_library;
 use crate::progress::{Monitor, Phase, Tracker};
 use crate::source::{ScanError, SourceFile, SourceScan};
+use crate::volume::device_id;
 
 /// What a sync of `sources` into a library would do. Every supported source
 /// file is in exactly one list (INV-6). Ignored files and scan failures stay
@@ -56,7 +57,8 @@ pub struct Duplicate {
 /// Why a sync cannot be planned at all.
 #[derive(Debug)]
 pub enum PlanError {
-    /// INV-10: the library is a source root or under one.
+    /// INV-10: the library is a source root or under one, or on the device
+    /// of a source volume (`SourceScan::device`).
     LibraryOnSource { library: PathBuf, source_root: PathBuf },
     /// INV-10: the library is inside a `DCIM` tree.
     LibraryInDcim { library: PathBuf },
@@ -233,7 +235,9 @@ fn key(file: &SourceFile) -> (OsString, u64) {
 
 /// INV-10, on resolved paths, so a symlink or `..` cannot hide an overlap.
 /// A source root is its volume's mount point, so "under the root" is "on the
-/// source volume".
+/// source volume". The device check catches what paths cannot: a second
+/// mount or a bind mount of the card has an unrelated path but the same
+/// device.
 fn check_library(library: &Path, sources: &[SourceScan]) -> Result<(), PlanError> {
     let resolved = fs::canonicalize(library)
         .map_err(|source| PlanError::Library(ScanError { path: library.to_path_buf(), source }))?;
@@ -244,10 +248,13 @@ fn check_library(library: &Path, sources: &[SourceScan]) -> Result<(), PlanError
     if in_dcim {
         return Err(PlanError::LibraryInDcim { library: library.to_path_buf() });
     }
+    let library_device = fs::metadata(&resolved)
+        .and_then(|meta| device_id(&meta))
+        .map_err(|source| PlanError::Library(ScanError { path: library.to_path_buf(), source }))?;
     for scan in sources {
         let root = fs::canonicalize(&scan.root)
             .map_err(|source| PlanError::Source(ScanError { path: scan.root.clone(), source }))?;
-        if resolved.starts_with(&root) {
+        if resolved.starts_with(&root) || scan.device == Some(library_device) {
             return Err(PlanError::LibraryOnSource {
                 library: library.to_path_buf(),
                 source_root: scan.root.clone(),

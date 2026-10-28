@@ -8,6 +8,13 @@ mod plan;
 mod progress;
 mod report;
 mod source;
+mod volume;
+
+// One instance for all unit tests: `TempDir` numbers its folders from a
+// static, and two copies of it would hand out the same paths.
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod common;
 
 pub use copy::{
     Copied, CopyError, CopyOutcome, FailReason, Failed, FolderError, SyncFolder, TempCleanup,
@@ -19,6 +26,7 @@ pub use report::{
     Bucket, FileOutcome, FileReport, Report, ReportError, SourceReport, Tally, Unreadable,
 };
 pub use source::{MediaType, ScanError, SourceFile, SourceScan, scan_source};
+pub use volume::{Volumes, default_search_roots, discover_volumes};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

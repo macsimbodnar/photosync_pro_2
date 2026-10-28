@@ -59,7 +59,9 @@ stays listed as retired.
   index or catalog file anywhere.
 - INV-10 Destination is never a source. A sync refuses to start if the
   library is on a source volume, inside any `DCIM` tree, or contains a
-  source.
+  source. "On a source volume" is under a source root, or on the same
+  device (`st_dev`) as a source root that is a mount point, so a second
+  path to the card cannot get past the check.
 
 ## Behaviour
 
@@ -81,7 +83,11 @@ picks. It is simple to use.
 ### Sources
 
 - The app lists the mounted volumes that hold a `DCIM` folder, and the user
-  picks one or more of them.
+  picks one or more of them. It looks under `/Volumes` on macOS, and under
+  `/media/$USER` and `/run/media/$USER` on Linux. Only a folder there that
+  is a mount point is a volume: the macOS boot volume (a symlink to `/` in
+  `/Volumes`), a folder left by an unclean eject, and entries whose name
+  starts with `.` are never listed (DEC-024).
 - This covers SD cards in card readers, and the X-T5 on a USB cable in its
   "USB card reader" connection mode. The default PTP mode does not mount as
   a volume and is not supported for now.
@@ -101,7 +107,9 @@ picks. It is simple to use.
 
 ### Destination
 
-- The user picks the external drive, and the library folder on it.
+- The app lists the other mounted volumes in the same places that the user
+  can write to. The user picks the external drive, and the library folder
+  on it.
 - The app may remember the last choice in its own config on the computer,
   never on the drive (INV-9).
 

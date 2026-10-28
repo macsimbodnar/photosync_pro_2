@@ -539,7 +539,7 @@ fn synced(stage: Stage, path: &Path, flushed: io::Result<()>) -> io::Result<()> 
 }
 
 #[cfg(unix)]
-fn c_path(path: &Path) -> io::Result<std::ffi::CString> {
+pub(crate) fn c_path(path: &Path) -> io::Result<std::ffi::CString> {
     use std::os::unix::ffi::OsStrExt;
     std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path holds a NUL byte"))
@@ -717,12 +717,8 @@ fn injected(fault: Fault) -> io::Result<()> {
 }
 
 #[cfg(test)]
-#[path = "../tests/common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod tests {
-    use super::common::{TempDir, at, date_command, write_file};
+    use crate::common::{TempDir, at, date_command, write_file};
     use super::*;
     use crate::plan::plan_sync;
     use crate::source::scan_source;

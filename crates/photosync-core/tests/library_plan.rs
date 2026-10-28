@@ -266,6 +266,50 @@ fn inv10_symlink_cannot_hide_a_library_on_a_source() {
     assert!(matches!(err, PlanError::LibraryOnSource { .. }), "got {err:?}");
 }
 
+/// Two paths to one card volume (a second mount, a bind mount) share no
+/// prefix, only the device. Temp dirs all sit on one device and are not
+/// mount points, so the scan's device is set by hand to the library's, as
+/// `scan_source` sets it for a card's mount point.
+#[cfg(unix)]
+#[test]
+fn inv10_library_on_the_device_of_a_source_volume_is_refused() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = TempDir::new();
+    let card = dir.0.join("card");
+    put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    let library = dir.0.join("other_mount_of_card/Photos");
+    fs::create_dir_all(&library).unwrap();
+    let mut source = scan(&card);
+    assert_eq!(source.device, None, "a temp folder is not a mount point");
+    plan_sync(&library, std::slice::from_ref(&source), &mut Monitor::default()).unwrap();
+
+    source.device = Some(fs::metadata(&library).unwrap().dev());
+
+    match refused(&library, &[source]) {
+        PlanError::LibraryOnSource { library: l, source_root } => {
+            assert_eq!((l, source_root), (library, card));
+        }
+        other => panic!("expected LibraryOnSource, got {other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn inv10_library_on_another_device_than_the_source_volume_is_planned() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = TempDir::new();
+    let card = dir.0.join("card");
+    put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    let library = dir.0.join("lib");
+    fs::create_dir(&library).unwrap();
+    let mut source = scan(&card);
+    source.device = Some(fs::metadata(&library).unwrap().dev().wrapping_add(1));
+
+    let plan = plan_sync(&library, &[source], &mut Monitor::default()).unwrap();
+
+    assert_eq!(plan.to_copy.len(), 1);
+}
+
 #[test]
 fn missing_library_is_an_error_naming_the_path() {
     let dir = TempDir::new();
