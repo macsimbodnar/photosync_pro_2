@@ -34,6 +34,7 @@ Why: one line.
 - DEC-015 2026-10-28 — unreadable library candidate: copy, do not skip
 - DEC-016 2026-10-28 — trash and hidden library entries never count as synced
 - DEC-017 2026-10-28 — copy engine details left open by the specs
+- DEC-018 2026-10-28 — exFAT: locked check + rename when no-replace rename is unsupported
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -181,7 +182,7 @@ can lose the photo.
 
 ## DEC-017  2026-10-28  copy engine details left open by the specs
 Tags: layout, safety, copy
-Decision: agent's pick in S004, not yet confirmed by the user.
+Decision: agent's pick in S004; the user confirmed all seven points.
 (1) Several `<any date> - <name>` folders: the earliest is reused.
 (2) Temp files are `.photosync-tmp-<pid>-<n>-<camera name>` in the target
 type folder, created only if absent. The next sync deletes regular files of
@@ -203,3 +204,17 @@ fails again and nothing is copied.
 no time zones.
 Why: each is the smallest choice that keeps the prime directive; the user
 may override any of them.
+
+## DEC-018  2026-10-28  exFAT: locked check + rename when no-replace rename is unsupported
+Tags: safety, filesystems
+Decision: user chose this after the agent found, on a real exFAT disk image,
+that macOS returns ENOTSUP (errno 45) for `renamex_np(RENAME_EXCL)`. Only
+when the OS reports the no-replace rename as unsupported, photosync takes an
+in-app lock per library, checks that the final name is free
+(`symlink_metadata` gives NotFound), and renames. Every other path keeps the
+atomic no-replace rename. Rejected: refusing exFAT drives (no format is
+native on both Mac and Linux), and writing straight to the final name (a
+crash leaves a partial file there, which breaks INV-7).
+Why: exFAT is the common format for a Mac + Linux drive. The remaining race
+exists only against another program creating the same name in the same
+instant, and every copy is still hash-verified.

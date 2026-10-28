@@ -17,12 +17,14 @@ not change the order.
 
 ## Open
 
-1. S005  progress events, ETA, cancel
-2. S006  sync report
-3. S007  volume discovery (Mac, then Linux)
-4. S008  CLI commands
-5. S009  TUI
-6. S010  multi-source and one-by-one session
+1. S012  exFAT: locked check + rename fallback
+2. S013  copy engine hardening (S004 fast check)
+3. S005  progress events, ETA, cancel
+4. S006  sync report
+5. S007  volume discovery (Mac, then Linux)
+6. S008  CLI commands
+7. S009  TUI
+8. S010  multi-source and one-by-one session
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.
