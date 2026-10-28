@@ -50,6 +50,7 @@ Why: one line.
 - DEC-031 2026-10-28 — TUI hardening details left open by S018
 - DEC-032 2026-10-28 — S010 first part: core Session API, and the split of S010
 - DEC-033 2026-10-28 — S010 split accepted; worst outcome wins; F07 test change
+- DEC-034 2026-10-28 — one card after another in the CLI and TUI (S020)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -561,7 +562,8 @@ second quits at once (as the CLI's second Ctrl-C, INV-7); elsewhere it
 quits. No SIGINT handler in the TUI. The model makes a new core `Cancel`
 for each start and sets it itself, so a retry gets a fresh one.
 (4) One sync per TUI run (S010 adds the session). After a refusal the user
-can go back and start again; the report screen only quits. On quit the
+can go back and start again; the report screen only quits. Superseded by
+DEC-034 (2): one session per TUI run, and the report offers the next card. On quit the
 report is printed to stdout and the refusal to stderr; the exit code is
 `sync`'s; quitting mid-sync, or a worker that died before its result,
 exits 1.
@@ -679,3 +681,69 @@ may make both copies unreadable, which keeps its purpose, and a new test
 proves a readable twin is copied by the fallback.
 Why: a later sync must never hide an earlier one that was not safe, and
 backup mode must use the good card.
+
+## DEC-034  2026-10-28  one card after another in the CLI and TUI (S020)
+Tags: cli, tui, session, exit-codes, tests, gui
+Decision: agent's pick in S020, not yet confirmed by the user.
+(1) CLI: `photosync sync --dest <library> [--name <name>] [--source
+<card>...] --one-by-one`. After each sync it asks on stderr for the next
+card and reads one line from stdin: Enter alone takes every mounted card
+(discovery, as `photosync sources`) as the next sync, a line names one
+card by path, `q`, the end of the input or Ctrl-C finishes. Without
+`--source` it asks for the first card; none given is "No card was
+synced.", exit 2. A Ctrl-C during a sync cancels it and ends the session.
+Each sync's report is printed as it ends; after several, a session
+summary: one line per sync, the totals of all, and the session's result
+naming each sync that was not complete. The exit code is the session's
+worst (DEC-033 (2)). stdin at its end (`</dev/null`, a script) ends the
+session after its first card, so it never hangs. The prompt is read with
+`read(2)` byte by byte, not std's `read_line`, which retries after a
+signal and would make a Ctrl-C wait for Enter. `sync` takes the hidden
+`--search-root` too, for tests (DEC-028 (7)). Rejected: waiting for a
+newly mounted card by polling discovery (a swapped card often comes back
+at the same path, so "new" cannot be told from a path, and the wait
+needs a timeout to stay scriptable); syncing only cards not synced
+earlier (same reason).
+(2) TUI: one core `Session` per run, made by the first start; the library
+and name are fixed then. A name that is not a folder name is refused
+before the session is made, so it can still be fixed. The report and the
+refused screens take `n`, the next card: back to the cards, nothing
+picked, discovery again; from the cards Enter goes straight to Check, and
+Esc from Check back to the cards; Esc on the cards does nothing in a
+session. To change the library or the name, quit and start again.
+Rejected: re-targeting a session whose syncs were all refused (more core
+API for a typo; the refused sync would still count).
+(3) The model keeps the session as `flow::Shared` (`Arc<Mutex<Session>>`)
+and lends it to the worker in each `Job`. The worker unlocks before it
+sends `Finished` or `Crashed`; the model then reads the session's last
+run, and records a crash (`Crashed`, or `WorkerGone` before an end) with
+`Session::record_crash`. A lock poisoned by a panic is taken as is: the
+session records a run only at its end and marks its cleanup done before
+running it. `App::exit` never locks, as a sync may hold the session: the
+exit is kept from the last end. Quitting mid-sync exits 1, prints the
+session's report so far, and names this sync and every earlier one not
+complete.
+(4) Text: a session of one sync prints exactly the old report, refusal
+or crash sentence, so single syncs read as before. Several: "Sync N of
+M: <cards>" sections, "All syncs" totals, and "Result: NOT COMPLETE: k of
+M syncs not complete: sync N (<cards>): <what>; ..." A refused sync is
+named too (DEC-032 (2)).
+(5) Session memory (S010 fast check): the latest sync wins a library
+path it copied to or found; a file matching a library file that is its
+own earlier sync's (same path) is "already on drive". A different card
+at the same mount path holding the same photo is "already on drive" too:
+both are skipped, so it is safe.
+(6) Tests: `app::tests::a_later_sync_replaces_the_kept_failure` is
+rewritten as `a_later_sync_never_replaces_the_kept_failure` (DEC-033
+(2)). No real sync gives a refused report (`SyncError::Report`), and the
+model's input is now the session: `a_report_that_does_not_add_up_exits_1`
+checks that such a run maps to exit 1, and
+`a_failure_is_kept_after_going_back_and_quitting_elsewhere` uses a crash
+instead of it. App tests use real refused syncs on temp dirs and the
+real worker. `tests/common` is included once at the crate root, for the
+app and TUI tests. The CLI session on real copies is its own test binary,
+`tests/exfat_session.rs`, so it never runs beside `exfat_e2e.rs`, which
+counts the card's files.
+Why: the session's rules stay in the core and each front-end only asks
+for the next card, so no exit or message can say "safe to format" while
+any sync of the session was not complete.

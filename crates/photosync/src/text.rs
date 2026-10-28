@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use photosync_core::{
     CopyError, Counts, Event, EventKind, FailReason, FileOutcome, FileReport, FolderError,
-    MediaType, Phase, PlanError, Progress, Report, ScanError, SourceReport, SourceScan, SyncFolder,
-    Tally, TempCleanup,
+    MediaType, Phase, PlanError, Progress, Report, Run, RunEnd, ScanError, Session, SourceReport,
+    SourceScan, SyncFolder, Tally, TempCleanup, Verdict,
 };
 
 use crate::flow::{SyncError, Watch};
@@ -213,13 +213,9 @@ pub fn complete(totals: &Tally, sources: &[SourceReport]) -> bool {
 }
 
 /// The whole report: a section per source, overall totals, and a result
-/// line saying whether the cards are safe to format.
-pub fn report(report: &Report) -> String {
-    report_with(report, Vec::new())
-}
-
-/// `report`, with the session's library and folder under its title, so
-/// the report says where the photos went.
+/// line saying whether the cards are safe to format, with the session's
+/// library and folder under its title, so the report says where the
+/// photos went.
 pub fn report_in(report: &Report, library: &Path, folder: Option<&SyncFolder>) -> String {
     let folder = folder.map_or_else(
         || "none (nothing to copy)".to_string(),
@@ -238,20 +234,207 @@ fn report_with(report: &Report, header: Vec<String>) -> String {
     let mut out = Vec::new();
     out.push("Report".to_string());
     out.extend(header);
+    out.extend(report_body(report));
+    out.push(String::new());
+    out.push(result_line(&report.totals(), report.sources()));
+    out.join("\n") + "\n"
+}
+
+/// A report's sections, without its title and result line.
+fn report_body(report: &Report) -> Vec<String> {
+    let mut out = Vec::new();
     for source in report.sources() {
         out.push(String::new());
         out.extend(source_section(source));
     }
-    let totals = report.totals();
     if report.sources().len() > 1 {
         out.push(String::new());
         out.push("All sources".to_string());
-        out.extend(table(&report.by_type(), &totals));
+        out.extend(table(&report.by_type(), &report.totals()));
     }
     out.extend(library_section(report.library_failures(), report.temps()));
-    out.push(String::new());
-    out.push(result_line(&totals, report.sources()));
+    out
+}
+
+fn library_and_folder(session: &Session) -> Vec<String> {
+    let folder = session.folder().map_or_else(
+        || "none (nothing to copy)".to_string(),
+        |f| f.path().display().to_string(),
+    );
+    vec![
+        format!("Library {}", session.library().display()),
+        format!("Folder  {folder}"),
+    ]
+}
+
+/// "sync 2 (/Volumes/A, /Volumes/B)": a run, by its place in the session
+/// and its cards, so the user knows which cards are not safe.
+fn run_name(index: usize, run: &Run) -> String {
+    format!("sync {} ({})", index + 1, cards(run))
+}
+
+/// What a run left undone, in a few words, or "complete".
+fn run_state(run: &Run) -> String {
+    match &run.end {
+        RunEnd::Report(report) if report.is_complete() => "complete".to_string(),
+        RunEnd::Report(report) => {
+            let totals = report.totals();
+            let unreadable: usize = report.sources().iter().map(|s| s.unreadable.len()).sum();
+            format!(
+                "{} failed, {} cancelled, {} unreadable",
+                totals.failed.files, totals.cancelled.files, unreadable
+            )
+        }
+        RunEnd::Refused(SyncError::Report(_)) => "copied, but its report does not add up".into(),
+        RunEnd::Refused(_) => "refused, nothing copied".to_string(),
+        RunEnd::Crashed(what) => format!("stopped with an internal error ({what})"),
+    }
+}
+
+/// Each run that was not complete, named, with what it left undone; `None`
+/// when every run was complete.
+pub fn not_complete(session: &Session) -> Option<String> {
+    let each: Vec<String> = session
+        .not_complete()
+        .map(|(i, run)| format!("{}: {}", run_name(i, run), run_state(run)))
+        .collect();
+    (!each.is_empty()).then(|| each.join("; "))
+}
+
+/// The session's result line: the worst of its syncs. A session of one
+/// sync with a report says what that sync's report says.
+pub fn session_result(session: &Session) -> String {
+    if let [
+        Run {
+            end: RunEnd::Report(report),
+            ..
+        },
+    ] = session.runs()
+    {
+        return result_line(&report.totals(), report.sources());
+    }
+    let syncs = session.runs().len() as u64;
+    match not_complete(session) {
+        None => {
+            let totals = session.totals();
+            format!(
+                "Result: all {} on the drive ({} copied, {} already there), over {}.",
+                plural(totals.supported().files, MEDIA.0, MEDIA.1),
+                totals.copied.files,
+                totals.skipped.files,
+                plural(syncs, "sync", "syncs")
+            )
+        }
+        Some(each) => format!(
+            "Result: NOT COMPLETE: {} of {} not complete: {each}. Do not format the cards \
+             of those syncs. Fix the cause and sync them again: files already on the \
+             drive are skipped.",
+            session.not_complete().count(),
+            plural(syncs, "sync", "syncs")
+        ),
+    }
+}
+
+/// The sentence for a sync that stopped with no result.
+pub fn crash(what: &str) -> String {
+    format!(
+        "The copy stopped with an internal error ({what}), so nothing says which files are \
+         on the drive. Do not format the card. Run the same sync again: files already on \
+         the drive are skipped."
+    )
+}
+
+/// The whole session's report: each sync's report, refusal or crash in
+/// order, the totals of all of them and the session's result. A session of
+/// one sync gives that sync's report, word for word as the CLI prints it;
+/// `None` when that one sync has no report (its sentence says why).
+pub fn session_report(session: &Session) -> Option<String> {
+    match session.runs() {
+        []
+        | [
+            Run {
+                end: RunEnd::Refused(_) | RunEnd::Crashed(_),
+                ..
+            },
+        ] => None,
+        [
+            Run {
+                end: RunEnd::Report(report),
+                ..
+            },
+        ] => Some(report_in(report, session.library(), session.folder())),
+        runs => {
+            let mut out = vec!["Report".to_string()];
+            out.extend(library_and_folder(session));
+            for (i, run) in runs.iter().enumerate() {
+                out.push(String::new());
+                out.push(format!("Sync {} of {}: {}", i + 1, runs.len(), cards(run)));
+                match &run.end {
+                    RunEnd::Report(report) => {
+                        out.extend(report_body(report));
+                        out.push(format!(
+                            "  {}",
+                            result_line(&report.totals(), report.sources())
+                        ));
+                    }
+                    RunEnd::Refused(e) => out.push(format!("  {}", refusal(e))),
+                    RunEnd::Crashed(what) => out.push(format!("  {}", crash(what))),
+                }
+            }
+            out.extend(all_syncs(session));
+            Some(out.join("\n") + "\n")
+        }
+    }
+}
+
+/// The CLI's last words after several syncs, each already reported: one
+/// line per sync, the totals of all of them, and the session's result.
+pub fn session_summary(session: &Session) -> String {
+    let runs = session.runs();
+    let mut out = vec![format!(
+        "Session of {}",
+        plural(runs.len() as u64, "sync", "syncs")
+    )];
+    out.extend(library_and_folder(session));
+    for (i, run) in runs.iter().enumerate() {
+        out.push(format!("  {}: {}", run_name(i, run), run_state(run)));
+    }
+    out.extend(all_syncs(session));
     out.join("\n") + "\n"
+}
+
+fn all_syncs(session: &Session) -> Vec<String> {
+    let mut out = vec![String::new(), "All syncs".to_string()];
+    out.extend(table(&session.by_type(), &session.totals()));
+    out.push(String::new());
+    out.push(session_result(session));
+    out
+}
+
+fn cards(run: &Run) -> String {
+    let cards: Vec<String> = run
+        .sources
+        .iter()
+        .map(|s| s.display().to_string())
+        .collect();
+    cards.join(", ")
+}
+
+/// What to say on stderr when the session is over, beside its report: the
+/// refusal or the crash of a session of one sync, or, after several, the
+/// result naming each sync that was not complete; `None` when nothing is
+/// left to say.
+pub fn session_message(session: &Session) -> Option<String> {
+    match session.runs() {
+        [] => None,
+        [run] => match &run.end {
+            RunEnd::Report(_) => None,
+            RunEnd::Refused(e) => Some(refusal(e)),
+            RunEnd::Crashed(what) => Some(crash(what)),
+        },
+        _ if session.verdict() == Verdict::Complete => None,
+        _ => Some(session_result(session)),
+    }
 }
 
 /// The totals per type of one source, then every file that is not OK.
@@ -530,7 +713,7 @@ fn plan_refusal(err: &PlanError) -> String {
             p(&e.path),
             e.source
         ),
-        // `flow::sync` turns a cancelled plan into its report.
+        // The session turns a cancelled plan into its report.
         PlanError::Cancelled => "Cancelled before anything was copied.".to_string(),
     }
 }
@@ -559,7 +742,7 @@ fn copy_refusal(err: &CopyError) -> String {
             p(&e.path),
             e.source
         ),
-        // Only a plan and folder from two libraries; `flow::sync` never mixes them.
+        // Only a plan and folder from two libraries; a session never mixes them.
         CopyError::LibraryMismatch { .. } => {
             format!("Internal error: {err}. Nothing was copied.")
         }

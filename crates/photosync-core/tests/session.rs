@@ -401,3 +401,58 @@ fn a_sync_cancelled_while_planning_is_reported_and_the_session_goes_on() {
     assert_eq!(again.totals().skipped.files, 1);
     assert_eq!(session.verdict(), Verdict::NotComplete, "the cancel stays in the session");
 }
+
+/// S010 fast check: the same card synced again in one session is "already
+/// on drive", not a "duplicate in session" of itself: its files are the
+/// files that put the photos there.
+#[test]
+fn the_same_card_synced_again_is_already_on_drive_not_a_duplicate_of_itself() {
+    let dir = TempDir::new();
+    let (a, lib) = (dir.0.join("a"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw"), ("DCIM/100_FUJI/DSCF0001.JPG", b"jpg")]);
+    put(&lib, &[("2026-01-01/JPEG/DSCF0001.JPG", b"jpg")]);
+    let mut session = Session::new(&lib, None).unwrap();
+
+    assert!(report(sync(&mut session, &[&a])).is_complete());
+    let folder = session.folder().unwrap().path().to_path_buf();
+    let again = report(sync(&mut session, &[&a]));
+
+    for (name, on_drive) in [
+        ("DSCF0001.RAF", folder.join("RAW/DSCF0001.RAF")),
+        ("DSCF0001.JPG", lib.join("2026-01-01/JPEG/DSCF0001.JPG")),
+    ] {
+        match outcome(again, &a.join("DCIM/100_FUJI").join(name)) {
+            FileOutcome::AlreadySynced { library_file } => assert_eq!(*library_file, on_drive),
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+    assert!(again.is_complete());
+}
+
+/// S010 fast check: the session's memory names the right original. A
+/// library file a later sync copied to a path an earlier sync had used
+/// (the earlier copy was removed in between) holds the later sync's photo,
+/// so a twin of it on a third card is a duplicate of the later card's file.
+#[test]
+fn a_library_path_reused_by_a_later_sync_names_that_sync_as_the_original() {
+    let dir = TempDir::new();
+    let (a, b, c, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("c"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"first camera")]);
+    put(&b, &[("DCIM/100_FUJI/DSCF0001.RAF", b"other camera")]);
+    put(&c, &[("DCIM/100_FUJI/DSCF0001.RAF", b"other camera")]);
+    fs::create_dir_all(&lib).unwrap();
+    let mut session = Session::new(&lib, None).unwrap();
+
+    assert!(report(sync(&mut session, &[&a])).is_complete());
+    let copy = session.folder().unwrap().path().join("RAW/DSCF0001.RAF");
+    fs::remove_file(&copy).unwrap();
+    let second = report(sync(&mut session, &[&b]));
+    assert!(matches!(outcome(second, &b.join("DCIM/100_FUJI/DSCF0001.RAF")), FileOutcome::Copied { to } if *to == copy));
+    let third = report(sync(&mut session, &[&c]));
+
+    match outcome(third, &c.join("DCIM/100_FUJI/DSCF0001.RAF")) {
+        FileOutcome::DuplicateInSession { of } => assert_eq!(*of, b.join("DCIM/100_FUJI/DSCF0001.RAF")),
+        other => panic!("{other:?}"),
+    }
+    assert!(third.is_complete());
+}

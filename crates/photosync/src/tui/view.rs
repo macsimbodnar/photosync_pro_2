@@ -25,7 +25,7 @@ pub fn render(app: &App, frame: &mut Frame) {
     frame.render_widget(
         Line::from(vec![
             Span::from(" photosync ").bold().reversed(),
-            Span::from(format!("  {}", heading(app.screen()))),
+            Span::from(format!("  {}", heading(app))),
         ]),
         title,
     );
@@ -66,8 +66,16 @@ pub fn render(app: &App, frame: &mut Frame) {
     frame.render_widget(Line::from(keys_help(app.screen())).dim(), keys);
 }
 
-fn heading(screen: Screen) -> &'static str {
-    match screen {
+fn heading(app: &App) -> String {
+    if app.in_session() {
+        let next = app.syncs() + 1;
+        match app.screen() {
+            Screen::Sources => return format!("Sync {next}: pick the next card"),
+            Screen::Confirm => return format!("Sync {next}: check and start"),
+            _ => {}
+        }
+    }
+    match app.screen() {
         Screen::Sources => "1/5  Pick the cards to copy from",
         Screen::Drive => "2/5  Pick the drive to copy to",
         Screen::Library => "3/5  Library folder on the drive",
@@ -77,6 +85,7 @@ fn heading(screen: Screen) -> &'static str {
         Screen::Refused => "Stopped, no report",
         Screen::Report => "Report",
     }
+    .to_string()
 }
 
 /// Must match what `App::update` does on each screen.
@@ -87,8 +96,8 @@ pub fn keys_help(screen: Screen) -> &'static str {
         Screen::Library | Screen::Name => " type to edit   Enter next   Esc back   Ctrl-C quit",
         Screen::Confirm => " Enter start copying   Esc back   q quit",
         Screen::Running => " c cancel   Ctrl-C twice quits at once",
-        Screen::Refused => " Enter back, to fix it   q quit",
-        Screen::Report => " ↑↓ PgUp PgDn scroll   q quit",
+        Screen::Refused => " Enter back, to fix it   n next card   q quit",
+        Screen::Report => " ↑↓ PgUp PgDn scroll   n next card   q quit",
     }
 }
 
@@ -177,10 +186,19 @@ fn confirm(app: &App, frame: &mut Frame, area: Rect) {
     lines.push(Line::from(format!("  {}", app.library().trim())));
     lines.push(Line::from(""));
     lines.push(Line::from("New photos go to the folder:".bold()));
-    lines.push(Line::from(format!(
-        "  {}   (the date of the earliest new photo)",
-        app.folder_preview()
-    )));
+    let fixed = if app.session_folder().is_some() {
+        "(this session's folder)"
+    } else {
+        "(the date of the earliest new photo)"
+    };
+    lines.push(Line::from(format!("  {}   {fixed}", app.folder_preview())));
+    if app.in_session() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!(
+            "Sync {} of this session: the library and name stay as they are. Quit (q) to change them.",
+            app.syncs() + 1
+        )));
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(
         "The cards are only read. Photos already in the library are skipped.",
@@ -283,7 +301,7 @@ fn outcome(app: &App, frame: &mut Frame, area: Rect) {
             complete,
         }) => {
             let [top, rest] =
-                Layout::vertical([Constraint::Length(4), Constraint::Min(0)]).areas(area);
+                Layout::vertical([Constraint::Length(5), Constraint::Min(0)]).areas(area);
             let color = if *complete { Color::Green } else { Color::Red };
             frame.render_widget(
                 Paragraph::new(result.as_str())
@@ -505,7 +523,6 @@ mod tests {
     fn refused_screen_shows_the_sentence() {
         let app = App::with_outcome_for_test(Outcome::Refused {
             sentence: "The library /x is on /c, which is a camera card.".into(),
-            code: 2,
         });
         let screen = draw(&app, 100, 10);
         assert!(has(

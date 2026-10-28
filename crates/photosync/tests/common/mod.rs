@@ -130,3 +130,42 @@ where
         stderr: String::from_utf8(stderr).unwrap(),
     }
 }
+
+/// `photosync(args)` with `input` on stdin, then the end of the input.
+/// Fails the test, and kills the binary, if it runs for over a minute: a
+/// prompt that waits for input nobody gives would hang the suite.
+pub fn photosync_fed<I, S>(args: I, input: &[u8]) -> Run
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new(binary())
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    // A binary that exits before reading it all closes the pipe: fine.
+    let _ = child.stdin.take().unwrap().write_all(input);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(child.wait_with_output().unwrap()));
+    let Ok(Output {
+        status,
+        stdout,
+        stderr,
+    }) = rx.recv_timeout(Duration::from_secs(60))
+    else {
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+        panic!("photosync hangs on its input");
+    };
+    Run {
+        code: status.code().unwrap_or(-1),
+        stdout: String::from_utf8(stdout).unwrap(),
+        stderr: String::from_utf8(stderr).unwrap(),
+    }
+}

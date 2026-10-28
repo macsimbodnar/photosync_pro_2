@@ -6,14 +6,19 @@
 //! `App::update` takes a `Msg` and returns the `Effect` the front-end must
 //! run: look for volumes, start the sync on a worker thread (`worker`), or
 //! quit. The model does no I/O itself, so it is tested without a terminal.
-//! Every sync rule stays in the core, reached through `flow` (INV-8).
+//!
+//! One core `Session` lasts the whole run, one card after another: the
+//! library and name are fixed by the first start, and the session keeps
+//! the folder, what earlier cards put on the drive, and the worst outcome.
+//! The model only shows what the session says (INV-8, `flow`).
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-use photosync_core::{Cancel, Event, Progress, Report, Volumes};
+use photosync_core::{Cancel, Event, Progress, RunEnd, Session, Verdict, Volumes};
 
-use crate::args::{EXIT_INCOMPLETE, EXIT_OK, EXIT_REFUSED};
-use crate::flow::SyncError;
+use crate::args::{EXIT_INCOMPLETE, EXIT_OK, exit_code};
+use crate::flow::{self, Shared, SyncError};
 use crate::text;
 
 /// The screens, in the order a sync goes through them.
@@ -53,12 +58,14 @@ pub enum Msg {
     /// The worker scanned a source: `text::scanned`'s line.
     Scanned(String),
     Progress(Event),
-    /// The sync is over.
-    Finished(Result<Report, SyncError>),
+    /// The sync is over: its end is the session's last run.
+    Finished,
     /// The worker is gone. After `Finished` that is normal; before it, the
-    /// worker died, and nothing says what is on the drive.
+    /// worker died, and nothing says what is on the drive: the model
+    /// records a crash in the session.
     WorkerGone,
     /// The sync panicked, with the panic's text: it ended with no result.
+    /// The model records it in the session (`Session::record_crash`).
     Crashed(String),
 }
 
@@ -72,14 +79,27 @@ pub enum Effect {
     Quit,
 }
 
-/// One sync to run. `cancel` is shared with the model, which sets it on the
-/// cancel key; the core checks it between files and chunks (DEC-021 (5)).
+/// One sync to run in the session. `cancel` is shared with the model,
+/// which sets it on the cancel key; the core checks it between files and
+/// chunks (DEC-021 (5)).
 #[derive(Debug)]
 pub struct Job {
+    /// Locked by the worker while the sync runs; the model does not touch
+    /// it until the sync's end.
+    pub session: Shared,
     pub sources: Vec<PathBuf>,
-    pub library: PathBuf,
-    pub name: Option<String>,
     pub cancel: Cancel,
+}
+
+#[cfg(test)]
+impl Job {
+    pub fn library(&self) -> PathBuf {
+        flow::lock(&self.session).library().to_path_buf()
+    }
+
+    pub fn name(&self) -> Option<String> {
+        flow::lock(&self.session).name().map(String::from)
+    }
 }
 
 /// A sync that is running.
@@ -92,38 +112,30 @@ pub struct Running {
     /// The cancel key was pressed; the core stops at the next check.
     pub cancelling: bool,
     cancel: Cancel,
+    /// The cards of this sync, to name them if it ends with no result.
+    sources: Vec<PathBuf>,
 }
 
-/// How the last sync ended.
+/// How the last sync ended, as its screen shows it.
 #[derive(Debug)]
 pub enum Outcome {
     Report {
-        /// `text::report`'s lines: the CLI's report, word for word.
+        /// `text::session_report`'s lines: every sync of the session, and
+        /// for one sync the CLI's report, word for word.
         lines: Vec<String>,
-        /// `text::result_line`: says whether the cards are safe to format.
+        /// `text::session_result`: whether the cards are safe to format.
         result: String,
         complete: bool,
     },
     Refused {
-        /// `text::refusal`'s sentence.
+        /// `text::refusal`'s or `text::crash`'s sentence, then, after
+        /// several syncs, the session's result.
         sentence: String,
-        code: u8,
     },
 }
 
-impl Outcome {
-    pub fn from_report(report: &Report) -> Outcome {
-        let totals = report.totals();
-        Outcome::Report {
-            lines: text::report(report).lines().map(String::from).collect(),
-            result: text::result_line(&totals, report.sources()),
-            complete: text::complete(&totals, report.sources()),
-        }
-    }
-}
-
 /// What the process says and returns once the front-end has quit.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Exit {
     pub code: u8,
     /// For stdout: the report, so it outlives the screen.
@@ -157,9 +169,21 @@ pub struct App {
     /// One line about the last key, e.g. why Enter did nothing.
     hint: Option<String>,
     running: Option<Running>,
-    /// The last sync's end. Only a later sync's end replaces it, so going
-    /// back after a failure never turns the exit into 0 (S018).
+    /// Made by the first start, with its library and name; kept to the end.
+    session: Option<Shared>,
+    /// The last sync's end, for its screen.
     outcome: Option<Outcome>,
+    /// The exit as the session said at the last sync's end: its worst
+    /// outcome (DEC-033). Kept here so that quitting never waits for the
+    /// worker's lock; only a later end changes it, and the session never
+    /// forgets a sync, so no later sync can hide an earlier failure.
+    ended: Option<Exit>,
+    /// Each sync of the session that was not complete, named, as of the
+    /// last end (`text::not_complete`).
+    not_complete: Option<String>,
+    /// The session's folder and number of syncs, as of the last end.
+    folder: Option<PathBuf>,
+    syncs: usize,
     /// Ctrl-C was pressed while cancelling: quit at once (INV-7 makes it
     /// safe), as the CLI's second Ctrl-C does (DEC-028 (5)).
     quit_while_running: bool,
@@ -188,7 +212,12 @@ impl App {
             scroll: 0,
             hint: None,
             running: None,
+            session: None,
             outcome: None,
+            ended: None,
+            not_complete: None,
+            folder: None,
+            syncs: 0,
             quit_while_running: false,
         }
     }
@@ -250,6 +279,19 @@ impl App {
     pub fn outcome(&self) -> Option<&Outcome> {
         self.outcome.as_ref()
     }
+    /// Whether a session is open: its library and name are then fixed, and
+    /// the next card goes from the cards straight to Confirm.
+    pub fn in_session(&self) -> bool {
+        self.session.is_some()
+    }
+    /// The syncs the session has ended so far.
+    pub fn syncs(&self) -> usize {
+        self.syncs
+    }
+    /// The session's folder, once a sync fixed it.
+    pub fn session_folder(&self) -> Option<&Path> {
+        self.folder.as_deref()
+    }
 
     /// The sentence shown when a list is empty.
     pub fn empty_list_note(&self) -> &'static str {
@@ -259,8 +301,12 @@ impl App {
         }
     }
 
-    /// The sync folder's name as it will look, the date still unknown.
+    /// The sync folder's name: the session's, once a sync fixed it, or as
+    /// it will look, the date still unknown.
     pub fn folder_preview(&self) -> String {
+        if let Some(name) = self.session_folder().and_then(Path::file_name) {
+            return name.to_string_lossy().into_owned();
+        }
         match self.name_arg() {
             Some(name) => format!("<date> - {name}"),
             None => "<date>".to_string(),
@@ -295,34 +341,89 @@ impl App {
                 }
                 None
             }
-            Msg::Finished(result) => {
-                self.finished(result);
+            Msg::Finished => {
+                self.ended(None);
                 None
             }
             Msg::WorkerGone => {
-                self.died("The copy stopped with an internal error");
+                self.ended(Some("its thread ended without a result".into()));
                 None
             }
             Msg::Crashed(text) => {
-                self.died(&format!("The copy stopped with an internal error ({text})"));
+                self.ended(Some(text));
                 None
             }
         }
     }
 
-    /// The sync ended with no result. After `Finished` this changes nothing.
-    fn died(&mut self, what: &str) {
-        if self.running.take().is_some() {
-            self.outcome = Some(Outcome::Refused {
-                sentence: format!(
-                    "{what}, so nothing says which files are on the drive. Do not format \
-                     the card. Run the same sync again: files already on the drive are \
-                     skipped."
-                ),
-                code: EXIT_INCOMPLETE,
-            });
-            self.screen = Screen::Refused;
+    /// The running sync is over: `crashed` if it ended with no result,
+    /// which goes into the session as a crash. After the end, a later
+    /// `WorkerGone` changes nothing.
+    fn ended(&mut self, crashed: Option<String>) {
+        let Some(run) = self.running.take() else {
+            return;
+        };
+        let Some(shared) = self.session.clone() else {
+            return;
+        };
+        // The worker sends its end after unlocking: this never waits.
+        let mut session = flow::lock(&shared);
+        if let Some(what) = crashed {
+            session.record_crash(&run.sources, what);
         }
+        self.show(&session);
+    }
+
+    /// Takes what the session says now: the screen for its last sync, and
+    /// the exit for its worst.
+    fn show(&mut self, session: &Session) {
+        self.scroll = 0;
+        self.folder = session.folder().map(|f| f.path().to_path_buf());
+        self.syncs = session.runs().len();
+        self.not_complete = text::not_complete(session);
+        let report = text::session_report(session);
+        self.ended = Some(Exit {
+            code: exit_code(session.verdict()),
+            report: report.clone(),
+            message: text::session_message(session),
+        });
+        let Some(last) = session.runs().last() else {
+            return;
+        };
+        let several = self.syncs > 1;
+        let sentence = |first: String| {
+            if several {
+                format!("{first}\n\n{}", text::session_result(session))
+            } else {
+                first
+            }
+        };
+        (self.outcome, self.screen) = match &last.end {
+            RunEnd::Report(_) => (
+                Some(Outcome::Report {
+                    lines: report
+                        .unwrap_or_default()
+                        .lines()
+                        .map(String::from)
+                        .collect(),
+                    result: text::session_result(session),
+                    complete: session.verdict() == Verdict::Complete,
+                }),
+                Screen::Report,
+            ),
+            RunEnd::Refused(e) => (
+                Some(Outcome::Refused {
+                    sentence: sentence(text::refusal(e)),
+                }),
+                Screen::Refused,
+            ),
+            RunEnd::Crashed(what) => (
+                Some(Outcome::Refused {
+                    sentence: sentence(text::crash(what)),
+                }),
+                Screen::Refused,
+            ),
+        };
     }
 
     fn key(&mut self, key: Key) -> Option<Effect> {
@@ -360,7 +461,12 @@ impl App {
                     );
                     None
                 }
-                Key::Enter => Some(Effect::Start(self.start())),
+                Key::Enter => self.start().map(Effect::Start),
+                // In a session the drive, library and name are fixed.
+                Key::Esc if self.in_session() => {
+                    self.screen = Screen::Sources;
+                    None
+                }
                 Key::Esc => {
                     self.screen = Screen::Name;
                     None
@@ -388,6 +494,7 @@ impl App {
                     self.screen = Screen::Confirm;
                     None
                 }
+                Key::Char('n') if self.in_session() => self.next_card(),
                 Key::Char('q') => Some(Effect::Quit),
                 _ => None,
             },
@@ -420,9 +527,17 @@ impl App {
                         }
                     }
                 }
-                self.go_to_drive();
+                if self.in_session() {
+                    self.screen = Screen::Confirm;
+                } else {
+                    self.go_to_drive();
+                }
             }
             Key::Char('r') => return Some(Effect::Discover),
+            // The first screen of a session's next card: there is no back.
+            Key::Esc if self.in_session() => {
+                self.hint = Some("Pick the next card, or press q to quit.".into());
+            }
             Key::Char('q') | Key::Esc => return Some(Effect::Quit),
             _ => {}
         }
@@ -463,10 +578,21 @@ impl App {
             Key::Down => self.scroll = (self.scroll + 1).min(last),
             Key::PageUp => self.scroll = self.scroll.saturating_sub(PAGE),
             Key::PageDown => self.scroll = (self.scroll + PAGE).min(last),
+            Key::Char('n') => return self.next_card(),
             Key::Enter | Key::Esc | Key::Char('q') => return Some(Effect::Quit),
             _ => {}
         }
         None
+    }
+
+    /// Back to the cards for the next one, in the same session: same
+    /// library, name and folder. Discovery runs again, as the card was
+    /// swapped; nothing stays picked.
+    fn next_card(&mut self) -> Option<Effect> {
+        self.picked.clear();
+        self.cursor = 0;
+        self.screen = Screen::Sources;
+        Some(Effect::Discover)
     }
 
     fn move_cursor(&mut self, key: Key, len: usize) {
@@ -513,44 +639,52 @@ impl App {
         }
     }
 
-    fn start(&mut self) -> Job {
+    /// The job for the picked cards, in the session, which the first start
+    /// makes. A name that is not one folder name is refused here, before
+    /// any card is read, and no session is made: the name can be fixed.
+    fn start(&mut self) -> Option<Job> {
+        let session = match &self.session {
+            Some(session) => session.clone(),
+            None => {
+                let library = PathBuf::from(self.library.trim());
+                match flow::start(&library, self.name_arg().as_deref()) {
+                    Ok(session) => {
+                        let session = Arc::new(Mutex::new(session));
+                        self.session = Some(session.clone());
+                        session
+                    }
+                    Err(e) => {
+                        self.refused_before_session(&e);
+                        return None;
+                    }
+                }
+            }
+        };
         let cancel = Cancel::new();
         self.running = Some(Running {
             scanned: Vec::new(),
             progress: None,
             cancelling: false,
             cancel: cancel.clone(),
+            sources: self.picked.clone(),
         });
         self.screen = Screen::Running;
-        Job {
+        Some(Job {
+            session,
             sources: self.picked.clone(),
-            library: PathBuf::from(self.library.trim()),
-            name: self.name_arg(),
             cancel,
-        }
+        })
     }
 
-    fn finished(&mut self, result: Result<Report, SyncError>) {
-        self.running = None;
-        self.scroll = 0;
-        match result {
-            Ok(report) => {
-                self.outcome = Some(Outcome::from_report(&report));
-                self.screen = Screen::Report;
-            }
-            Err(e) => {
-                let code = match e {
-                    // Files may be on the drive, but nothing says which.
-                    SyncError::Report(_) => EXIT_INCOMPLETE,
-                    _ => EXIT_REFUSED,
-                };
-                self.outcome = Some(Outcome::Refused {
-                    sentence: text::refusal(&e),
-                    code,
-                });
-                self.screen = Screen::Refused;
-            }
-        }
+    fn refused_before_session(&mut self, e: &SyncError) {
+        let sentence = text::refusal(e);
+        self.ended = Some(Exit {
+            code: crate::args::EXIT_REFUSED,
+            report: None,
+            message: Some(sentence.clone()),
+        });
+        self.outcome = Some(Outcome::Refused { sentence });
+        self.screen = Screen::Refused;
     }
 
     fn volumes(&mut self, volumes: Volumes) {
@@ -578,45 +712,44 @@ impl App {
     }
 
     /// The exit code and what to print once the front-end has quit: the
-    /// same codes as the CLI (`args`).
+    /// same codes as the CLI (`args`), for the worst sync of the session,
+    /// and its report so far. Never locks the session: a sync may hold it.
     pub fn exit(&self) -> Exit {
-        if self.running.is_some() {
+        if let Some(run) = &self.running {
             // Quit mid-copy: INV-7 keeps the drive safe, but some files
             // are not on it.
             let quit = if self.quit_while_running {
-                "Quit during the sync"
+                "Quit during"
             } else {
-                "The sync did not finish"
+                "Did not finish"
             };
+            let mut message = format!(
+                "{quit} sync {} ({}): not every file is known to be on the drive. Do not \
+                 format the card. Run the same sync again: files already on the drive are \
+                 skipped.",
+                self.syncs + 1,
+                run.sources
+                    .iter()
+                    .map(|s| s.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            if let Some(earlier) = &self.not_complete {
+                message.push_str(&format!(
+                    " Not complete earlier in this session: {earlier}."
+                ));
+            }
             return Exit {
                 code: EXIT_INCOMPLETE,
-                report: None,
-                message: Some(format!(
-                    "{quit}: not every file is known to be on the drive. Do not format \
-                     the card. Run the same sync again: files already on the drive are \
-                     skipped."
-                )),
+                report: self.ended.as_ref().and_then(|e| e.report.clone()),
+                message: Some(message),
             };
         }
-        match &self.outcome {
-            None => Exit {
-                code: EXIT_OK,
-                report: None,
-                message: None,
-            },
-            Some(Outcome::Report {
-                lines, complete, ..
-            }) => Exit {
-                code: if *complete { EXIT_OK } else { EXIT_INCOMPLETE },
-                report: Some(lines.join("\n") + "\n"),
-                message: None,
-            },
-            Some(Outcome::Refused { sentence, code }) => Exit {
-                code: *code,
-                report: None,
-                message: Some(sentence.clone()),
-            },
-        }
+        self.ended.clone().unwrap_or(Exit {
+            code: EXIT_OK,
+            report: None,
+            message: None,
+        })
     }
 }
 
@@ -633,12 +766,15 @@ fn edit(field: &mut String, key: Key) {
 
 #[cfg(test)]
 mod tests {
-    use std::io;
+    use std::sync::mpsc;
     use std::time::Duration;
 
-    use photosync_core::{Counts, EventKind, Phase, PlanError, ScanError, SourceProgress};
+    use photosync_core::{Counts, EventKind, Phase, ReportError, Run, SourceProgress};
 
     use super::*;
+    use crate::args::EXIT_REFUSED;
+    use crate::common::{TempDir, at, write_file};
+    use crate::worker;
 
     fn found(sources: &[&str], drives: &[&str]) -> Volumes {
         Volumes {
@@ -673,6 +809,30 @@ mod tests {
         }
     }
 
+    /// Runs `job` on the real worker and gives the model every message,
+    /// then the channel's end, as the TUI's loop does.
+    fn run_job(app: &mut App, job: Job) {
+        let (tx, rx) = mpsc::channel();
+        worker::spawn(job, move |m| tx.send(m).unwrap());
+        for msg in rx {
+            app.update(msg);
+        }
+        app.update(Msg::WorkerGone);
+    }
+
+    /// A card with one photo, in a temp dir: on the library's device, so a
+    /// sync of it is refused (INV-10), unless the library is missing.
+    fn temp_card(dir: &TempDir) -> String {
+        let card = dir.0.join("CARD");
+        write_file(
+            &card,
+            "DCIM/100_FUJI/DSCF0001.RAF",
+            b"raw",
+            at(1_700_000_000),
+        );
+        card.display().to_string()
+    }
+
     /// Through every screen to the job, with the default library.
     #[test]
     fn pick_card_drive_library_and_name_then_start() {
@@ -697,8 +857,8 @@ mod tests {
         let job = start(&mut app);
         assert_eq!(app.screen(), Screen::Running);
         assert_eq!(job.sources, [PathBuf::from("/V/CARD2")]);
-        assert_eq!(job.library, PathBuf::from("/V/USB/Photos"));
-        assert_eq!(job.name.as_deref(), Some("Tirana"));
+        assert_eq!(job.library(), PathBuf::from("/V/USB/Photos"));
+        assert_eq!(job.name().as_deref(), Some("Tirana"));
         assert!(!job.cancel.is_cancelled());
     }
 
@@ -793,7 +953,7 @@ mod tests {
         let mut app = app(&["/V/CARD"], &["/V/SSD"]);
         keys(&mut app, &[Key::Enter, Key::Enter, Key::Enter, Key::Enter]);
         assert_eq!(app.folder_preview(), "<date>");
-        assert_eq!(start(&mut app).name, None);
+        assert_eq!(start(&mut app).name(), None);
     }
 
     #[test]
@@ -899,15 +1059,18 @@ mod tests {
     /// back, fix and start again with a fresh cancel.
     #[test]
     fn refusal_shows_the_cli_sentence_and_allows_a_retry() {
-        let (mut app, job) = running();
+        let dir = TempDir::new();
+        let card = temp_card(&dir);
+        let mut app = app(&[&card], &["/V/SSD"]);
+        keys(&mut app, &[Key::Enter, Key::Enter, Key::Enter, Key::Enter]);
+        let job = start(&mut app);
         keys(&mut app, &[Key::CtrlC]);
         assert!(job.cancel.is_cancelled());
-        let err = SyncError::Plan(PlanError::Library(ScanError {
-            path: PathBuf::from("/V/SSD/Photos"),
-            source: io::Error::from(io::ErrorKind::NotFound),
-        }));
-        let sentence = text::refusal(&err);
-        app.update(Msg::Finished(Err(err)));
+        run_job(&mut app, job);
+        let Some(Outcome::Refused { sentence }) = app.outcome() else {
+            panic!("not refused: {app:?}");
+        };
+        let sentence = sentence.clone();
         assert_eq!(app.screen(), Screen::Refused);
         assert!(sentence.starts_with("The library folder /V/SSD/Photos does not exist."));
         let exit = app.exit();
@@ -925,13 +1088,18 @@ mod tests {
         assert!(!again.cancel.is_cancelled());
     }
 
+    /// The session decides the exit now: a sync whose report was refused
+    /// after copying is not complete, so the exit is 1. No real sync can
+    /// give one, so the run is built here.
     #[test]
     fn a_report_that_does_not_add_up_exits_1() {
-        let (mut app, _job) = running();
-        app.update(Msg::Finished(Err(SyncError::Report(
-            photosync_core::ReportError::SourceTwice(PathBuf::from("/V/CARD")),
-        ))));
-        assert_eq!(app.exit().code, EXIT_INCOMPLETE);
+        let run = Run {
+            sources: vec![PathBuf::from("/V/CARD")],
+            end: RunEnd::Refused(SyncError::Report(ReportError::SourceTwice(PathBuf::from(
+                "/V/CARD",
+            )))),
+        };
+        assert_eq!(exit_code(run.verdict()), EXIT_INCOMPLETE);
     }
 
     #[test]
@@ -949,17 +1117,14 @@ mod tests {
     /// elsewhere must not exit 0 or lose the sentence.
     #[test]
     fn a_failure_is_kept_after_going_back_and_quitting_elsewhere() {
-        let report_error = || {
-            Msg::Finished(Err(SyncError::Report(
-                photosync_core::ReportError::SourceTwice(PathBuf::from("/V/CARD")),
-            )))
-        };
+        // A refused report cannot come from a real sync any more, now the
+        // session gives the end: a crash is the other way to exit 1.
         for (what, end) in [
             (
                 "worker gone",
                 Box::new(|| Msg::WorkerGone) as Box<dyn Fn() -> Msg>,
             ),
-            ("report error", Box::new(report_error)),
+            ("crashed", Box::new(|| Msg::Crashed("boom".into()))),
         ] {
             for back in [Key::Enter, Key::Esc] {
                 let (mut app, _job) = running();
@@ -982,24 +1147,44 @@ mod tests {
         }
     }
 
-    /// A later sync's end replaces the kept outcome: the last sync is what
-    /// says whether the card is safe.
+    /// DEC-033, rewritten by the user's ruling: across a session the worst
+    /// outcome wins. A later sync refused before copying (2 alone) does not
+    /// replace an earlier crash: the exit stays 1, and the message names
+    /// the crashed sync, and the refused one too.
     #[test]
-    fn a_later_sync_replaces_the_kept_failure() {
+    fn a_later_sync_never_replaces_the_kept_failure() {
         let (mut app, _job) = running();
         app.update(Msg::WorkerGone);
         keys(&mut app, &[Key::Enter]);
-        let _again = start(&mut app);
-        // While it runs, quitting is not complete either.
-        assert_eq!(app.exit().code, EXIT_INCOMPLETE);
-        let err = SyncError::Plan(PlanError::Library(ScanError {
-            path: PathBuf::from("/V/SSD/Photos"),
-            source: io::Error::from(io::ErrorKind::NotFound),
-        }));
-        let sentence = text::refusal(&err);
-        app.update(Msg::Finished(Err(err)));
+        let again = start(&mut app);
+        // While it runs, quitting is not complete either, and says why.
+        let quit = app.exit();
+        assert_eq!(quit.code, EXIT_INCOMPLETE);
+        assert!(
+            quit.message
+                .unwrap()
+                .contains("sync 1 (/V/CARD): stopped with an internal error")
+        );
+        // `/V/CARD` does not exist: the retry is refused at its scan.
+        run_job(&mut app, again);
+        assert_eq!(app.screen(), Screen::Refused);
+
         let exit = app.exit();
-        assert_eq!((exit.code, exit.message), (EXIT_REFUSED, Some(sentence)));
+        assert_eq!(exit.code, EXIT_INCOMPLETE, "{exit:?}");
+        let message = exit.message.unwrap();
+        for part in [
+            "Result: NOT COMPLETE: 2 of 2 syncs not complete: ",
+            "sync 1 (/V/CARD): stopped with an internal error (its thread ended without a result)",
+            "sync 2 (/V/CARD): refused, nothing copied",
+            "Do not format the cards",
+        ] {
+            assert!(message.contains(part), "{part}: {message}");
+        }
+        let report = exit.report.unwrap();
+        assert!(
+            report.contains("Sync 2 of 2: /V/CARD\n  Cannot read /V/CARD"),
+            "{report}"
+        );
     }
 
     /// `r` on the drive screen can drop the only picked card: Confirm then
@@ -1051,5 +1236,133 @@ mod tests {
         app.update(Msg::Volumes(found(&["/V/B"], &["/V/SSD"])));
         assert_eq!(app.picked(), [PathBuf::from("/V/B")]);
         assert_eq!(app.cursor(), 0);
+    }
+
+    /// S020: a crash, by panic or by a worker gone, is recorded in the
+    /// session itself, so the session's verdict and report hold it.
+    #[test]
+    fn a_crash_is_recorded_in_the_session() {
+        for (end, what) in [
+            (
+                Msg::Crashed("index out of bounds".into()),
+                "index out of bounds",
+            ),
+            (Msg::WorkerGone, "its thread ended without a result"),
+        ] {
+            let (mut app, job) = running();
+            app.update(end);
+            let session = flow::lock(&job.session);
+            assert_eq!(session.verdict(), Verdict::NotComplete);
+            match session.runs() {
+                [run] => {
+                    assert_eq!(run.sources, [PathBuf::from("/V/CARD")]);
+                    assert!(
+                        matches!(&run.end, RunEnd::Crashed(w) if w == what),
+                        "{run:?}"
+                    );
+                }
+                runs => panic!("{} runs", runs.len()),
+            }
+        }
+    }
+
+    /// S020: after a sync, `n` goes back to the cards for the next one in
+    /// the same session: the same library, name and session, with nothing
+    /// picked and the cards looked for again. The fixed drive, library and
+    /// name screens are skipped both ways.
+    #[test]
+    fn next_card_goes_on_in_the_same_session() {
+        let mut app = app(&["/V/CARD", "/V/CARD2"], &["/V/SSD"]);
+        keys(&mut app, &[Key::Enter, Key::Enter, Key::Enter]);
+        typed(&mut app, "Tirana");
+        keys(&mut app, &[Key::Enter]);
+        let first = start(&mut app);
+        let session = first.session.clone();
+        run_job(&mut app, first);
+        assert_eq!(app.screen(), Screen::Refused);
+
+        assert!(matches!(
+            keys(&mut app, &[Key::Char('n')])[..],
+            [Effect::Discover]
+        ));
+        assert_eq!(app.screen(), Screen::Sources);
+        assert!(app.picked().is_empty());
+        assert!(
+            keys(&mut app, &[Key::Esc]).is_empty(),
+            "Esc quit the session"
+        );
+        keys(&mut app, &[Key::Down, Key::Enter]);
+        assert_eq!(
+            app.screen(),
+            Screen::Confirm,
+            "the fixed screens were not skipped"
+        );
+        keys(&mut app, &[Key::Esc]);
+        assert_eq!(app.screen(), Screen::Sources);
+        keys(&mut app, &[Key::Enter]);
+        let next = start(&mut app);
+
+        assert!(Arc::ptr_eq(&next.session, &session), "a new session");
+        assert_eq!(next.sources, [PathBuf::from("/V/CARD2")]);
+        assert_eq!(next.library(), PathBuf::from("/V/SSD/Photos"));
+        assert_eq!(next.name().as_deref(), Some("Tirana"));
+        run_job(&mut app, next);
+        assert_eq!(flow::lock(&session).runs().len(), 2);
+        assert_eq!(app.syncs(), 2);
+    }
+
+    /// S020: quitting during a later sync names every earlier sync that was
+    /// not complete, as well as the one that did not finish.
+    #[test]
+    fn quitting_mid_sync_names_the_earlier_failures_too() {
+        let (mut app, _job) = running();
+        app.update(Msg::Crashed("boom".into()));
+        keys(&mut app, &[Key::Char('n'), Key::Enter]);
+        let _again = start(&mut app);
+        keys(&mut app, &[Key::CtrlC, Key::CtrlC]);
+
+        let exit = app.exit();
+        assert_eq!(exit.code, EXIT_INCOMPLETE);
+        let message = exit.message.unwrap();
+        assert!(
+            message.starts_with("Quit during sync 2 (/V/CARD): "),
+            "{message}"
+        );
+        assert!(
+            message.contains(
+                "Not complete earlier in this session: sync 1 (/V/CARD): stopped with an \
+                 internal error (boom)."
+            ),
+            "{message}"
+        );
+    }
+
+    /// A name that cannot be a folder name is refused before any card is
+    /// read, and opens no session: going back, the name can be fixed.
+    #[test]
+    fn an_invalid_name_is_refused_and_can_still_be_fixed() {
+        let mut app = app(&["/V/CARD"], &["/V/SSD"]);
+        keys(&mut app, &[Key::Enter, Key::Enter, Key::Enter]);
+        typed(&mut app, "a/b");
+        keys(&mut app, &[Key::Enter]);
+        assert!(app.update(Msg::Key(Key::Enter)).is_none(), "started");
+        assert_eq!(app.screen(), Screen::Refused);
+        assert!(!app.in_session());
+        let exit = app.exit();
+        assert_eq!(exit.code, EXIT_REFUSED);
+        assert!(
+            exit.message
+                .unwrap()
+                .starts_with("The name \"a/b\" cannot be a folder name.")
+        );
+
+        keys(&mut app, &[Key::Enter, Key::Esc]);
+        assert_eq!(app.screen(), Screen::Name);
+        for _ in 0..3 {
+            keys(&mut app, &[Key::Backspace]);
+        }
+        typed(&mut app, "Tirana");
+        keys(&mut app, &[Key::Enter]);
+        assert_eq!(start(&mut app).name().as_deref(), Some("Tirana"));
     }
 }

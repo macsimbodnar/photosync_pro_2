@@ -16,20 +16,25 @@ Run `photosync` with no command, in a terminal, for the interactive view
 folder on it (default `<drive>/Photos`; it must exist), an optional name,
 then check and start. It shows the progress with an ETA, then the report,
 which is printed again when you quit. The exit code is the same as `sync`'s.
-After a refusal you can go back and try again; until a later sync ends,
-quitting from any screen still prints the refusal and keeps its exit code.
-Without a terminal (stdin or stdout redirected), `photosync` alone prints
-the usage and exits 2.
+After the report, `n` takes the next card (one card reader: swap the card)
+into the same session: the same library, name and folder, straight to the
+check. The report then shows every card of the session and the totals of
+all. After a refusal you can go back and try again, or take the next card.
+The exit code and the message on quitting are the worst of the session:
+a sync that was not complete is named, and no later sync hides it. To
+change the library or the name, quit and start again. Without a terminal
+(stdin or stdout redirected), `photosync` alone prints the usage and exits
+2.
 
 | Screen | Keys |
 |---|---|
-| cards | `↑` `↓` move, `Space` pick (several cards are copied one after another), `Enter` next (picks the card under the cursor if none is picked), `r` look again, `q` quit |
+| cards | `↑` `↓` move, `Space` pick (several cards are copied one after another), `Enter` next (picks the card under the cursor if none is picked; for the next card of a session, straight to the check), `r` look again, `q` quit |
 | drive | `↑` `↓` move, `Enter` pick, `Esc` back, `r` look again, `q` quit |
 | library folder, name | type to edit, `Backspace`, `Enter` next, `Esc` back |
 | check | `Enter` start copying, `Esc` back, `q` quit |
 | copying | `c` or `Esc` cancel; `Ctrl-C` cancels, a second `Ctrl-C` quits at once |
-| refused | `Enter` back to fix it, `q` quit |
-| report | `↑` `↓` `PgUp` `PgDn` scroll, `q` quit |
+| refused | `Enter` back to fix it, `n` next card, `q` quit |
+| report | `↑` `↓` `PgUp` `PgDn` scroll, `n` next card, `q` quit |
 
 `Ctrl-C` quits from any screen but the copy. Quitting during a copy is safe
 (no partial file is left under a photo's name), but exits 1: run the same
@@ -41,7 +46,17 @@ The commands, for scripts:
 photosync sources        # mounted camera cards (volumes with DCIM), one per line
 photosync drives         # mounted drives you can sync to, one per line
 photosync sync --source /Volumes/X-T5 --dest /Volumes/SSD/Photos --name Tirana
+photosync sync --dest /Volumes/SSD/Photos --name Tirana --one-by-one
 ```
+
+With `--one-by-one`, after each card photosync asks for the next on
+stderr: swap the card and press Enter (it copies the cards it finds
+mounted), or type a card's path. `q`, Ctrl-D or Ctrl-C finishes. Without
+`--source` it asks for the first card too. All cards go into one session
+and one folder; after several, a summary names each sync that was not
+complete, and the exit code is the worst of them. With stdin at its end
+(e.g. `</dev/null`) it stops after the first card, so a script never
+waits.
 
 The X-T5 over a USB cable shows up as a card only in its "USB card reader"
 connection mode, not in the default PTP mode. `--source` can be given
@@ -104,8 +119,10 @@ Exit codes:
   model (screens, keys, what each message changes) and `worker` runs a sync
   on its own thread; no file outside `src/tui/` names ratatui or crossterm
   (`tests/ui_split.rs` checks every file), so a GUI can reuse them with
-  `flow` (a session of one sync) and `text` (sentences, the report). `tui` and
-  `tui/view` are the terminal shell around them.
+  `flow` (the session the front-ends share) and `text` (sentences, the
+  report). The model keeps one session for the whole run and lends it to
+  the worker for each card. `tui` and `tui/view` are the terminal shell
+  around them.
 
 ## Build and test
 
@@ -138,8 +155,10 @@ refused. A third image stands in for the external drive
 tests, and `tests/exfat_e2e.rs` syncs the stand-in card to it, re-syncs,
 and checks the files and the report text; the binary's unit test
 `tui::tests::tui_sync_on_exfat_end_to_end` drives the TUI's loop through a
-cancelled and a full sync there, with scripted keys on ratatui's
-`TestBackend`. Plain `cargo test` skips these
+cancelled and a full sync there, then the same card again as the next
+card of the session, with scripted keys on ratatui's `TestBackend`.
+`tests/exfat_session.rs` runs `sync --one-by-one` over five cards in one
+session, one of them failing. Plain `cargo test` skips these
 tests and says so; it covers the binary's help, usage errors and refusals
 on temp dirs. The tests reach `photosync sources` and `drives` through a
 hidden `--search-root` option.

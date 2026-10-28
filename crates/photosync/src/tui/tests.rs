@@ -3,9 +3,6 @@
 //! images of `scripts/test_exfat.sh` (strict INV-10 needs three devices);
 //! without them it says it was skipped.
 
-#[path = "../../tests/common/mod.rs"]
-mod common;
-
 use std::fs;
 use std::panic;
 use std::path::{Path, PathBuf};
@@ -21,7 +18,7 @@ use ratatui::backend::TestBackend;
 use super::*;
 use crate::app::{Outcome, Screen};
 use crate::args::{EXIT_INCOMPLETE, EXIT_OK, EXIT_REFUSED};
-use common::{TempDir, at, date_command, manifest, write_file};
+use crate::common::{TempDir, at, date_command, manifest, write_file};
 
 const TAKEN: u64 = 1_700_000_000;
 
@@ -266,8 +263,8 @@ fn tui_sync_on_exfat_end_to_end() {
     let Some(Effect::Start(job)) = app.update(Msg::Key(Key::Enter)) else {
         panic!("not started: {app:?}");
     };
-    assert_eq!(job.library, library);
-    assert_eq!(job.name.as_deref(), Some("Tui"));
+    assert_eq!(job.library(), library);
+    assert_eq!(job.name().as_deref(), Some("Tui"));
     app.update(Msg::Key(Key::Char('c')));
     let (tx, rx) = mpsc::channel();
     worker::spawn(job, move |m| tx.send(m).unwrap());
@@ -308,6 +305,11 @@ fn tui_sync_on_exfat_end_to_end() {
         (Screen::Library, library_keys),
         (Screen::Name, name_keys),
         (Screen::Confirm, vec![Key::Enter]),
+        // S020: the next card in the same session, here the same card
+        // again: no drive, library or name to give.
+        (Screen::Report, vec![Key::Char('n')]),
+        (Screen::Sources, vec![Key::Enter]),
+        (Screen::Confirm, vec![Key::Enter]),
         (Screen::Report, vec![Key::Char('q')]),
     ]);
 
@@ -336,8 +338,35 @@ fn tui_sync_on_exfat_end_to_end() {
     );
     let exit = app.exit();
     assert_eq!(exit.code, EXIT_OK, "{exit:?}");
-    // What is printed after the screen closes is the CLI's report.
+    // What is printed after the screen closes is the session's report:
+    // both syncs, where the photos went, and the result of all of them.
     let report = exit.report.unwrap();
-    assert!(report.starts_with("Report\n"), "{report}");
-    assert!(report.contains("Result: all "), "{report}");
+    assert!(
+        report.starts_with(&format!(
+            "Report\nLibrary {}\nFolder  {}\n\nSync 1 of 2: {}\n",
+            library.display(),
+            folder.display(),
+            card.display()
+        )),
+        "{report}"
+    );
+    assert!(
+        report.contains(&format!("\nSync 2 of 2: {}\n", card.display())),
+        "{report}"
+    );
+    assert!(report.contains("\nAll syncs\n"), "{report}");
+    // The card again is all already on the drive, not twins of itself.
+    let second = &report[report.find("Sync 2 of 2").unwrap()..report.find("All syncs").unwrap()];
+    assert!(second.contains(" (0 copied, "), "{second}");
+    assert!(
+        report
+            .trim_end()
+            .lines()
+            .last()
+            .unwrap()
+            .starts_with("Result: all ")
+            && report.trim_end().ends_with("over 2 syncs."),
+        "{report}"
+    );
+    assert!(exit.message.is_none(), "{:?}", exit.message);
 }

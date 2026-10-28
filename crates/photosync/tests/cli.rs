@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{TempDir, at, manifest, photosync, write_file};
+use common::{TempDir, at, manifest, photosync, photosync_fed, write_file};
 
 fn card(root: &Path) {
     write_file(
@@ -62,6 +62,7 @@ fn help_documents_every_command_flag_and_exit_code() {
         "--source <PATH>",
         "--dest <LIBRARY>",
         "--name <NAME>",
+        "--one-by-one",
         "Exit codes:",
         "\n  2  ",
     ] {
@@ -71,7 +72,7 @@ fn help_documents_every_command_flag_and_exit_code() {
             sync.stdout
         );
     }
-    for cmd in ["sources", "drives"] {
+    for cmd in ["sources", "drives", "sync"] {
         let help = photosync([cmd, "--help"]);
         assert_eq!(help.code, 0, "{help:?}");
         // The test-only override stays out of the help.
@@ -304,4 +305,178 @@ fn sources_and_drives_list_nothing_without_mounted_volumes() {
         drives.stderr.starts_with("No drive to sync to found."),
         "{drives:?}"
     );
+}
+
+fn one_by_one(src: Option<&Path>, library: &Path, search: &Path) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = vec!["sync".into()];
+    if let Some(src) = src {
+        args.extend(["--source".into(), src.into()]);
+    }
+    args.extend([
+        "--dest".into(),
+        library.into(),
+        "--one-by-one".into(),
+        "--search-root".into(),
+        search.into(),
+    ]);
+    args
+}
+
+/// S020: `--one-by-one` asks for the next card on stderr and reads stdin.
+/// Without input (a script, `</dev/null`) the input ends at once, so the
+/// session ends after its first card instead of hanging. With no
+/// `--source` the first card is asked for; none given, nothing synced is
+/// not a success.
+#[test]
+fn one_by_one_without_input_ends_after_the_first_card() {
+    let dir = TempDir::new();
+    let src = dir.0.join("card");
+    card(&src);
+    let library = dir.0.join("library");
+    fs::create_dir(&library).unwrap();
+    let empty = dir.0.join("mounts");
+    fs::create_dir(&empty).unwrap();
+
+    let run = photosync_fed(one_by_one(Some(&src), &library, &empty), b"");
+    assert_eq!(run.code, 2, "{run:?}");
+    assert!(
+        run.stderr.contains("is on the same drive as source"),
+        "{run:?}"
+    );
+    assert_eq!(
+        run.last_err_line(),
+        "Insert the next card, then press Enter (or type its path). q, or Ctrl-D, finishes."
+    );
+    assert!(
+        run.stdout.is_empty(),
+        "one sync, refused, has no report: {run:?}"
+    );
+
+    let none = photosync_fed(one_by_one(None, &library, &empty), b"");
+    assert_eq!(none.code, 2, "{none:?}");
+    assert!(
+        none.stderr
+            .starts_with("Insert the first card, then press Enter"),
+        "{none:?}"
+    );
+    assert_eq!(none.last_err_line(), "No card was synced.");
+}
+
+/// S020: one card after another in one session: a typed path, Enter to
+/// look for mounted cards (none here, so it asks again), q to finish. Each
+/// sync here is refused (one temp device, INV-10): the session's summary
+/// names both and the exit code is the session's worst.
+#[test]
+fn one_by_one_takes_cards_until_q_and_sums_up_the_session() {
+    let dir = TempDir::new();
+    let (a, b) = (dir.0.join("a"), dir.0.join("b"));
+    card(&a);
+    card(&b);
+    let library = dir.0.join("library");
+    fs::create_dir(&library).unwrap();
+    let empty = dir.0.join("mounts");
+    fs::create_dir(&empty).unwrap();
+    let before = manifest(&dir.0);
+
+    let input = format!("{}\n\nq\n", b.display());
+    let run = photosync_fed(one_by_one(Some(&a), &library, &empty), input.as_bytes());
+
+    assert_eq!(run.code, 2, "{run:?}");
+    assert_eq!(
+        run.stderr.matches("Insert the next card").count(),
+        3,
+        "{run:?}"
+    );
+    assert!(run.stderr.contains("\nNo camera card found.\n"), "{run:?}");
+    let refused = |card: &Path| {
+        format!(
+            "The library {} is on the same drive as source {}.",
+            library.display(),
+            card.display()
+        )
+    };
+    assert!(
+        run.stderr.contains(&refused(&a)) && run.stderr.contains(&refused(&b)),
+        "{run:?}"
+    );
+    let summary = [
+        "Session of 2 syncs".to_string(),
+        format!("Library {}", library.display()),
+        "Folder  none (nothing to copy)".to_string(),
+        format!("  sync 1 ({}): refused, nothing copied", a.display()),
+        format!("  sync 2 ({}): refused, nothing copied", b.display()),
+    ];
+    assert!(
+        run.stdout.starts_with(&(summary.join("\n") + "\n")),
+        "{run:?}"
+    );
+    assert!(
+        run.stdout.ends_with(&format!(
+            "\nResult: NOT COMPLETE: 2 of 2 syncs not complete: sync 1 ({}): refused, nothing \
+             copied; sync 2 ({}): refused, nothing copied. Do not format the cards of those \
+             syncs. Fix the cause and sync them again: files already on the drive are skipped.\n",
+            a.display(),
+            b.display()
+        )),
+        "{run:?}"
+    );
+    assert_eq!(manifest(&dir.0), before);
+}
+
+/// S020: Ctrl-C while the prompt waits ends the session at once, with its
+/// summary and its exit code, not by the signal: a second Ctrl-C would.
+#[cfg(unix)]
+#[test]
+fn ctrl_c_at_the_prompt_ends_the_session_with_its_summary() {
+    use std::io::{BufRead, BufReader, Write};
+
+    let dir = TempDir::new();
+    let (a, b) = (dir.0.join("a"), dir.0.join("b"));
+    card(&a);
+    card(&b);
+    let library = dir.0.join("library");
+    fs::create_dir(&library).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_photosync"))
+        .args(one_by_one(Some(&a), &library, &dir.0))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stderr = child.stderr.take().unwrap();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let _ = tx.send(line.unwrap());
+        }
+    });
+    let prompt = |n: usize| {
+        let mut seen = 0;
+        while seen < n {
+            let line = rx.recv_timeout(Duration::from_secs(30)).expect("no prompt");
+            seen += usize::from(line.starts_with("Insert the next card"));
+        }
+    };
+    prompt(1);
+    writeln!(stdin, "{}", b.display()).unwrap();
+    prompt(1);
+    // Inside the wait for the answer, not just before it.
+    std::thread::sleep(Duration::from_millis(300));
+    // SAFETY: kill has no preconditions; the pid is our live child's.
+    assert_eq!(
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) },
+        0
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "Ctrl-C did not end the session");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let out = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(2), "{stdout}");
+    assert!(stdout.starts_with("Session of 2 syncs\n"), "{stdout}");
+    drop(stdin);
 }

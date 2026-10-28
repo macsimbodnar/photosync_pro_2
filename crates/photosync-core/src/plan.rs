@@ -301,7 +301,9 @@ pub(crate) fn plan_in_session(
         }
         let copied = match in_library {
             Some(library_file) => {
-                match earlier.get(library_file) {
+                // The same card synced again holds the very files that
+                // put these photos there: already on drive, not twins.
+                match earlier.get(library_file).filter(|of| **of != file.path) {
                     Some(of) => plan.seen_earlier.push(Duplicate { file: file.clone(), of: of.clone() }),
                     None => plan
                         .skipped

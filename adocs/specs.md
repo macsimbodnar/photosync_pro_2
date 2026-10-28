@@ -85,21 +85,37 @@ picks. It is simple to use.
   user installs nothing else.
 - One core library holds all sync logic. Front-ends are thin layers over it:
   - CLI: scriptable commands with plain-text output: `sources`, `drives`,
-    `sync --source <path>... --dest <library> [--name <name>]`. Exit code
-    0 when every supported file is copied or already on the drive, 1 when
-    some failed or were cancelled or part of a card could not be read, 2
-    for a usage error or a sync refused before copying (DEC-028).
+    `sync --source <path>... --dest <library> [--name <name>]
+    [--one-by-one]`. Exit code 0 when every supported file is copied or
+    already on the drive, 1 when some failed or were cancelled or part of
+    a card could not be read, 2 for a usage error or a sync refused before
+    copying (DEC-028). With `--one-by-one`, after each sync it asks on
+    stderr for the next card and reads a line on stdin: Enter alone takes
+    the mounted cards, a line names one card, `q`, Ctrl-C or the end of
+    the input finishes; with no `--source` the first card is asked for,
+    and none given exits 2. The end of the input ends the session, so a
+    script never hangs. All syncs are one session; after several, a
+    summary ends the report, and the exit code and the result are the
+    session's worst, naming each sync that was not complete (DEC-034).
     It refuses to run as root (euid 0): root can write to system volumes.
   - TUI: a terminal interface, the first interactive front-end. `photosync`
     with no command opens it when stdin and stdout are a terminal; otherwise
     it is a usage error (exit 2). It walks through picking the sources, the
     destination drive, the library folder on it (default `<drive>/Photos`),
     an optional name, then shows progress and the report, with the CLI's
-    sentences and exit codes. Cancel is a key, and Ctrl-C. The last sync's
-    outcome decides the exit code and the message until a later sync
-    ends: going back after a refusal and quitting never exits 0. A sync
-    with no source picked does not start. A panic in the sync's thread
-    leaves the screen as it is and ends the sync as not complete (DEC-031).
+    sentences and exit codes. Cancel is a key, and Ctrl-C. One session
+    lasts the whole run: after a report or a refusal, the next card goes
+    back to the cards in the same session (same library, name and folder),
+    or the user quits. The report shows every sync of the session and the
+    totals of all, naming the library and the folder. The exit code and
+    the message are the session's worst, naming each sync that was not
+    complete, so neither going back nor a later sync ever hides an earlier
+    one that was not complete. A name that cannot be a folder name is
+    refused before the session starts and can be fixed; after that, the
+    library and the name stay. A sync with no source picked does not
+    start. A panic in the sync's thread leaves the screen as it is, and
+    the sync is recorded in the session as not complete (DEC-031,
+    DEC-034).
   - A closed stdout never stops a sync nor panics: the exit code stays
     within 0/1/2.
   - GUI: a native Rust GUI, later. Adding it must need no change to the core
@@ -121,10 +137,10 @@ picks. It is simple to use.
 - One source after another, with a single reader. The session stays open
   between cards, and the report covers all of them. A photo an earlier card
   of the session put on the drive, or found there, is a "duplicate in
-  session" on a later card. The session's verdict is the worst of its
-  syncs, so a later sync never hides an earlier one that was not complete.
-  For now the core has the session; the CLI and the TUI run one sync each
-  (S020).
+  session" on a later card, naming the card whose file is on the drive now.
+  The same card synced again is "already on drive", not a duplicate of
+  itself. The session's verdict is the worst of its syncs, so a later sync
+  never hides an earlier one that was not complete.
 - An unreadable file or folder under `DCIM` does not stop the scan: it is
   recorded as a failure with its path and error, and the rest of the card
   is still scanned. Only an unreadable source or `DCIM` fails the source.
@@ -213,7 +229,8 @@ picks. It is simple to use.
   duplicate in session), failed with a reason (name collisions included),
   cancelled, ignored types, and the entries the scan could not read. Totals
   per source and per type (INV-6). The CLI's report names the library and
-  the session folder.
+  the session folder. After several syncs in a session, the report ends
+  with the totals of all of them and the session's result.
 - The report is never built from inputs that would make it wrong: a source
   given twice (in any spelling), or a plan or copy that is not of these
   scans (a file not listed, listed with another size or mtime, left out, or

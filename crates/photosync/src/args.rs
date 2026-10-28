@@ -73,8 +73,14 @@ pub struct Search {
 #[derive(Debug, clap::Args)]
 pub struct SyncArgs {
     /// A card to copy from, e.g. /Volumes/X-T5 (see `photosync sources`).
-    /// Give it several times to copy several cards in one sync.
-    #[arg(long = "source", value_name = "PATH", required = true, num_args = 1..)]
+    /// Give it several times to copy several cards in one sync. With
+    /// --one-by-one it may be left out: the first card is asked for.
+    #[arg(
+        long = "source",
+        value_name = "PATH",
+        required_unless_present = "one_by_one",
+        num_args = 1..
+    )]
     pub sources: Vec<PathBuf>,
     /// The library folder on the external drive, e.g. /Volumes/SSD/Photos.
     /// It must exist. Never on a card, nor on the same drive as a source.
@@ -84,6 +90,15 @@ pub struct SyncArgs {
     /// with this name from an earlier sync is reused.
     #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
+    /// One card after another, with one reader: after each card, insert
+    /// the next and press Enter (photosync finds the mounted cards), or
+    /// type its path. q, Ctrl-D, Ctrl-C or the end of the input finishes.
+    /// All go into one sync folder; the summary and the exit code are
+    /// those of the worst sync.
+    #[arg(long = "one-by-one")]
+    pub one_by_one: bool,
+    #[command(flatten)]
+    pub search: Search,
 }
 
 #[cfg(test)]
@@ -115,6 +130,17 @@ mod tests {
                 "{code} is not documented"
             );
         }
+    }
+
+    /// --source may be left out only when the cards are asked for.
+    #[test]
+    fn one_by_one_may_ask_for_the_first_card() {
+        let asked = Cli::try_parse_from(["photosync", "sync", "--dest", "l", "--one-by-one"]);
+        let Some(Command::Sync(args)) = asked.unwrap().command else {
+            panic!("not sync")
+        };
+        assert!(args.one_by_one && args.sources.is_empty());
+        assert!(Cli::try_parse_from(["photosync", "sync", "--dest", "l"]).is_err());
     }
 
     #[test]

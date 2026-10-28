@@ -1,7 +1,10 @@
 //! What the binary asks of the OS itself: who it runs as, Ctrl-C, the
 //! terminal's width, and writing to stdout and stderr without panicking.
 
+use std::ffi::OsString;
 use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
 use std::sync::OnceLock;
 
 use photosync_core::Cancel;
@@ -51,6 +54,42 @@ extern "C" fn on_sigint(_: libc::c_int) {
     if let Some(cancel) = CANCEL.get() {
         cancel.cancel();
     }
+}
+
+/// One line from stdin, without its newline. `None` at the end of the
+/// input, or when Ctrl-C interrupts the wait (its handler sets `cancel`).
+/// Not std's `read_line`: it retries after a signal, so a Ctrl-C would go
+/// on waiting for Enter. Byte by byte, so nothing after the line is taken
+/// from a script's input.
+#[cfg(unix)]
+pub fn read_line(cancel: &Cancel) -> io::Result<Option<OsString>> {
+    let mut line = Vec::new();
+    loop {
+        // A Ctrl-C between two reads does not interrupt the next one.
+        if cancel.is_cancelled() {
+            return Ok(None);
+        }
+        let mut byte = 0u8;
+        // SAFETY: reads at most one byte into `byte`, which lives across
+        // the call.
+        let n = unsafe { libc::read(libc::STDIN_FILENO, (&raw mut byte).cast(), 1) };
+        match n {
+            1 if byte == b'\n' => break,
+            1 => line.push(byte),
+            0 if line.is_empty() => return Ok(None),
+            0 => break,
+            _ => {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+                if cancel.is_cancelled() {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+    Ok(Some(OsString::from_vec(line)))
 }
 
 /// The width in columns of the terminal stderr writes to, if it is one.

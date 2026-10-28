@@ -4,13 +4,16 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-28, by Claude agent (S010 done on part 1)
+Updated: 2026-10-28, by Claude agent (S020 done)
 
-- Last done: S010  core session (part 1; split into S019-S021, DEC-033)
+- Last done: S020  one card after another in the CLI and TUI (DEC-034)
 - In progress: none
-- Next: S020  one card after another in the CLI and TUI
+- Next: S021  twin fallback on a read error, F07
 - Blocked: S017 waits for the user's hardware (DEC-029)
 - Parked:
+  - S020's CLI and TUI session design is the agent's pick, not yet
+    confirmed by the user (DEC-034): `--one-by-one` prompt, `n` next card,
+    library and name fixed for the TUI session.
   - The camera's PTP mode (USB without card-reader mode) is unsupported
     (DEC-004). Revisit if card-reader mode proves unreliable.
   - The folder date is the earliest new-file date: the agent's pick, not

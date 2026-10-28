@@ -313,6 +313,8 @@ impl Session {
     /// Notes where each file of `report` that is on the drive is. A copy
     /// in place but not flushed is left out: a later card's twin of it is
     /// "already on drive", as the next sync would find it (DEC-017 (4)).
+    /// The latest sync wins: a path it copied to or found holds its photo
+    /// now, even if an earlier sync used that path before (S010 fast check).
     fn remember(&mut self, report: &Report) {
         for entry in report.sources().iter().flat_map(|s| &s.files) {
             let at = match &entry.outcome {
@@ -320,7 +322,7 @@ impl Session {
                 FileOutcome::AlreadySynced { library_file } => library_file,
                 _ => continue,
             };
-            self.on_drive.entry(at.clone()).or_insert_with(|| entry.file.path.clone());
+            self.on_drive.insert(at.clone(), entry.file.path.clone());
         }
     }
 }

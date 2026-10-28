@@ -11,16 +11,21 @@ mod text;
 mod tui;
 mod worker;
 
+// One instance for all unit tests: `TempDir` numbers its folders from a
+// static, and two copies of it would hand out the same paths.
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod common;
+
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
-use photosync_core::{Cancel, RunEnd, Volumes, default_search_roots, discover_volumes};
+use photosync_core::{Cancel, RunEnd, Session, Volumes, default_search_roots, discover_volumes};
 
 use args::{Cli, Command, EXIT_INCOMPLETE, EXIT_OK, EXIT_REFUSED, Search, SyncArgs, exit_code};
-use flow::SyncRequest;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -143,33 +148,120 @@ fn sync(args: &SyncArgs) -> u8 {
         ));
         return EXIT_REFUSED;
     }
-    let request = SyncRequest {
-        sources: &args.sources,
-        library: &args.dest,
-        name: args.name.as_deref(),
-    };
-    let session = match flow::session(&request, &cancel, &mut text::StderrWatch::new()) {
+    let mut session = match flow::start(&args.dest, args.name.as_deref()) {
         Ok(session) => session,
         Err(e) => {
             system::say(&text::refusal(&e));
             return EXIT_REFUSED;
         }
     };
+    let mut sources = args.sources.clone();
+    if sources.is_empty() {
+        match next_cards(args, &cancel, "first") {
+            Some(cards) => sources = cards,
+            None => {
+                system::say("No card was synced.");
+                return EXIT_REFUSED;
+            }
+        }
+    }
+    loop {
+        session.sync(&sources, &cancel, &mut text::StderrWatch::new());
+        if let Some(code) = print_last_run(&session) {
+            // The report could not be written: say no more, keep the code.
+            if !args.one_by_one {
+                return code;
+            }
+        }
+        // A Ctrl-C during a sync stops the session too.
+        if !args.one_by_one || cancel.is_cancelled() {
+            break;
+        }
+        match next_cards(args, &cancel, "next") {
+            Some(cards) => sources = cards,
+            None => break,
+        }
+    }
+    let code = exit_code(session.verdict());
+    if session.runs().len() > 1 {
+        return print_report(
+            &mut io::stdout().lock(),
+            &text::session_summary(&session),
+            code,
+        );
+    }
+    code
+}
+
+/// The session's last sync, as it ended: its report on stdout, or why it
+/// has none on stderr. `Some(code)` if the report could not be written.
+fn print_last_run(session: &Session) -> Option<u8> {
     let code = exit_code(session.verdict());
     match session.runs().last().map(|run| &run.end) {
         Some(RunEnd::Report(report)) => {
             let text = text::report_in(report, session.library(), session.folder());
-            print_report(&mut io::stdout().lock(), &text, code)
+            if let Err(e) = system::write_all(&mut io::stdout().lock(), &text) {
+                system::say(&format!(
+                    "Cannot write the report to stdout: {e}. The sync is over; its exit code is {code}."
+                ));
+                return Some(code);
+            }
         }
-        Some(RunEnd::Refused(e)) => {
-            system::say(&text::refusal(e));
-            code
+        Some(RunEnd::Refused(e)) => system::say(&text::refusal(e)),
+        Some(RunEnd::Crashed(what)) => system::say(&text::crash(what)),
+        None => {}
+    }
+    None
+}
+
+/// Asks on stderr for the next cards and reads the answer from stdin:
+/// Enter alone takes every mounted card, a line names one card, `q` or the
+/// end of the input (or Ctrl-C) finishes, `None`. With no terminal on
+/// stdin, e.g. `</dev/null`, the input ends at once: a script never hangs.
+fn next_cards(args: &SyncArgs, cancel: &Cancel, which: &str) -> Option<Vec<PathBuf>> {
+    loop {
+        system::say(&format!(
+            "Insert the {which} card, then press Enter (or type its path). q, or Ctrl-D, finishes."
+        ));
+        let line = match system::read_line(cancel) {
+            Ok(Some(line)) => line,
+            Ok(None) => return None,
+            Err(e) => {
+                system::say(&format!(
+                    "Cannot read the answer: {e}. The session is over."
+                ));
+                return None;
+            }
+        };
+        match line.to_string_lossy().trim() {
+            "q" => return None,
+            "" => {}
+            // As typed: a path may hold spaces.
+            _ => return Some(vec![PathBuf::from(line)]),
         }
-        Some(RunEnd::Crashed(what)) => {
-            system::say(what);
-            code
+        let roots = if args.search.search_roots.is_empty() {
+            match search_roots() {
+                Ok(roots) => roots,
+                Err(_) => continue,
+            }
+        } else {
+            args.search.search_roots.clone()
+        };
+        let volumes = discover_volumes(&roots);
+        for failure in &volumes.failures {
+            system::say(&format!("warning: {failure}"));
         }
-        None => code,
+        if volumes.sources.is_empty() {
+            system::say("No camera card found.");
+            continue;
+        }
+        let found: Vec<String> = volumes
+            .sources
+            .iter()
+            .map(|s| s.display().to_string())
+            .collect();
+        system::say(&format!("found {}", found.join(", ")));
+        return Some(volumes.sources);
     }
 }
 
