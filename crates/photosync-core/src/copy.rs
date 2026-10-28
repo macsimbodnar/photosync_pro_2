@@ -16,6 +16,7 @@ use crate::hash::{CHUNK, hash_file};
 use crate::plan::SyncPlan;
 use crate::progress::{Cancel, Monitor, Phase, Tracker, source_of};
 use crate::source::{ScanError, SourceFile};
+use crate::volume::{device_id, volume_root};
 
 /// Every temp file photosync writes starts with this. The library scan skips
 /// it, and the next sync deletes it.
@@ -258,6 +259,18 @@ pub enum CopyError {
     /// The folder belongs to another library than the plan, which was
     /// checked against its sources for that library only (INV-10).
     LibraryMismatch { plan: PathBuf, folder: PathBuf },
+    /// INV-10: the library is on another device than when it was planned,
+    /// e.g. a card mounted where the drive was. The plan's checks no longer
+    /// hold.
+    LibraryDeviceChanged { library: PathBuf, planned: u64, now: u64 },
+    /// INV-10: the library is on another volume than when it was planned
+    /// (`None`: the boot disk).
+    LibraryVolumeChanged { library: PathBuf, planned: Option<PathBuf>, now: Option<PathBuf> },
+    /// INV-10: the library is on the device of a source of the plan.
+    LibraryOnSourceDevice { library: PathBuf, source_root: PathBuf },
+    /// The library cannot be found or its device read, e.g. it was
+    /// unplugged, so INV-10 cannot be checked again.
+    Library(ScanError),
 }
 
 impl fmt::Display for CopyError {
@@ -269,11 +282,42 @@ impl fmt::Display for CopyError {
                 plan.display(),
                 folder.display()
             ),
+            CopyError::LibraryDeviceChanged { library, planned, now } => write!(
+                f,
+                "library {} is on device {now:#x}, not on device {planned:#x} as when planned",
+                library.display()
+            ),
+            CopyError::LibraryVolumeChanged { library, planned, now } => {
+                let name = |v: &Option<PathBuf>| {
+                    v.as_ref().map_or("the boot disk".to_string(), |v| v.display().to_string())
+                };
+                write!(
+                    f,
+                    "library {} is on volume {}, not on {} as when planned",
+                    library.display(),
+                    name(now),
+                    name(planned)
+                )
+            }
+            CopyError::LibraryOnSourceDevice { library, source_root } => write!(
+                f,
+                "library {} is on the same device as source {}",
+                library.display(),
+                source_root.display()
+            ),
+            CopyError::Library(e) => e.fmt(f),
         }
     }
 }
 
-impl Error for CopyError {}
+impl Error for CopyError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            CopyError::Library(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct TempCleanup {
@@ -283,8 +327,10 @@ pub struct TempCleanup {
     pub failures: Vec<ScanError>,
 }
 
-/// Copies every file in `plan.to_copy` into `folder`, one at a time. Stale
-/// temp files in the library are removed first. A failure fails that file
+/// Copies every file in `plan.to_copy` into `folder`, one at a time. First
+/// checks the library is still on the device and volume it was planned on
+/// (INV-10), and refuses before writing or deleting anything if not. Stale
+/// temp files in the library are removed next. A failure fails that file
 /// only; the outcome lists each file once.
 ///
 /// Progress counts the files in `plan.to_copy` (`Phase::Copying`). A cancel
@@ -302,6 +348,7 @@ pub fn copy_plan(
             folder: folder.library.clone(),
         });
     }
+    recheck_library(plan)?;
     let mut outcome = CopyOutcome {
         copied: Vec::new(),
         failed: Vec::new(),
@@ -331,6 +378,38 @@ pub fn copy_plan(
     }
     tracker.finish(!outcome.cancelled.is_empty());
     Ok(outcome)
+}
+
+/// INV-10 again, just before the first write: `plan_sync` checked the
+/// library on the device and volume it was on then. A card swapped in under
+/// the same path, or a drive remounted elsewhere, changes them.
+fn recheck_library(plan: &SyncPlan) -> Result<(), CopyError> {
+    let library = &plan.library;
+    let lost = |source| CopyError::Library(ScanError { path: library.clone(), source });
+    let resolved = fs::canonicalize(library).map_err(lost)?;
+    let now = fs::metadata(&resolved).and_then(|meta| device_id(&meta)).map_err(lost)?;
+    if now != plan.library_device {
+        return Err(CopyError::LibraryDeviceChanged {
+            library: library.clone(),
+            planned: plan.library_device,
+            now,
+        });
+    }
+    let volume = volume_root(&resolved).map_err(lost)?;
+    if volume != plan.library_volume {
+        return Err(CopyError::LibraryVolumeChanged {
+            library: library.clone(),
+            planned: plan.library_volume.clone(),
+            now: volume,
+        });
+    }
+    if let Some(i) = plan.source_devices.iter().position(|d| *d == now) {
+        return Err(CopyError::LibraryOnSourceDevice {
+            library: library.clone(),
+            source_root: plan.sources[i].clone(),
+        });
+    }
+    Ok(())
 }
 
 /// Why one file's copy stopped short.
@@ -1206,6 +1285,82 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::Unsupported);
         assert!(from.exists() && !to.exists());
+    }
+
+    /// The plan checked INV-10 for the library's device and volume at the
+    /// time. If either has changed by copy time (a card swapped in under
+    /// the library's path), or the library is now on a source's device,
+    /// nothing is written: no folder, no file, and stale temps stay too.
+    /// The change is simulated on the plan's record.
+    #[test]
+    fn inv10_copy_refuses_a_library_whose_place_changed_since_planning() {
+        use crate::common::{OTHER_DEVICE, manifest};
+        let dir = TempDir::new();
+        let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+        fs::create_dir_all(&lib).unwrap();
+        card_with_two_files(&card);
+        write_file(&lib, "2026-01-01/RAW/.photosync-tmp-5-0-DSCF0009.RAF", b"x", at(1_700_000_000));
+        let good = plan_sync(&lib, &[scan_elsewhere(&card)], &mut Monitor::default()).unwrap();
+        let folder = sync_folder(&good, None).unwrap().unwrap();
+        let before = manifest(&lib);
+        let moved_to = Some(dir.0.join("CARD"));
+
+        let mut plan = plan_sync(&lib, &[scan_elsewhere(&card)], &mut Monitor::default()).unwrap();
+        plan.library_device = OTHER_DEVICE;
+        match copy_plan(&plan, &folder, &mut Monitor::default()) {
+            Err(CopyError::LibraryDeviceChanged { library, planned, now }) => {
+                assert_eq!((library, planned, now), (lib.clone(), OTHER_DEVICE, good.library_device));
+            }
+            other => panic!("expected LibraryDeviceChanged, got {other:?}"),
+        }
+        assert_eq!(manifest(&lib), before);
+
+        let mut plan = plan_sync(&lib, &[scan_elsewhere(&card)], &mut Monitor::default()).unwrap();
+        let was = plan.library_volume.clone();
+        plan.library_volume = moved_to.clone();
+        match copy_plan(&plan, &folder, &mut Monitor::default()) {
+            Err(CopyError::LibraryVolumeChanged { library, planned, now }) => {
+                assert_eq!((library, planned, now), (lib.clone(), moved_to.clone(), was));
+            }
+            other => panic!("expected LibraryVolumeChanged, got {other:?}"),
+        }
+        assert_eq!(manifest(&lib), before);
+
+        let mut plan = plan_sync(&lib, &[scan_elsewhere(&card)], &mut Monitor::default()).unwrap();
+        plan.source_devices = vec![plan.library_device];
+        match copy_plan(&plan, &folder, &mut Monitor::default()) {
+            Err(CopyError::LibraryOnSourceDevice { library, source_root }) => {
+                assert_eq!((library, source_root), (lib.clone(), card.clone()));
+            }
+            other => panic!("expected LibraryOnSourceDevice, got {other:?}"),
+        }
+        assert_eq!(manifest(&lib), before);
+
+        // Unchanged, the same plan copies.
+        let outcome = copy_plan(&good, &folder, &mut Monitor::default()).unwrap();
+        assert_eq!(outcome.copied.len(), 2);
+    }
+
+    /// A library that cannot be found at copy time (unplugged) is refused
+    /// before anything is written, not copied into file by file.
+    #[test]
+    fn inv10_copy_refuses_a_library_it_cannot_find() {
+        let dir = TempDir::new();
+        let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+        fs::create_dir_all(&lib).unwrap();
+        card_with_two_files(&card);
+        let plan = plan_sync(&lib, &[scan_elsewhere(&card)], &mut Monitor::default()).unwrap();
+        let folder = sync_folder(&plan, None).unwrap().unwrap();
+        fs::remove_dir(&lib).unwrap();
+
+        match copy_plan(&plan, &folder, &mut Monitor::default()) {
+            Err(CopyError::Library(e)) => {
+                assert_eq!(e.path, lib);
+                assert_eq!(e.source.kind(), io::ErrorKind::NotFound);
+            }
+            other => panic!("expected Library, got {other:?}"),
+        }
+        assert!(!lib.exists());
     }
 
     #[test]

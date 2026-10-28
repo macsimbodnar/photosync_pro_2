@@ -39,6 +39,14 @@ pub struct SyncPlan {
     /// only candidates are here is planned for copy: a second copy in the
     /// library is safe, a photo left uncopied is not.
     pub library_failures: Vec<ScanError>,
+    /// Where INV-10 found the library: its device and its volume (`None`:
+    /// the boot disk). `copy_plan` checks the library is still there before
+    /// it writes. Crate-only, as `source_devices`, so a plan can only come
+    /// from `plan_sync` and its record from the checks (DEC-027).
+    pub(crate) library_device: u64,
+    pub(crate) library_volume: Option<PathBuf>,
+    /// The device of each source, in the order of `sources`.
+    pub(crate) source_devices: Vec<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,7 +149,7 @@ pub fn plan_sync(
     sources: &[SourceScan],
     monitor: &mut Monitor,
 ) -> Result<SyncPlan, PlanError> {
-    check_library(library, sources)?;
+    let (library_device, library_volume) = check_library(library, sources)?;
     let mut index = scan_library(library).map_err(PlanError::Library)?;
     let library_failures = std::mem::take(&mut index.failures);
 
@@ -172,6 +180,9 @@ pub fn plan_sync(
         duplicates: Vec::new(),
         failures: Vec::new(),
         library_failures,
+        library_device,
+        library_volume,
+        source_devices: sources.iter().map(SourceScan::device).collect(),
     };
     // None: unreadable, already in library_failures. Cached because several
     // source files can share one candidate.
@@ -256,8 +267,12 @@ fn key(file: &SourceFile) -> (OsString, u64) {
 /// The path checks name the plain overlaps. The device check catches what
 /// paths cannot: a second mount or a bind mount of the card, or another
 /// folder on the disk a source folder is on, has an unrelated path but the
-/// same device (DEC-025).
-fn check_library(library: &Path, sources: &[SourceScan]) -> Result<(), PlanError> {
+/// same device (DEC-025). Returns the library's device and volume, as
+/// checked.
+fn check_library(
+    library: &Path,
+    sources: &[SourceScan],
+) -> Result<(u64, Option<PathBuf>), PlanError> {
     check_library_with(library, sources, volume_root)
 }
 
@@ -267,7 +282,7 @@ fn check_library_with(
     library: &Path,
     sources: &[SourceScan],
     volume_root: impl Fn(&Path) -> io::Result<Option<PathBuf>>,
-) -> Result<(), PlanError> {
+) -> Result<(u64, Option<PathBuf>), PlanError> {
     let resolved = fs::canonicalize(library)
         .map_err(|source| PlanError::Library(ScanError { path: library.to_path_buf(), source }))?;
     // Cards are FAT or exFAT, which ignore case, so `dcim` is a DCIM too.
@@ -295,7 +310,7 @@ fn check_library_with(
                 source_root: scan.root.clone(),
             });
         }
-        if scan.device == library_device {
+        if scan.device() == library_device {
             return Err(PlanError::LibraryOnSourceDevice {
                 library: library.to_path_buf(),
                 source_root: scan.root.clone(),
@@ -305,12 +320,15 @@ fn check_library_with(
     // A card that is not a source: nothing above knows it, only its `DCIM`.
     let volume = volume_root(&resolved)
         .map_err(|source| PlanError::Library(ScanError { path: library.to_path_buf(), source }))?;
-    if let Some(volume) = volume {
+    if let Some(volume) = &volume {
         // Followed, as discovery and `scan_source` follow it.
         let dcim = volume.join("DCIM");
         match fs::metadata(&dcim) {
             Ok(meta) if meta.is_dir() => {
-                return Err(PlanError::LibraryOnCard { library: library.to_path_buf(), volume });
+                return Err(PlanError::LibraryOnCard {
+                    library: library.to_path_buf(),
+                    volume: volume.clone(),
+                });
             }
             Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -318,7 +336,7 @@ fn check_library_with(
             Err(source) => return Err(PlanError::Library(ScanError { path: dcim, source })),
         }
     }
-    Ok(())
+    Ok((library_device, volume))
 }
 
 #[cfg(test)]

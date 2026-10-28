@@ -266,12 +266,13 @@ fn inv10_symlink_cannot_hide_a_library_on_a_source() {
     assert!(matches!(err, PlanError::LibraryOnSource { .. }), "got {err:?}");
 }
 
-/// Two paths to one card volume (a second mount, a bind mount) share no
-/// prefix, only the device. The scan records the device of any root, mount
-/// point or not; here, the temp device the library is on too.
+/// The scan records the real device of its root, mount point or not, and a
+/// library on that device under an unrelated path is refused: what catches
+/// a second mount or a bind mount of a card. Here both are plain folders on
+/// the one temp device.
 #[cfg(unix)]
 #[test]
-fn inv10_library_on_the_device_of_a_source_volume_is_refused() {
+fn inv10_scan_records_the_root_device_and_a_library_on_it_is_refused() {
     use std::os::unix::fs::MetadataExt;
     let dir = TempDir::new();
     let card = dir.0.join("card");
@@ -279,8 +280,8 @@ fn inv10_library_on_the_device_of_a_source_volume_is_refused() {
     let library = dir.0.join("other_mount_of_card/Photos");
     fs::create_dir_all(&library).unwrap();
     let source = scan_source(&card).unwrap();
-    assert_eq!(source.device, fs::metadata(&card).unwrap().dev());
-    assert_eq!(source.device, fs::metadata(&library).unwrap().dev(), "one temp device");
+    assert_eq!(source.device(), fs::metadata(&card).unwrap().dev());
+    assert_eq!(source.device(), fs::metadata(&library).unwrap().dev(), "one temp device");
 
     match refused(&library, &[source]) {
         PlanError::LibraryOnSourceDevice { library: l, source_root } => {
@@ -319,11 +320,40 @@ fn inv10_library_on_another_device_than_the_source_volume_is_planned() {
     let library = dir.0.join("lib");
     fs::create_dir(&library).unwrap();
     let mut source = scan(&card);
-    source.device = fs::metadata(&library).unwrap().dev().wrapping_add(1);
+    source.set_device_for_test(fs::metadata(&library).unwrap().dev().wrapping_add(1));
 
     let plan = plan_sync(&library, &[source], &mut Monitor::default()).unwrap();
 
     assert_eq!(plan.to_copy.len(), 1);
+}
+
+/// End to end, with the real volume lookup: a library on a mounted volume
+/// with `DCIM` at its top is refused. `scripts/test_exfat.sh` mounts such an
+/// image and names it in `PHOTOSYNC_TEST_CARD`; the source is a temp folder,
+/// on the other image there. Without the variable, nothing is checked and
+/// the test says so.
+#[test]
+fn inv10_library_on_a_mounted_card_is_refused_end_to_end() {
+    let Some(card) = std::env::var_os("PHOTOSYNC_TEST_CARD") else {
+        eprintln!("SKIPPED inv10_library_on_a_mounted_card_is_refused_end_to_end: \
+                   PHOTOSYNC_TEST_CARD is not set (scripts/test_exfat.sh sets it)");
+        return;
+    };
+    let card = fs::canonicalize(card).unwrap();
+    assert!(card.join("DCIM").is_dir(), "{} has no DCIM folder", card.display());
+    let dir = TempDir::new();
+    let src = dir.0.join("src");
+    put(&src, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    let library = card.join("Photos");
+    fs::create_dir_all(&library).unwrap();
+
+    // Scanned as is: the source's real device is not the card's.
+    match refused(&library, &[scan_source(&src).unwrap()]) {
+        PlanError::LibraryOnCard { library: l, volume } => {
+            assert_eq!((l, volume), (library, card));
+        }
+        other => panic!("expected LibraryOnCard, got {other:?}"),
+    }
 }
 
 #[test]

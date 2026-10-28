@@ -66,10 +66,9 @@ pub struct SourceScan {
     /// there, so two spellings of one source compare equal even after it is
     /// removed.
     pub resolved_root: PathBuf,
-    /// The device id (`st_dev`) of `resolved_root`, mount point or plain
-    /// folder, taken while the card was there. INV-10 refuses a library on
-    /// this device, whatever path reaches it (DEC-025).
-    pub device: u64,
+    /// See `device()`. Private, so a front-end cannot point it away from
+    /// the library and get past INV-10 (DEC-027).
+    device: u64,
     pub files: Vec<SourceFile>,
     /// Files and folders under `DCIM` that could not be read. A folder whose
     /// listing broke partway keeps the files it gave before the break in
@@ -84,6 +83,24 @@ pub struct SourceScan {
 }
 
 impl SourceScan {
+    /// The device id (`st_dev`) of `resolved_root`, mount point or plain
+    /// folder, taken while the card was there. INV-10 refuses a library on
+    /// this device, whatever path reaches it (DEC-025).
+    pub fn device(&self) -> u64 {
+        self.device
+    }
+
+    /// Test seam: declares the source on another device than the library,
+    /// as temp dirs put both on one. Exists only in this crate's own tests
+    /// and with the `test-support` feature, which only its dev-dependency
+    /// on itself turns on, so a normal build has no way to fake a device
+    /// (DEC-027).
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn set_device_for_test(&mut self, device: u64) {
+        self.device = device;
+    }
+
     pub fn supported(&self) -> impl Iterator<Item = &SourceFile> {
         self.files.iter().filter(|f| f.media_type.is_some())
     }

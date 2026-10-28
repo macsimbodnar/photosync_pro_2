@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Runs the photosync-core tests with TMPDIR on a fresh exFAT disk image, so
-# every test file lives on exFAT (macOS only: needs hdiutil). The image is
-# made in a temp dir outside the repo and is detached at the end, even on
-# failure; if the detach fails, the script says so and removes nothing.
+# every test file lives on exFAT (macOS only: needs hdiutil). A second small
+# image with a DCIM folder at its top stands in for a card: its mount path
+# goes to the tests in PHOTOSYNC_TEST_CARD, and the INV-10 end-to-end test
+# plans a library on it with the real volume lookup. Both images are made in
+# a temp dir outside the repo and detached at the end, even on failure; if a
+# detach fails, the script says so and removes nothing.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,38 +42,54 @@ fi
 # Resolved, so the path matches what `mount` prints (/var is /private/var).
 work="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/photosync-exfat.XXXXXX")" && pwd -P)"
 mnt="$work/mnt"
-attached=0
+card="$work/card"
 cleanup() {
     local status=$?
-    if (( attached )); then
-        hdiutil detach "$mnt" -quiet || hdiutil detach "$mnt" -force -quiet || true
-    fi
-    # Checked, not trusted to `attached`: `rm -rf` through a live mount would
-    # delete inside the image, and the image file under it. Captured, not
-    # piped into `grep -q` (an early exit can SIGPIPE `mount`), and a failing
-    # `mount` counts as still mounted, so the check fails safe.
-    local mounts
-    if ! mounts=$(mount) || [[ $mounts == *" on $mnt "* ]]; then
-        echo "test_exfat.sh: FAILED to detach $mnt; left it and $work in place" >&2
-        echo "test_exfat.sh: detach by hand: hdiutil detach '$mnt' -force; rm -rf '$work'" >&2
+    # Every mount point is detached and checked, attached or not: one
+    # attach may have mounted before it failed.
+    local point mounts left=()
+    for point in "$card" "$mnt"; do
+        if mounts=$(mount) && [[ $mounts == *" on $point "* ]]; then
+            hdiutil detach "$point" -quiet || hdiutil detach "$point" -force -quiet || true
+        fi
+        # Checked again, not trusted to the detach: `rm -rf` through a live
+        # mount would delete inside the image, and the image file under it.
+        # Captured, not piped into `grep -q` (an early exit can SIGPIPE
+        # `mount`), and a failing `mount` counts as still mounted, so the
+        # check fails safe.
+        if ! mounts=$(mount) || [[ $mounts == *" on $point "* ]]; then
+            left+=("$point")
+        fi
+    done
+    if (( ${#left[@]} )); then
+        echo "test_exfat.sh: FAILED to detach ${left[*]}; left them and $work in place" >&2
+        echo "test_exfat.sh: detach by hand: hdiutil detach <each> -force; rm -rf '$work'" >&2
         exit $(( status ? status : 1 ))
     fi
     rm -rf "$work"
 }
 trap cleanup EXIT
 
-mkdir "$mnt"
-hdiutil create -size 64m -fs ExFAT -volname PSEXFAT "$work/exfat.dmg" -ov -quiet
-hdiutil attach "$work/exfat.dmg" -nobrowse -mountpoint "$mnt" -quiet
-attached=1
-if ! mount | grep -F " on $mnt " | grep -q "(exfat"; then
-    echo "test_exfat.sh: $mnt is not mounted as exFAT" >&2
-    exit 1
-fi
+# Makes an exFAT image named `$1` of size `$2` and mounts it at `$3`.
+attach_exfat() {
+    local name="$1" size="$2" point="$3"
+    mkdir "$point"
+    hdiutil create -size "$size" -fs ExFAT -volname "$name" "$work/$name.dmg" -ov -quiet
+    hdiutil attach "$work/$name.dmg" -nobrowse -mountpoint "$point" -quiet
+    if ! mount | grep -F " on $point " | grep -q "(exfat"; then
+        echo "test_exfat.sh: $point is not mounted as exFAT" >&2
+        exit 1
+    fi
+}
+
+attach_exfat PSEXFAT 64m "$mnt"
 echo "exFAT image mounted at $mnt"
+attach_exfat PSCARD 16m "$card"
+mkdir "$card/DCIM"
+echo "card image (DCIM at its top) mounted at $card"
 
 args=()
 for name in ${skip[@]+"${skip[@]}"}; do
     args+=(--skip "$name")
 done
-TMPDIR="$mnt" cargo test --manifest-path "$repo/Cargo.toml" -p photosync-core --no-fail-fast -- --exact ${args[@]+"${args[@]}"}
+TMPDIR="$mnt" PHOTOSYNC_TEST_CARD="$card" cargo test --manifest-path "$repo/Cargo.toml" -p photosync-core --no-fail-fast -- --exact ${args[@]+"${args[@]}"}

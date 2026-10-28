@@ -64,7 +64,10 @@ stays listed as retired.
   top, a source or not. The library's volume is found by walking up from
   the library to where the device changes; the boot disk (`/`) is never a
   card. So no second path to a card, and no folder on it, gets past the
-  check (DEC-025, DEC-026).
+  check (DEC-025, DEC-026). Copying checks again before it writes or
+  deletes anything: if the library is now on another device or volume
+  than when the sync was planned, or on a source's device, it refuses
+  (DEC-027).
 
 ## Behaviour
 

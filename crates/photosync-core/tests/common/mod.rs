@@ -21,8 +21,8 @@ pub const OTHER_DEVICE: u64 = 0xdead_beef_dead_beef;
 /// this. The device rule's own tests use `scan_source` as is.
 pub fn scan_elsewhere(root: &Path) -> SourceScan {
     let mut scan = scan_source(root).unwrap();
-    assert_ne!(scan.device, OTHER_DEVICE, "a real device has the fake id");
-    scan.device = OTHER_DEVICE;
+    assert_ne!(scan.device(), OTHER_DEVICE, "a real device has the fake id");
+    scan.set_device_for_test(OTHER_DEVICE);
     scan
 }
 

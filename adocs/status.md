@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-28, by Claude (S015 fast check)
+Updated: 2026-10-28, by Claude agent (S016)
 
-- Last done: S015  strict INV-10: library never on a source disk or a card
+- Last done: S016  enforce INV-10: e2e card test, read-only device, re-check before copy
 - In progress: none
-- Next: S016  enforce INV-10: e2e card test, read-only device, re-check before copy
+- Next: S008  CLI commands
 - Blocked: none
 - Parked:
   - The camera's PTP mode (USB without card-reader mode) is unsupported

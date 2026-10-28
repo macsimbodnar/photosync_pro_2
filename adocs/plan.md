@@ -17,10 +17,9 @@ not change the order.
 
 ## Open
 
-1. S016  enforce INV-10: e2e card test, read-only device, re-check before copy
-2. S008  CLI commands
-3. S009  TUI
-4. S010  multi-source and one-by-one session
+1. S008  CLI commands
+2. S009  TUI
+3. S010  multi-source and one-by-one session
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.
@@ -29,8 +28,8 @@ Linux verification.
 
 Last five; the full record is `plan_done/`.
 
+- S016  enforce INV-10: e2e card test, read-only device, re-check before copy
 - S015  strict INV-10: library never on a source disk or a card
 - S007  volume discovery (Mac, then Linux)
 - S014  report hardening (S006 fast check)
 - S006  sync report
-- S005  progress events, ETA, cancel

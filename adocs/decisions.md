@@ -43,6 +43,7 @@ Why: one line.
 - DEC-024 2026-10-28 — volume discovery and the INV-10 device check (S007)
 - DEC-025 2026-10-28 — strict INV-10: library never on a source's disk or on any card
 - DEC-026 2026-10-28 — strict INV-10 details left open by DEC-025 (S015)
+- DEC-027 2026-10-28 — INV-10 enforcement: read-only device, test-support seam, re-check before copy (S016)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -436,3 +437,38 @@ photosync_core` under `cfg(test)` so the shared `common` names the crate
 one way.
 Why: each keeps a typed path off a card with the least API, and keeps the
 fake device visible in every test that uses it.
+
+## DEC-027  2026-10-28  INV-10 enforcement: read-only device, test-support seam, re-check before copy (S016)
+Tags: safety, api, tests
+Decision: agent's pick in S016, not yet confirmed by the user.
+(1) `SourceScan::device` is a private field read through `device()`.
+Supersedes the "test sets the public field" part of DEC-024 (5) and
+DEC-026 (6).
+(2) Tests fake it through `SourceScan::set_device_for_test`, compiled only
+under `cfg(test)` (unit tests) or the Cargo feature `test-support`
+(integration tests, which link the lib as an outside crate). Only
+photosync-core's dev-dependency on itself turns the feature on, and
+dev-dependencies never reach a normal build, so `cargo build` of the CLI
+or any downstream crate has no such method. `tests/test_seam.rs` proves it
+by checking a probe crate that depends on photosync-core without features:
+reading `device()` compiles, `scan.device = …` fails (E0616), the seam call
+fails (E0599). A crate that names `features = ["test-support"]` itself
+opts in on purpose; that is not a normal build. Rejected: a
+`#[doc(hidden)]` pub fn (any caller can use it), `cfg(test)` alone (the
+integration tests cannot see it).
+(3) `SyncPlan` records the library's device and volume as `check_library`
+found them, and each source's device; the fields are `pub(crate)`, so a
+`SyncPlan` can now only come from `plan_sync`. `copy_plan` re-checks before
+anything else, the stale-temp cleanup included: the library's device, then
+its volume, then no source device equal to the library's. New
+`CopyError` variants: `LibraryDeviceChanged`, `LibraryVolumeChanged`,
+`LibraryOnSourceDevice`, and `Library` (the library cannot be found or
+stat'ed, e.g. unplugged; before, that failed file by file). The source
+devices are compared as recorded at scan time, not stat'ed again: the
+source may already be gone, and the library check is what moved.
+(4) The card rule is tested end to end by `scripts/test_exfat.sh`: it
+mounts a second exFAT image with `DCIM` at its top and names it in
+`PHOTOSYNC_TEST_CARD`. Without the variable the test prints that it was
+skipped and returns. With the lookup replaced by `|_| Ok(None)` the script
+fails (checked in S016).
+Why: no hand-edited scan or plan gets a write onto a card, and no front-end reaches the tests' seam.

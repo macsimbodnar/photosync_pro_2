@@ -5,5 +5,5 @@ touches:    photosync-core plan/source/copy/volume, tests, scripts/test_exfat.sh
 excludes:   CLI (S008)
 closes:
 paused_by:
-author:
-done:
+author:     Claude agent (2026-10-28)
+done:       2026-10-28, Claude agent. cargo test --workspace green (127 passed); clippy --workspace --all-targets clean, with and without --features photosync-core/test-support; scripts/test_exfat.sh exit 0, both images detached. E2E: library_plan::inv10_library_on_a_mounted_card_is_refused_end_to_end (PHOTOSYNC_TEST_CARD = second exFAT image with DCIM; prints SKIPPED without it); with check_library's lookup replaced by |_| Ok(None) the script exited 101 (that test failed, and copy re-check tests too), then restored. SourceScan::device private + device(); seam set_device_for_test behind cfg(test)/feature test-support (self dev-dependency), proven absent from a normal build by test_seam::source_device_is_read_only_in_a_normal_build. SyncPlan records library_device, library_volume, source_devices (pub(crate)); copy_plan re-checks before any write or temp cleanup: copy::tests::inv10_copy_refuses_a_library_whose_place_changed_since_planning, inv10_copy_refuses_a_library_it_cannot_find. Renamed inv10_library_on_the_device_of_a_source_volume_is_refused to inv10_scan_records_the_root_device_and_a_library_on_it_is_refused, assertions kept. DEC-027. Also in scope: SyncPlan no longer constructible outside the crate; an unfindable library now fails copy_plan whole instead of file by file.
