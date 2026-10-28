@@ -190,7 +190,9 @@ fn same_name_different_content_in_the_target_folder_fails_as_name_collision() {
     let dir = TempDir::new();
     let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
     put(&card, &[("DCIM/101_FUJI/DSCF0001.JPG", b"new shot")]);
-    let existing = write_file(&lib, "2026-01-01 - Tirana/JPEG/DSCF0001.JPG", b"old shot", at(5));
+    // After 1980: exFAT stores no mtime before that (scripts/test_exfat.sh).
+    let existing =
+        write_file(&lib, "2026-01-01 - Tirana/JPEG/DSCF0001.JPG", b"old shot", at(1_600_000_000));
 
     let (plan, outcome) = sync(&card, &lib, Some("Tirana"));
 
@@ -201,7 +203,7 @@ fn same_name_different_content_in_the_target_folder_fails_as_name_collision() {
     assert!(matches!(&failed.reason, FailReason::NameCollision { existing: e } if *e == existing));
     assert!(failed.reason.to_string().starts_with("name collision"));
     assert_eq!(fs::read(&existing).unwrap(), b"old shot");
-    assert_eq!(fs::metadata(&existing).unwrap().modified().unwrap(), at(5));
+    assert_eq!(fs::metadata(&existing).unwrap().modified().unwrap(), at(1_600_000_000));
     assert!(temps_under(&lib).is_empty());
 }
 

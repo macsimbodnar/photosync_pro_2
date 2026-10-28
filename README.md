@@ -29,3 +29,15 @@ Then:
 cargo build
 cargo test --workspace
 ```
+
+### exFAT (macOS)
+
+`scripts/test_exfat.sh` runs the `photosync-core` tests on a temporary exFAT
+disk image (the common format for a Mac + Linux drive). It needs `hdiutil`,
+works from any directory, keeps the image in a temp dir outside the repo, and
+always detaches it. The tests that need Unix permission bits, which exFAT does
+not have, are skipped; the script lists them.
+
+```sh
+scripts/test_exfat.sh
+```

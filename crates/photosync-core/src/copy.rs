@@ -9,6 +9,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::hash::hash_file;
@@ -363,7 +364,7 @@ fn copy_file(
         .map_err(write_error(&temp))?;
     // From here the temp file is ours: every failure removes it.
     let placed = fill_and_verify(file, out, &temp, &dir).and_then(|()| {
-        rename_noreplace(&temp, &target).map_err(|error| {
+        rename_noreplace(&temp, &target, &folder.library).map_err(|error| {
             if error.kind() == io::ErrorKind::AlreadyExists {
                 FailReason::NameCollision { existing: target.clone() }
             } else {
@@ -447,9 +448,76 @@ fn c_path(path: &Path) -> io::Result<std::ffi::CString> {
 
 /// Renames `from` to `to`, failing with `AlreadyExists` if `to` exists. The
 /// OS checks and renames in one step, so no other writer can slip in between
-/// (DEC-008). `std::fs::rename` would replace `to`.
+/// (DEC-008). `std::fs::rename` would replace `to`. Where the filesystem has
+/// no such rename (exFAT), it checks and renames under `library`'s lock
+/// instead (DEC-018).
+fn rename_noreplace(from: &Path, to: &Path, library: &Path) -> io::Result<()> {
+    rename_noreplace_with(rename_excl, from, to, library)
+}
+
+/// `rename_noreplace` over any OS rename, so tests can force "unsupported".
+fn rename_noreplace_with(
+    excl: fn(&Path, &Path) -> io::Result<()>,
+    from: &Path,
+    to: &Path,
+    library: &Path,
+) -> io::Result<()> {
+    match excl(from, to) {
+        // Only this errno: any other error may mean the rename half-ran or
+        // the target is unusable, and falling back could hide it.
+        Err(e) if EXCL_UNSUPPORTED.is_some_and(|code| e.raw_os_error() == Some(code)) => {
+            rename_locked(from, to, library)
+        }
+        result => result,
+    }
+}
+
+/// Checks that `to` is free, then renames, both under `library`'s lock, so
+/// photosync's own threads never race on a name. Another program could still
+/// create `to` in between; DEC-018 accepts that for filesystems without a
+/// no-replace rename.
+fn rename_locked(from: &Path, to: &Path, library: &Path) -> io::Result<()> {
+    let lock = library_lock(library)?;
+    // The lock guards no data, so one a panic poisoned is still sound.
+    let _held = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    match fs::symlink_metadata(to) {
+        Ok(_) => return Err(io::Error::new(io::ErrorKind::AlreadyExists, "target exists")),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    fs::rename(from, to)
+}
+
+/// One lock per library for this process, keyed by its canonical path so two
+/// spellings of one library share it (DEC-019). Kept for the process's life:
+/// one small entry per library.
+fn library_lock(library: &Path) -> io::Result<Arc<Mutex<()>>> {
+    static LOCKS: Mutex<Vec<(PathBuf, Arc<Mutex<()>>)>> = Mutex::new(Vec::new());
+    let key = fs::canonicalize(library)?;
+    let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, lock)) = locks.iter().find(|(path, _)| *path == key) {
+        return Ok(lock.clone());
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.push((key, lock.clone()));
+    Ok(lock)
+}
+
+/// The errno `rename_excl` gives when the filesystem cannot rename without
+/// replacing: macOS says ENOTSUP (exFAT, checked on a real image).
 #[cfg(target_vendor = "apple")]
-fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+const EXCL_UNSUPPORTED: Option<i32> = Some(libc::ENOTSUP);
+
+/// `renameat2` says EINVAL for a flag the filesystem does not support. With
+/// a temp file as `from` and one valid flag, that is its only cause.
+#[cfg(target_os = "linux")]
+const EXCL_UNSUPPORTED: Option<i32> = Some(libc::EINVAL);
+
+#[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
+const EXCL_UNSUPPORTED: Option<i32> = None;
+
+#[cfg(target_vendor = "apple")]
+fn rename_excl(from: &Path, to: &Path) -> io::Result<()> {
     let (from, to) = (c_path(from)?, c_path(to)?);
     // SAFETY: both are NUL-terminated strings that outlive the call.
     if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } == 0 {
@@ -459,10 +527,8 @@ fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
-/// See the Apple version. A filesystem without `RENAME_NOREPLACE` fails the
-/// file with `EINVAL`; it never falls back to a replacing rename.
 #[cfg(target_os = "linux")]
-fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+fn rename_excl(from: &Path, to: &Path) -> io::Result<()> {
     let (from, to) = (c_path(from)?, c_path(to)?);
     // SAFETY: both are NUL-terminated strings that outlive the call.
     let rc = unsafe {
@@ -478,9 +544,10 @@ fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 /// No no-replace rename is wired up here, and a replacing one could
-/// overwrite a photo (INV-2), so every copy fails instead.
+/// overwrite a photo (INV-2), so every copy fails instead. This error has no
+/// errno, so it never takes the locked fallback either.
 #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
-fn rename_noreplace(_: &Path, _: &Path) -> io::Result<()> {
+fn rename_excl(_: &Path, _: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "no rename that refuses to replace a file on this platform",
@@ -532,7 +599,7 @@ mod tests {
     use super::*;
     use crate::plan::plan_sync;
     use crate::source::scan_source;
-    use std::sync::{Arc, Barrier};
+    use std::sync::Barrier;
 
     fn set_hook(hook: impl FnMut(Stage, &Path) + 'static) {
         HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
@@ -704,13 +771,13 @@ mod tests {
         fs::write(&from, b"new").unwrap();
         fs::write(&to, b"old").unwrap();
 
-        let err = rename_noreplace(&from, &to).unwrap_err();
+        let err = rename_noreplace(&from, &to, &dir.0).unwrap_err();
 
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read(&to).unwrap(), b"old");
         assert_eq!(fs::read(&from).unwrap(), b"new");
         fs::remove_file(&to).unwrap();
-        rename_noreplace(&from, &to).unwrap();
+        rename_noreplace(&from, &to, &dir.0).unwrap();
         assert_eq!(fs::read(&to).unwrap(), b"new");
         assert!(!from.exists());
     }
@@ -730,9 +797,10 @@ mod tests {
                 .iter()
                 .map(|temp| {
                     let (temp, target, barrier) = (temp.clone(), target.clone(), barrier.clone());
+                    let library = dir.0.clone();
                     std::thread::spawn(move || {
                         barrier.wait();
-                        rename_noreplace(&temp, &target)
+                        rename_noreplace(&temp, &target, &library)
                     })
                 })
                 .collect();
@@ -745,6 +813,141 @@ mod tests {
             assert_eq!(fs::read(&target).unwrap(), format!("writer {winner}").as_bytes());
             assert_eq!(fs::read(&temps[loser]).unwrap(), format!("writer {loser}").as_bytes());
         }
+    }
+
+    /// Stands in for a filesystem without a no-replace rename, like exFAT.
+    fn excl_unsupported(_: &Path, _: &Path) -> io::Result<()> {
+        Err(io::Error::from_raw_os_error(EXCL_UNSUPPORTED.unwrap()))
+    }
+
+    #[test]
+    fn inv2_unsupported_rename_falls_back_and_never_replaces_an_existing_target() {
+        let dir = TempDir::new();
+        let (from, to) = (dir.0.join("from"), dir.0.join("to"));
+        fs::write(&from, b"new").unwrap();
+        fs::write(&to, b"old").unwrap();
+
+        let err = rename_noreplace_with(excl_unsupported, &from, &to, &dir.0).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&to).unwrap(), b"old");
+        assert_eq!(fs::read(&from).unwrap(), b"new");
+
+        // A dangling symlink is a name taken too.
+        fs::remove_file(&to).unwrap();
+        std::os::unix::fs::symlink(dir.0.join("nowhere"), &to).unwrap();
+        let err = rename_noreplace_with(excl_unsupported, &from, &to, &dir.0).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert!(fs::symlink_metadata(&to).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(&from).unwrap(), b"new");
+
+        fs::remove_file(&to).unwrap();
+        rename_noreplace_with(excl_unsupported, &from, &to, &dir.0).unwrap();
+        assert_eq!(fs::read(&to).unwrap(), b"new");
+        assert!(!from.exists());
+    }
+
+    #[test]
+    fn inv2_unsupported_rename_racing_threads_lose_no_file() {
+        let dir = TempDir::new();
+        for round in 0..200 {
+            let target = dir.0.join(format!("DSCF{round:04}.RAF"));
+            let temps: Vec<PathBuf> =
+                (0..2).map(|w| dir.0.join(format!("{TEMP_PREFIX}{round}-{w}"))).collect();
+            for (w, temp) in temps.iter().enumerate() {
+                fs::write(temp, format!("writer {w}")).unwrap();
+            }
+            let barrier = Arc::new(Barrier::new(2));
+            let workers: Vec<_> = temps
+                .iter()
+                .map(|temp| {
+                    let (temp, target, barrier) = (temp.clone(), target.clone(), barrier.clone());
+                    let library = dir.0.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        rename_noreplace_with(excl_unsupported, &temp, &target, &library)
+                    })
+                })
+                .collect();
+            let results: Vec<io::Result<()>> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+
+            let winners: Vec<usize> = (0..2).filter(|w| results[*w].is_ok()).collect();
+            assert_eq!(winners.len(), 1, "round {round}: {results:?}");
+            let (winner, loser) = (winners[0], 1 - winners[0]);
+            assert_eq!(results[loser].as_ref().unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+            assert_eq!(fs::read(&target).unwrap(), format!("writer {winner}").as_bytes());
+            assert_eq!(fs::read(&temps[loser]).unwrap(), format!("writer {loser}").as_bytes());
+        }
+    }
+
+    #[test]
+    fn unsupported_rename_checks_and_renames_under_the_library_lock() {
+        let dir = TempDir::new();
+        let (from, to) = (dir.0.join("from"), dir.0.join("to"));
+        fs::write(&from, b"new").unwrap();
+        // Another spelling of the same library must give the same lock.
+        let lock = library_lock(&dir.0.join(".")).unwrap();
+        let held = lock.lock().unwrap();
+
+        let library = dir.0.clone();
+        let (f, t) = (from.clone(), to.clone());
+        let worker = std::thread::spawn(move || rename_noreplace_with(excl_unsupported, &f, &t, &library));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!worker.is_finished(), "renamed without the lock");
+        assert!(from.exists() && !to.exists());
+
+        drop(held);
+        worker.join().unwrap().unwrap();
+        assert_eq!(fs::read(&to).unwrap(), b"new");
+    }
+
+    #[test]
+    fn other_lock_for_another_library() {
+        let (a, b) = (TempDir::new(), TempDir::new());
+        let lock = library_lock(&a.0).unwrap();
+        assert!(Arc::ptr_eq(&lock, &library_lock(&a.0).unwrap()));
+        assert!(!Arc::ptr_eq(&lock, &library_lock(&b.0).unwrap()));
+        let missing = library_lock(&a.0.join("missing")).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn inv2_other_rename_errors_never_fall_back() {
+        // A plain `fn` cannot capture, so the fake reads its errno from here.
+        static CODE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+        fn fails(_: &Path, _: &Path) -> io::Result<()> {
+            Err(io::Error::from_raw_os_error(CODE.load(Ordering::Relaxed)))
+        }
+        let dir = TempDir::new();
+        let (from, to) = (dir.0.join("from"), dir.0.join("to"));
+        fs::write(&from, b"new").unwrap();
+        // Includes the other OS's "unsupported" code: only this OS's counts.
+        let codes = [
+            libc::EIO,
+            libc::EXDEV,
+            libc::EACCES,
+            libc::EPERM,
+            libc::ENOSPC,
+            libc::ENOSYS,
+            libc::ENOTSUP,
+            libc::EOPNOTSUPP,
+            libc::EINVAL,
+        ];
+        for code in codes.into_iter().filter(|c| Some(*c) != EXCL_UNSUPPORTED) {
+            CODE.store(code, Ordering::Relaxed);
+            let err = rename_noreplace_with(fails, &from, &to, &dir.0).unwrap_err();
+            assert_eq!(err.raw_os_error(), Some(code));
+            assert!(from.exists() && !to.exists(), "errno {code} fell back");
+        }
+        // No errno at all, as on a platform with no no-replace rename.
+        let err = rename_noreplace_with(
+            |_, _| Err(io::Error::new(io::ErrorKind::Unsupported, "none")),
+            &from,
+            &to,
+            &dir.0,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+        assert!(from.exists() && !to.exists());
     }
 
     #[test]

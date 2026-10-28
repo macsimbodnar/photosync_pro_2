@@ -17,14 +17,13 @@ not change the order.
 
 ## Open
 
-1. S012  exFAT: locked check + rename fallback
-2. S013  copy engine hardening (S004 fast check)
-3. S005  progress events, ETA, cancel
-4. S006  sync report
-5. S007  volume discovery (Mac, then Linux)
-6. S008  CLI commands
-7. S009  TUI
-8. S010  multi-source and one-by-one session
+1. S013  copy engine hardening (S004 fast check)
+2. S005  progress events, ETA, cancel
+3. S006  sync report
+4. S007  volume discovery (Mac, then Linux)
+5. S008  CLI commands
+6. S009  TUI
+7. S010  multi-source and one-by-one session
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.
@@ -33,8 +32,8 @@ Linux verification.
 
 Last five; the full record is `plan_done/`.
 
+- S012  exFAT: locked check + rename fallback
 - S004  copy engine: folder naming, temp copy, verify, rename
 - S003  in-memory library scan, already-synced detection
 - S011  scan: per-file errors instead of whole-source failure
 - S002  scan source DCIM, classify by type
-- S001  workspace skeleton and test suite
