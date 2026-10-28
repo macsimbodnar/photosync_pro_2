@@ -17,10 +17,13 @@ not change the order.
 
 ## Open
 
-1. S017  hardware hand checks (waits for the user)
+1. S025  first run on Linux: build, tests, hand checks (user, 2026-10-29)
+2. S017  hardware hand checks on Mac (waits for the user)
 
-Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
-Linux verification.
+Later, not yet steps: a full adversarial audit (re-run of 2026-10-28;
+closes the planned findings), then plan the native GUI (iced) over the
+reusable app/worker/flow/text layer, then Mac .app and Linux AppImage
+packaging.
 
 ## Done recently
 

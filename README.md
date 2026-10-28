@@ -155,6 +155,40 @@ cargo build
 cargo test --workspace
 ```
 
+### Linux (first run, S025)
+
+Linux is built in but not yet verified on a real machine. What is known:
+
+- Cards and drives are looked for under `/media/$USER` and
+  `/run/media/$USER` (most desktops auto-mount there). `$USER` must be set.
+- A drive whose root folder is owned by root (e.g. a fresh ext4) is not
+  offered as a destination until you own it: `sudo chown $USER <mountpoint>`.
+- The no-replace rename is `renameat2(RENAME_NOREPLACE)`. On a file system
+  that lacks it (EINVAL, e.g. some exFAT drivers), photosync falls back to a
+  locked check + rename (DEC-018); any other error fails the copy.
+- `scripts/test_exfat.sh` is macOS-only (hdiutil). On Linux, run
+  `cargo test --workspace`; the exFAT-only tests say SKIPPED.
+
+Hand check (see `adocs/plan_todo/S025_linux_checks.md`):
+
+```sh
+cargo build
+cargo test --workspace
+./target/debug/photosync sources      # the card, under /media/$USER/...
+./target/debug/photosync drives       # the external drive, not the card
+mkdir /media/$USER/<DRIVE>/Photos
+./target/debug/photosync sync --source /media/$USER/<CARD> \
+    --dest /media/$USER/<DRIVE>/Photos --name LinuxCheck; echo "exit $?"
+# run it again: expect 0 copied, exit 0
+stat -c %d /media/$USER/<CARD> /media/$USER/<DRIVE> /   # three different numbers
+./target/debug/photosync              # the TUI
+sudo ./target/debug/photosync drives  # must refuse, exit 2
+```
+
+For the camera over cable: X-T5 off, MENU > Setup > CONNECTION SETTING >
+PC CONNECTION MODE > USB CARD READER, connect a USB-C data cable, switch on,
+then repeat the sync. Write down each command's output and exit code.
+
 ### exFAT (macOS)
 
 `scripts/test_exfat.sh` runs the workspace tests on a temporary exFAT
