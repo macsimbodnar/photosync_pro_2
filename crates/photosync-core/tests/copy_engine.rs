@@ -393,3 +393,47 @@ fn stale_temps_are_removed_even_with_nothing_to_copy() {
     assert_eq!(cleanup.removed, std::slice::from_ref(&stale));
     assert!(!stale.exists() && keep.exists());
 }
+
+/// A session or `<TYPE>` folder that is a symlink would send copies out of
+/// the library (INV-9), maybe onto the card (INV-10): refused, never followed.
+#[cfg(unix)]
+#[test]
+fn symlinked_session_or_type_folder_is_refused_never_followed() {
+    use std::os::unix::fs::symlink;
+    let dir = TempDir::new();
+    let (card, lib, outside) = (dir.0.join("card"), dir.0.join("lib"), dir.0.join("outside"));
+    put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw"), ("DCIM/100_FUJI/DSCF0001.JPG", b"jpg")]);
+    fs::create_dir_all(&lib).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let date = date_command(T0);
+
+    // The session folder is a symlink: every file fails.
+    symlink(&outside, lib.join(&date)).unwrap();
+    let (_, outcome) = sync(&card, &lib, None);
+    assert!(outcome.copied.is_empty(), "{:?}", outcome.copied);
+    assert_eq!(outcome.failed.len(), 2);
+    for failed in &outcome.failed {
+        assert!(
+            matches!(&failed.reason, FailReason::Write { path, error }
+                if *path == lib.join(&date) && error.kind() == std::io::ErrorKind::NotADirectory),
+            "{failed}"
+        );
+    }
+    assert_eq!(manifest(&outside), Default::default());
+    assert!(fs::symlink_metadata(lib.join(&date)).unwrap().file_type().is_symlink());
+    fs::remove_file(lib.join(&date)).unwrap();
+
+    // The RAW folder is a symlink: only the RAW file fails.
+    fs::create_dir_all(lib.join(&date)).unwrap();
+    symlink(&outside, lib.join(&date).join("RAW")).unwrap();
+    let (_, outcome) = sync(&card, &lib, None);
+    assert_eq!(copied_to(&outcome), [lib.join(&date).join("JPEG/DSCF0001.JPG")]);
+    let [failed] = &outcome.failed[..] else { panic!("{:?}", outcome.failed) };
+    assert_eq!(failed.file.path, card.join("DCIM/100_FUJI/DSCF0001.RAF"));
+    assert!(
+        matches!(&failed.reason, FailReason::Write { path, error }
+            if *path == lib.join(&date).join("RAW") && error.kind() == std::io::ErrorKind::NotADirectory),
+        "{failed}"
+    );
+    assert_eq!(manifest(&outside), Default::default());
+}

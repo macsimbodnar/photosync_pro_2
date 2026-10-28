@@ -192,6 +192,10 @@ pub enum FailReason {
     Read(io::Error),
     /// Writing, flushing or renaming on the destination failed at `path`.
     Write { path: PathBuf, error: io::Error },
+    /// The verified copy is in place at `to`, but flushing its folder failed,
+    /// so its name may not survive an unplug (INV-3). The next sync skips it
+    /// as already synced if it survived, and copies it again if not.
+    NotFlushed { to: PathBuf, error: io::Error },
     /// The flushed copy's hash differs from what was read off the source.
     Mismatch,
     /// Not a supported file; only a hand-built plan can hold one.
@@ -208,6 +212,11 @@ impl fmt::Display for FailReason {
             FailReason::Write { path, error } => {
                 write!(f, "cannot write {}: {error}", path.display())
             }
+            FailReason::NotFlushed { to, error } => write!(
+                f,
+                "copy is in place at {}, but flushing its folder failed: {error}",
+                to.display()
+            ),
             FailReason::Mismatch => write!(f, "copy does not match the source"),
             FailReason::Unsupported => write!(f, "not a supported file"),
         }
@@ -223,7 +232,9 @@ impl fmt::Display for Failed {
 impl Error for Failed {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.reason {
-            FailReason::Read(e) | FailReason::Write { error: e, .. } => Some(e),
+            FailReason::Read(e)
+            | FailReason::Write { error: e, .. }
+            | FailReason::NotFlushed { error: e, .. } => Some(e),
             _ => None,
         }
     }
@@ -345,7 +356,7 @@ fn copy_file(
     };
     let dir = folder.path.join(media.dir_name());
     if !ready.contains(&dir) {
-        prepare_dir(folder, &dir).map_err(write_error(&dir))?;
+        prepare_dir(folder, &dir)?;
         ready.push(dir.clone());
     }
     let target = dir.join(name);
@@ -364,7 +375,7 @@ fn copy_file(
         .map_err(write_error(&temp))?;
     // From here the temp file is ours: every failure removes it.
     let placed = fill_and_verify(file, out, &temp, &dir).and_then(|()| {
-        rename_noreplace(&temp, &target, &folder.library).map_err(|error| {
+        rename_noreplace(&temp, &target).map_err(|error| {
             if error.kind() == io::ErrorKind::AlreadyExists {
                 FailReason::NameCollision { existing: target.clone() }
             } else {
@@ -381,17 +392,34 @@ fn copy_file(
     at_stage(Stage::Renamed, &target);
     // Until the folder is flushed the new name may not survive an unplug, so
     // the file does not count as copied yet (INV-3).
-    sync_dir(&dir).map_err(write_error(&dir))?;
-    at_stage(Stage::RenameSynced, &target);
-    Ok(target)
+    match synced(Stage::RenameSynced, &target, sync_dir(&dir)) {
+        Ok(()) => Ok(target),
+        Err(error) => Err(FailReason::NotFlushed { to: target, error }),
+    }
 }
 
-/// Makes `dir` and flushes the folders above it, so the new folder entries
-/// survive an unplug too.
-fn prepare_dir(folder: &SyncFolder, dir: &Path) -> io::Result<()> {
-    fs::create_dir_all(dir)?;
-    sync_dir(&folder.path)?;
-    sync_dir(&folder.library)
+/// Makes the session folder and `dir` in it, if absent, and flushes the
+/// folders above `dir`, so the new folder entries survive an unplug too.
+fn prepare_dir(folder: &SyncFolder, dir: &Path) -> Result<(), FailReason> {
+    real_dir(&folder.path).map_err(write_error(&folder.path))?;
+    real_dir(dir).map_err(write_error(dir))?;
+    sync_dir(&folder.path).map_err(write_error(&folder.path))?;
+    sync_dir(&folder.library).map_err(write_error(&folder.library))
+}
+
+/// Makes `dir` unless it exists, then checks it is a real folder. A symlink
+/// there is never followed: it could lead out of the library (INV-9), even
+/// onto the card (INV-10). `create_dir_all` would follow it.
+fn real_dir(dir: &Path) -> io::Result<()> {
+    match fs::create_dir(dir) {
+        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
+        _ => {}
+    }
+    if fs::symlink_metadata(dir)?.is_dir() {
+        Ok(())
+    } else {
+        Err(io::Error::new(io::ErrorKind::NotADirectory, "not a folder (a symlink is never followed)"))
+    }
 }
 
 /// `.photosync-tmp-<pid>-<n>-<name>`: unique per process and file, so a temp
@@ -412,7 +440,7 @@ fn fill_and_verify(file: &SourceFile, mut out: File, temp: &Path, dir: &Path) ->
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0; CHUNK];
     loop {
-        let n = match src.read(&mut buf) {
+        let n = match injected(Fault::Read).and_then(|()| src.read(&mut buf)) {
             Ok(0) => break,
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -422,11 +450,9 @@ fn fill_and_verify(file: &SourceFile, mut out: File, temp: &Path, dir: &Path) ->
         out.write_all(&buf[..n]).map_err(write_error(temp))?;
         at_stage(Stage::Written, temp);
     }
-    out.sync_all().map_err(write_error(temp))?;
+    synced(Stage::FileSynced, temp, out.sync_all()).map_err(write_error(temp))?;
     drop(out);
-    at_stage(Stage::FileSynced, temp);
-    sync_dir(dir).map_err(write_error(dir))?;
-    at_stage(Stage::DirSynced, temp);
+    synced(Stage::DirSynced, temp, sync_dir(dir)).map_err(write_error(dir))?;
     // The read may come from the OS cache (DEC-012).
     if hash_file(temp).map_err(write_error(temp))? != hasher.finalize() {
         return Err(FailReason::Mismatch);
@@ -436,7 +462,17 @@ fn fill_and_verify(file: &SourceFile, mut out: File, temp: &Path, dir: &Path) ->
 }
 
 fn sync_dir(dir: &Path) -> io::Result<()> {
+    injected(Fault::SyncDir)?;
     File::open(dir)?.sync_all()
+}
+
+/// Passes on a flush's result, reporting `stage` only once it succeeded. The
+/// flush is an argument, so dropping the flush drops the stage too, and the
+/// INV-3 test sees it.
+fn synced(stage: Stage, path: &Path, flushed: io::Result<()>) -> io::Result<()> {
+    flushed?;
+    at_stage(stage, path);
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -449,10 +485,10 @@ fn c_path(path: &Path) -> io::Result<std::ffi::CString> {
 /// Renames `from` to `to`, failing with `AlreadyExists` if `to` exists. The
 /// OS checks and renames in one step, so no other writer can slip in between
 /// (DEC-008). `std::fs::rename` would replace `to`. Where the filesystem has
-/// no such rename (exFAT), it checks and renames under `library`'s lock
-/// instead (DEC-018).
-fn rename_noreplace(from: &Path, to: &Path, library: &Path) -> io::Result<()> {
-    rename_noreplace_with(rename_excl, from, to, library)
+/// no such rename (exFAT), it checks and renames under the lock of `to`'s
+/// folder instead (DEC-018).
+fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    rename_noreplace_with(rename_excl, from, to)
 }
 
 /// `rename_noreplace` over any OS rename, so tests can force "unsupported".
@@ -460,24 +496,27 @@ fn rename_noreplace_with(
     excl: fn(&Path, &Path) -> io::Result<()>,
     from: &Path,
     to: &Path,
-    library: &Path,
 ) -> io::Result<()> {
     match excl(from, to) {
         // Only this errno: any other error may mean the rename half-ran or
         // the target is unusable, and falling back could hide it.
         Err(e) if EXCL_UNSUPPORTED.is_some_and(|code| e.raw_os_error() == Some(code)) => {
-            rename_locked(from, to, library)
+            rename_locked(from, to)
         }
         result => result,
     }
 }
 
-/// Checks that `to` is free, then renames, both under `library`'s lock, so
-/// photosync's own threads never race on a name. Another program could still
-/// create `to` in between; DEC-018 accepts that for filesystems without a
-/// no-replace rename.
-fn rename_locked(from: &Path, to: &Path, library: &Path) -> io::Result<()> {
-    let lock = library_lock(library)?;
+/// Checks that `to` is free, then renames, both under the lock of `to`'s
+/// folder, so photosync's own threads never race on a name. Another program
+/// could still create `to` in between; DEC-018 accepts that for filesystems
+/// without a no-replace rename.
+fn rename_locked(from: &Path, to: &Path) -> io::Result<()> {
+    let folder = match to.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let lock = folder_lock(folder)?;
     // The lock guards no data, so one a panic poisoned is still sound.
     let _held = lock.lock().unwrap_or_else(PoisonError::into_inner);
     match fs::symlink_metadata(to) {
@@ -488,12 +527,13 @@ fn rename_locked(from: &Path, to: &Path, library: &Path) -> io::Result<()> {
     fs::rename(from, to)
 }
 
-/// One lock per library for this process, keyed by its canonical path so two
-/// spellings of one library share it (DEC-019). Kept for the process's life:
-/// one small entry per library.
-fn library_lock(library: &Path) -> io::Result<Arc<Mutex<()>>> {
+/// One lock per target folder for this process, keyed by its canonical path,
+/// so every path into one folder shares it, even from two libraries nested in
+/// each other (DEC-019). Kept for the process's life: one small entry per
+/// folder.
+fn folder_lock(folder: &Path) -> io::Result<Arc<Mutex<()>>> {
     static LOCKS: Mutex<Vec<(PathBuf, Arc<Mutex<()>>)>> = Mutex::new(Vec::new());
-    let key = fs::canonicalize(library)?;
+    let key = fs::canonicalize(folder)?;
     let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some((_, lock)) = locks.iter().find(|(path, _)| *path == key) {
         return Ok(lock.clone());
@@ -587,6 +627,30 @@ fn at_stage(stage: Stage, path: &Path) {
     });
     #[cfg(not(test))]
     let _ = (stage, path);
+}
+
+/// An I/O error a test hook can make the next read or folder flush return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fault {
+    Read,
+    SyncDir,
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAULT: std::cell::Cell<Option<Fault>> = const { std::cell::Cell::new(None) };
+}
+
+/// EIO, once, if a test hook armed `fault`. A normal build never fails here.
+fn injected(fault: Fault) -> io::Result<()> {
+    #[cfg(test)]
+    if FAULT.with(|f| f.get()) == Some(fault) {
+        FAULT.with(|f| f.set(None));
+        return Err(io::Error::from_raw_os_error(libc::EIO));
+    }
+    #[cfg(not(test))]
+    let _ = fault;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -739,6 +803,71 @@ mod tests {
     }
 
     #[test]
+    fn read_error_partway_through_a_copy_removes_the_partial_temp_and_fails_that_file_only() {
+        let dir = TempDir::new();
+        let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+        fs::create_dir_all(&lib).unwrap();
+        let (one, _) = card_with_two_files(&card);
+        write_file(&card, "DCIM/100_FUJI/DSCF0003.RAF", b"third raw", at(1_700_000_200));
+        // After the first chunk of the second file is written, its next read
+        // fails, as when a card goes bad mid-file.
+        let partial = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let seen = partial.clone();
+        set_hook(move |stage, temp| {
+            if stage == Stage::Written && temp.to_string_lossy().contains("DSCF0002") {
+                *seen.borrow_mut() = Some((temp.to_path_buf(), fs::metadata(temp).unwrap().len()));
+                FAULT.with(|f| f.set(Some(Fault::Read)));
+            }
+        });
+        let (_, outcome) = sync(&card, &lib);
+        clear_hook();
+
+        let (temp, len) = partial.borrow_mut().take().expect("hook never fired");
+        assert_eq!(len, CHUNK as u64, "a partial temp existed");
+        assert!(!temp.exists(), "partial temp left behind");
+        assert!(temps_under(&lib).is_empty());
+        assert!(outcome.temps.failures.is_empty());
+        let [failed] = &outcome.failed[..] else { panic!("{:?}", outcome.failed) };
+        assert!(failed.file.path.ends_with("DSCF0002.RAF"));
+        assert!(matches!(&failed.reason, FailReason::Read(e) if e.raw_os_error() == Some(libc::EIO)));
+        let raw = temp.parent().unwrap();
+        assert!(!raw.join("DSCF0002.RAF").exists());
+        let copied: Vec<&Path> = outcome.copied.iter().map(|c| c.to.as_path()).collect();
+        assert_eq!(copied, [raw.join("DSCF0001.RAF"), raw.join("DSCF0003.RAF")]);
+        assert_eq!(fs::read(raw.join("DSCF0001.RAF")).unwrap(), one);
+        assert_eq!(fs::read(raw.join("DSCF0003.RAF")).unwrap(), b"third raw");
+    }
+
+    #[test]
+    fn folder_flush_failing_after_the_rename_says_the_file_is_in_place() {
+        let dir = TempDir::new();
+        let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+        fs::create_dir_all(&lib).unwrap();
+        write_file(&card, "DCIM/100_FUJI/DSCF0001.RAF", b"raw", at(1_700_000_000));
+        set_hook(|stage, _| {
+            if stage == Stage::Renamed {
+                FAULT.with(|f| f.set(Some(Fault::SyncDir)));
+            }
+        });
+        let (_, outcome) = sync(&card, &lib);
+        clear_hook();
+
+        let target = fs::read_dir(&lib).unwrap().next().unwrap().unwrap().path().join("RAW/DSCF0001.RAF");
+        assert!(outcome.copied.is_empty(), "not flushed, so not copied (INV-3)");
+        let [failed] = &outcome.failed[..] else { panic!("{:?}", outcome.failed) };
+        assert!(matches!(&failed.reason, FailReason::NotFlushed { to, error }
+            if *to == target && error.raw_os_error() == Some(libc::EIO)));
+        let reason = failed.reason.to_string();
+        assert!(reason.contains("in place") && reason.contains(&*target.to_string_lossy()), "{reason}");
+        assert_eq!(fs::read(&target).unwrap(), b"raw");
+        assert!(temps_under(&lib).is_empty());
+        // DEC-017 (4): the next sync skips it as already synced.
+        let (plan, rerun) = sync(&card, &lib);
+        assert_eq!(plan.skipped.len(), 1);
+        assert!(rerun.copied.is_empty() && rerun.failed.is_empty());
+    }
+
+    #[test]
     fn inv2_file_appearing_at_the_final_name_before_rename_survives() {
         let dir = TempDir::new();
         let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
@@ -771,13 +900,13 @@ mod tests {
         fs::write(&from, b"new").unwrap();
         fs::write(&to, b"old").unwrap();
 
-        let err = rename_noreplace(&from, &to, &dir.0).unwrap_err();
+        let err = rename_noreplace(&from, &to).unwrap_err();
 
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read(&to).unwrap(), b"old");
         assert_eq!(fs::read(&from).unwrap(), b"new");
         fs::remove_file(&to).unwrap();
-        rename_noreplace(&from, &to, &dir.0).unwrap();
+        rename_noreplace(&from, &to).unwrap();
         assert_eq!(fs::read(&to).unwrap(), b"new");
         assert!(!from.exists());
     }
@@ -797,10 +926,9 @@ mod tests {
                 .iter()
                 .map(|temp| {
                     let (temp, target, barrier) = (temp.clone(), target.clone(), barrier.clone());
-                    let library = dir.0.clone();
                     std::thread::spawn(move || {
                         barrier.wait();
-                        rename_noreplace(&temp, &target, &library)
+                        rename_noreplace(&temp, &target)
                     })
                 })
                 .collect();
@@ -827,7 +955,7 @@ mod tests {
         fs::write(&from, b"new").unwrap();
         fs::write(&to, b"old").unwrap();
 
-        let err = rename_noreplace_with(excl_unsupported, &from, &to, &dir.0).unwrap_err();
+        let err = rename_noreplace_with(excl_unsupported, &from, &to).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read(&to).unwrap(), b"old");
         assert_eq!(fs::read(&from).unwrap(), b"new");
@@ -835,13 +963,13 @@ mod tests {
         // A dangling symlink is a name taken too.
         fs::remove_file(&to).unwrap();
         std::os::unix::fs::symlink(dir.0.join("nowhere"), &to).unwrap();
-        let err = rename_noreplace_with(excl_unsupported, &from, &to, &dir.0).unwrap_err();
+        let err = rename_noreplace_with(excl_unsupported, &from, &to).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert!(fs::symlink_metadata(&to).unwrap().file_type().is_symlink());
         assert_eq!(fs::read(&from).unwrap(), b"new");
 
         fs::remove_file(&to).unwrap();
-        rename_noreplace_with(excl_unsupported, &from, &to, &dir.0).unwrap();
+        rename_noreplace_with(excl_unsupported, &from, &to).unwrap();
         assert_eq!(fs::read(&to).unwrap(), b"new");
         assert!(!from.exists());
     }
@@ -861,10 +989,9 @@ mod tests {
                 .iter()
                 .map(|temp| {
                     let (temp, target, barrier) = (temp.clone(), target.clone(), barrier.clone());
-                    let library = dir.0.clone();
                     std::thread::spawn(move || {
                         barrier.wait();
-                        rename_noreplace_with(excl_unsupported, &temp, &target, &library)
+                        rename_noreplace_with(excl_unsupported, &temp, &target)
                     })
                 })
                 .collect();
@@ -880,17 +1007,16 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_rename_checks_and_renames_under_the_library_lock() {
+    fn unsupported_rename_checks_and_renames_under_the_folder_lock() {
         let dir = TempDir::new();
         let (from, to) = (dir.0.join("from"), dir.0.join("to"));
         fs::write(&from, b"new").unwrap();
-        // Another spelling of the same library must give the same lock.
-        let lock = library_lock(&dir.0.join(".")).unwrap();
+        // Another spelling of the same folder must give the same lock.
+        let lock = folder_lock(&dir.0.join(".")).unwrap();
         let held = lock.lock().unwrap();
 
-        let library = dir.0.clone();
         let (f, t) = (from.clone(), to.clone());
-        let worker = std::thread::spawn(move || rename_noreplace_with(excl_unsupported, &f, &t, &library));
+        let worker = std::thread::spawn(move || rename_noreplace_with(excl_unsupported, &f, &t));
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(!worker.is_finished(), "renamed without the lock");
         assert!(from.exists() && !to.exists());
@@ -901,12 +1027,34 @@ mod tests {
     }
 
     #[test]
-    fn other_lock_for_another_library() {
+    fn unsupported_rename_into_one_folder_by_two_paths_shares_a_lock() {
+        let dir = TempDir::new();
+        let raw = dir.0.join("lib/2026-10-28/RAW");
+        fs::create_dir_all(&raw).unwrap();
+        let (from, to) = (raw.join("from"), raw.join("to"));
+        fs::write(&from, b"new").unwrap();
+        // Another path into the same folder, as from a nested library.
+        let lock = folder_lock(&dir.0.join("lib/2026-10-28/../2026-10-28/RAW")).unwrap();
+        let held = lock.lock().unwrap();
+
+        let (f, t) = (from.clone(), to.clone());
+        let worker = std::thread::spawn(move || rename_noreplace_with(excl_unsupported, &f, &t));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!worker.is_finished(), "renamed without the folder's lock");
+        assert!(from.exists() && !to.exists());
+
+        drop(held);
+        worker.join().unwrap().unwrap();
+        assert_eq!(fs::read(&to).unwrap(), b"new");
+    }
+
+    #[test]
+    fn other_lock_for_another_folder() {
         let (a, b) = (TempDir::new(), TempDir::new());
-        let lock = library_lock(&a.0).unwrap();
-        assert!(Arc::ptr_eq(&lock, &library_lock(&a.0).unwrap()));
-        assert!(!Arc::ptr_eq(&lock, &library_lock(&b.0).unwrap()));
-        let missing = library_lock(&a.0.join("missing")).unwrap_err();
+        let lock = folder_lock(&a.0).unwrap();
+        assert!(Arc::ptr_eq(&lock, &folder_lock(&a.0).unwrap()));
+        assert!(!Arc::ptr_eq(&lock, &folder_lock(&b.0).unwrap()));
+        let missing = folder_lock(&a.0.join("missing")).unwrap_err();
         assert_eq!(missing.kind(), io::ErrorKind::NotFound);
     }
 
@@ -934,7 +1082,7 @@ mod tests {
         ];
         for code in codes.into_iter().filter(|c| Some(*c) != EXCL_UNSUPPORTED) {
             CODE.store(code, Ordering::Relaxed);
-            let err = rename_noreplace_with(fails, &from, &to, &dir.0).unwrap_err();
+            let err = rename_noreplace_with(fails, &from, &to).unwrap_err();
             assert_eq!(err.raw_os_error(), Some(code));
             assert!(from.exists() && !to.exists(), "errno {code} fell back");
         }
@@ -943,7 +1091,6 @@ mod tests {
             |_, _| Err(io::Error::new(io::ErrorKind::Unsupported, "none")),
             &from,
             &to,
-            &dir.0,
         )
         .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::Unsupported);

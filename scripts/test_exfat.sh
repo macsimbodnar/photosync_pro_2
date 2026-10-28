@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs the photosync-core tests with TMPDIR on a fresh exFAT disk image, so
 # every test file lives on exFAT (macOS only: needs hdiutil). The image is
-# made in a temp dir outside the repo and is always detached, even on failure.
+# made in a temp dir outside the repo and is detached at the end, even on
+# failure; if the detach fails, the script says so and removes nothing.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -34,8 +35,16 @@ work="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/photosync-exfat.XXXXXX")" && pwd -P)"
 mnt="$work/mnt"
 attached=0
 cleanup() {
+    local status=$?
     if (( attached )); then
         hdiutil detach "$mnt" -quiet || hdiutil detach "$mnt" -force -quiet || true
+    fi
+    # Checked, not trusted to `attached`: `rm -rf` through a live mount would
+    # delete inside the image, and the image file under it.
+    if mount | grep -qF " on $mnt "; then
+        echo "test_exfat.sh: FAILED to detach $mnt; left it and $work in place" >&2
+        echo "test_exfat.sh: detach by hand: hdiutil detach '$mnt' -force; rm -rf '$work'" >&2
+        exit $(( status ? status : 1 ))
     fi
     rm -rf "$work"
 }

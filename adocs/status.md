@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-28, by Claude agent (S012 done)
+Updated: 2026-10-28, by Claude agent (S013 done)
 
-- Last done: S012  exFAT: locked check + rename fallback
+- Last done: S013  copy engine hardening (S004 fast check)
 - In progress: none
-- Next: S013  copy engine hardening (S004 fast check)
+- Next: S005  progress events, ETA, cancel
 - Blocked: none
 - Parked:
   - The camera's PTP mode (USB without card-reader mode) is unsupported

@@ -112,6 +112,8 @@ picks. It is simple to use.
   `2026-10-28 - Tirana/RAW/DSCF1234.RAF`. With no name: `2026-10-28/RAW/...`.
 - If that folder already exists, new files are added to it (name collisions
   as below).
+- A session or `<TYPE>` folder that is a symlink is never followed: every
+  file that would go there fails with the reason (INV-9, INV-10; DEC-020).
 - `<TYPE>` and the extensions that map to it (case-insensitive):
   - `RAW`: `.RAF`
   - `JPEG`: `.JPG`, `.JPEG`

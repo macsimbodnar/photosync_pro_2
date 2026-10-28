@@ -36,6 +36,7 @@ Why: one line.
 - DEC-017 2026-10-28 — copy engine details left open by the specs
 - DEC-018 2026-10-28 — exFAT: locked check + rename when no-replace rename is unsupported
 - DEC-019 2026-10-28 — exFAT fallback details left open by DEC-018
+- DEC-020 2026-10-28 — copy hardening details left open by S013
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -223,10 +224,13 @@ instant, and every copy is still hash-verified.
 ## DEC-019  2026-10-28  exFAT fallback details left open by DEC-018
 Tags: safety, filesystems, tests
 Decision: agent's pick in S012; the user confirmed all four points.
-(1) The fallback's lock is keyed by the library's canonical path, so two
-spellings of one library share it; a library that cannot be canonicalised
-fails that file with the error. Locks live for the process (one small entry
-per library).
+(1) The fallback's lock is keyed by the target folder's canonical path
+(the folder the file is renamed into), so every path into one folder shares
+it, even from two libraries nested in each other; a folder that cannot be
+canonicalised fails that file with the error. Locks live for the process
+(one small entry per folder). Amended in S013: it was keyed by the library,
+which the S012 fast check found lets two library paths into one folder take
+different locks.
 (2) A poisoned lock is still taken: it guards no data, so a panic elsewhere
 leaves nothing half-done.
 (3) Linux falls back on EINVAL only, not ENOSYS (a kernel without
@@ -234,4 +238,22 @@ leaves nothing half-done.
 (4) `scripts/test_exfat.sh` skips every test that uses the `Mode` helper,
 including `only_name_and_size_candidates_are_hashed`, which passes on exFAT
 without testing anything because chmod does nothing there.
+Why: each is the smallest choice that keeps the prime directive.
+
+## DEC-020  2026-10-28  copy hardening details left open by S013
+Tags: safety, copy, tests
+Decision: agent's pick in S013, not yet confirmed by the user.
+(1) A session or `<TYPE>` folder that is a symlink (or a file) fails each
+file that would go there, as a write error (`NotADirectory`) at that
+folder; other types still copy. The run is not refused as a whole. Folders
+are made one level at a time, so a library removed after planning is not
+recreated: its files fail.
+(2) A copy in place whose final folder flush fails gets its own reason,
+`FailReason::NotFlushed { to, error }`, which says the copy is in place.
+(3) Fault injection for tests is a cfg(test) one-shot EIO, armed by the
+stage hook, at the next source read or folder flush; a normal build has
+none.
+(4) `scripts/test_exfat.sh`, when the image stays mounted after both detach
+attempts, prints the paths and the commands to clean up by hand, removes
+nothing, and exits non-zero (the test status if that failed, else 1).
 Why: each is the smallest choice that keeps the prime directive.

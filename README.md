@@ -35,7 +35,8 @@ cargo test --workspace
 `scripts/test_exfat.sh` runs the `photosync-core` tests on a temporary exFAT
 disk image (the common format for a Mac + Linux drive). It needs `hdiutil`,
 works from any directory, keeps the image in a temp dir outside the repo, and
-always detaches it. The tests that need Unix permission bits, which exFAT does
+detaches it at the end. If the detach fails, it says so, leaves the image and
+its temp dir in place, prints how to clean up, and exits non-zero. The tests that need Unix permission bits, which exFAT does
 not have, are skipped; the script lists them.
 
 ```sh
