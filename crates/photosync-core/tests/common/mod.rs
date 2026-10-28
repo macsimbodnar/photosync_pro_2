@@ -9,6 +9,23 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use photosync_core::{SourceScan, scan_source};
+
+/// A device id no real volume has: not a sign-extended 32-bit macOS
+/// `dev_t`, and a Linux major number far beyond any real one.
+pub const OTHER_DEVICE: u64 = 0xdead_beef_dead_beef;
+
+/// `scan_source(root)`, with the source declared to be on another device
+/// than the library. Temp dirs put both on one device, which INV-10 refuses
+/// (DEC-025), so every test that is not about the device rule scans with
+/// this. The device rule's own tests use `scan_source` as is.
+pub fn scan_elsewhere(root: &Path) -> SourceScan {
+    let mut scan = scan_source(root).unwrap();
+    assert_ne!(scan.device, OTHER_DEVICE, "a real device has the fake id");
+    scan.device = OTHER_DEVICE;
+    scan
+}
+
 /// A fresh directory under the system temp dir, removed on drop.
 pub struct TempDir(pub PathBuf);
 

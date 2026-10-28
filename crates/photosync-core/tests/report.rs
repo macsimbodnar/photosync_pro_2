@@ -9,11 +9,11 @@ use std::path::{Path, PathBuf};
 use photosync_core::{
     Bucket, Cancel, Copied, Counts, CopyOutcome, EventKind, FailReason, Failed, FileOutcome, MediaType, Monitor,
     PlanError, Report, ReportError, SourceReport, SourceScan, SyncPlan, copy_plan, plan_sync,
-    remove_stale_temps, scan_source, sync_folder,
+    remove_stale_temps, sync_folder,
 };
 
 mod common;
-use common::{TempDir, at, date_command, write_file};
+use common::{TempDir, at, date_command, scan_elsewhere, write_file};
 #[cfg(unix)]
 use common::Mode;
 
@@ -26,7 +26,7 @@ fn put(root: &Path, files: &[(&str, &[u8])]) {
 }
 
 fn scan(root: &Path) -> SourceScan {
-    scan_source(root).unwrap()
+    scan_elsewhere(root)
 }
 
 /// Plans and copies `cards` into `lib`. The copy is cancelled once the file

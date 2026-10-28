@@ -42,6 +42,7 @@ Why: one line.
 - DEC-023 2026-10-28 — report hardening details left open by S014
 - DEC-024 2026-10-28 — volume discovery and the INV-10 device check (S007)
 - DEC-025 2026-10-28 — strict INV-10: library never on a source's disk or on any card
+- DEC-026 2026-10-28 — strict INV-10 details left open by DEC-025 (S015)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -403,3 +404,35 @@ has a `DCIM` folder at its top, i.e. is a card, selected or not. Rejected:
 the S007 rule (device only for sources that are mount points). The cost the
 user accepted: no sync from a folder on the same drive as the library.
 Why: the prime directive; a typed path must not be able to write to a card.
+
+## DEC-026  2026-10-28  strict INV-10 details left open by DEC-025 (S015)
+Tags: safety, sources, destination, api, tests
+Decision: agent's pick in S015, not yet confirmed by the user.
+(1) `SourceScan::device` is now `u64`: the `st_dev` of the resolved root,
+always. Supersedes DEC-024 (5).
+(2) New `PlanError` variants: `LibraryOnSourceDevice` (same device, paths
+apart) and `LibraryOnCard { library, volume }`. `LibraryOnSource` now means
+the path case only. Checks run in order: in `DCIM`, then per source
+(under, contains, same device), then card.
+(3) The library's volume is the topmost folder of the resolved library path
+on the library's device, walking up by path. If that walk reaches `/`, the
+volume is the boot disk and is never a card: `/DCIM` is not looked at.
+A card is never mounted at `/`, and refusing every boot-disk library over a
+stray `/DCIM` buys no safety. On macOS the temp dir and `/Users` show the
+device of `/`, so this case is the common one there.
+(4) A `DCIM` that is a file does not make a card (as discovery). A volume
+top whose `DCIM` cannot be checked, or a library whose volume cannot be
+found, is refused as `PlanError::Library`: it may be a card.
+(5) Known limit: a bind mount of a card's subfolder (Linux) has its own
+mount point with no `DCIM` at its top, so only the device check catches it
+when the card is a source. Not a case the app offers.
+(6) Tests: `common::scan_elsewhere` sets `device` to `OTHER_DEVICE`
+(`0xdead_beef_dead_beef`, no real id) to declare "on another device than
+the library"; every test not about the device rule uses it, and the device
+rule's tests call `scan_source` as is. Core has no special value. The card
+rule's tests inject the volume lookup (`check_library_with`, private), as
+DEC-024 (6) does for discovery. `lib.rs` has `extern crate self as
+photosync_core` under `cfg(test)` so the shared `common` names the crate
+one way.
+Why: each keeps a typed path off a card with the least API, and keeps the
+fake device visible in every test that uses it.

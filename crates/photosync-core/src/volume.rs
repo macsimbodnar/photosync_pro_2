@@ -136,6 +136,30 @@ pub(crate) fn mount_device(path: &Path) -> io::Result<Option<u64>> {
     Ok((dev != parent_dev || same_inode(&own, &parent)).then_some(dev))
 }
 
+/// The mount point of the volume that holds `path`, an absolute path with
+/// symlinks resolved: its topmost folder on the same device. `None` when
+/// that is `/`: the boot disk is never a card (DEC-026).
+pub(crate) fn volume_root(path: &Path) -> io::Result<Option<PathBuf>> {
+    volume_root_with(path, |p| device_id(&fs::metadata(p)?))
+}
+
+/// `volume_root` with the device lookup injected, so unit tests can place
+/// temp folders on fake devices.
+fn volume_root_with(
+    path: &Path,
+    device: impl Fn(&Path) -> io::Result<u64>,
+) -> io::Result<Option<PathBuf>> {
+    let own = device(path)?;
+    let mut top = path;
+    while let Some(parent) = top.parent() {
+        if device(parent)? != own {
+            return Ok(Some(top.to_path_buf()));
+        }
+        top = parent;
+    }
+    Ok(None)
+}
+
 #[cfg(unix)]
 pub(crate) fn device_id(meta: &fs::Metadata) -> io::Result<u64> {
     use std::os::unix::fs::MetadataExt;
@@ -357,6 +381,58 @@ mod tests {
         assert_eq!(mount_device(Path::new("/")).unwrap(), Some(root_dev));
         assert_eq!(mount_device(Path::new("/dev")).unwrap(), Some(dev_dev));
         assert_eq!(mount_device(&plain).unwrap(), None);
+    }
+
+    /// Paths under `vol` are on device 2, everything else on device 1.
+    fn fake_devices(vol: &Path) -> impl Fn(&Path) -> io::Result<u64> + '_ {
+        move |p| Ok(if p.starts_with(vol) { 2 } else { 1 })
+    }
+
+    #[test]
+    fn volume_root_is_where_the_device_changes() {
+        let vol = Path::new("/mnt/CARD");
+        let found = |p: &str| volume_root_with(Path::new(p), fake_devices(vol)).unwrap();
+
+        assert_eq!(found("/mnt/CARD/Photos/2026"), Some(vol.to_path_buf()));
+        assert_eq!(found("/mnt/CARD"), Some(vol.to_path_buf()));
+    }
+
+    /// No device change up to `/`: the library is on the boot disk, which
+    /// is never a card, so no `/DCIM` is looked at (DEC-026).
+    #[test]
+    fn volume_root_on_the_boot_disk_is_none() {
+        let found = |p: &str| volume_root_with(Path::new(p), fake_devices(Path::new("/mnt/CARD")));
+
+        assert_eq!(found("/Users/max/Photos").unwrap(), None);
+        assert_eq!(found("/mnt").unwrap(), None);
+        assert_eq!(found("/").unwrap(), None);
+    }
+
+    #[test]
+    fn volume_root_fails_if_a_device_cannot_be_read() {
+        let err = volume_root_with(Path::new("/mnt/CARD/Photos"), |p| {
+            if p == Path::new("/mnt") { Err(io::Error::other("gone")) } else { Ok(2) }
+        })
+        .unwrap_err();
+
+        assert_eq!(err.to_string(), "gone");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn volume_root_on_this_machine() {
+        let dir = TempDir::new();
+        let dev = fs::canonicalize("/dev").unwrap();
+
+        assert_eq!(volume_root(Path::new("/")).unwrap(), None);
+        assert_eq!(volume_root(&dev).unwrap(), Some(dev.clone()));
+        // Wherever the temp dir is mounted, its volume holds it.
+        let temp = fs::canonicalize(&dir.0).unwrap();
+        if let Some(root) = volume_root(&temp).unwrap() {
+            assert!(temp.starts_with(&root), "{root:?}");
+            let temp_dev = device_id(&fs::metadata(&temp).unwrap()).unwrap();
+            assert_eq!(mount_device(&root).unwrap(), Some(temp_dev));
+        }
     }
 
     #[cfg(target_os = "macos")]

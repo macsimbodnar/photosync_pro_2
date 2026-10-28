@@ -58,10 +58,13 @@ stays listed as retired.
   the drive except the photo files under the library folder. It keeps no
   index or catalog file anywhere.
 - INV-10 Destination is never a source. A sync refuses to start if the
-  library is on a source volume, inside any `DCIM` tree, or contains a
-  source. "On a source volume" is under a source root, or on the same
-  device (`st_dev`) as a source root that is a mount point, so a second
-  path to the card cannot get past the check.
+  library is under a source root, inside any `DCIM` tree, contains a
+  source, is on the same device (`st_dev`) as any source root (mount point
+  or plain folder), or is on a card: a volume with a `DCIM` folder at its
+  top, a source or not. The library's volume is found by walking up from
+  the library to where the device changes; the boot disk (`/`) is never a
+  card. So no second path to a card, and no folder on it, gets past the
+  check (DEC-025, DEC-026).
 
 ## Behaviour
 
@@ -110,6 +113,8 @@ picks. It is simple to use.
 - The app lists the other mounted volumes in the same places that the user
   can write to. The user picks the external drive, and the library folder
   on it.
+- The library is never on a card, nor on the same drive as a source, even a
+  source that is a plain folder (INV-10).
 - The app may remember the last choice in its own config on the computer,
   never on the drive (INV-9).
 

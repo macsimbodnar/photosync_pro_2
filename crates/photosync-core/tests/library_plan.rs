@@ -9,7 +9,7 @@ use photosync_core::{
 };
 
 mod common;
-use common::{TempDir, at, manifest, write_file};
+use common::{TempDir, at, manifest, scan_elsewhere, write_file};
 #[cfg(unix)]
 use common::Mode;
 
@@ -21,7 +21,7 @@ fn put(root: &Path, files: &[(&str, &[u8])]) {
 }
 
 fn scan(root: &Path) -> SourceScan {
-    scan_source(root).unwrap()
+    scan_elsewhere(root)
 }
 
 fn paths(files: &[photosync_core::SourceFile]) -> Vec<PathBuf> {
@@ -267,9 +267,8 @@ fn inv10_symlink_cannot_hide_a_library_on_a_source() {
 }
 
 /// Two paths to one card volume (a second mount, a bind mount) share no
-/// prefix, only the device. Temp dirs all sit on one device and are not
-/// mount points, so the scan's device is set by hand to the library's, as
-/// `scan_source` sets it for a card's mount point.
+/// prefix, only the device. The scan records the device of any root, mount
+/// point or not; here, the temp device the library is on too.
 #[cfg(unix)]
 #[test]
 fn inv10_library_on_the_device_of_a_source_volume_is_refused() {
@@ -279,17 +278,34 @@ fn inv10_library_on_the_device_of_a_source_volume_is_refused() {
     put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
     let library = dir.0.join("other_mount_of_card/Photos");
     fs::create_dir_all(&library).unwrap();
-    let mut source = scan(&card);
-    assert_eq!(source.device, None, "a temp folder is not a mount point");
-    plan_sync(&library, std::slice::from_ref(&source), &mut Monitor::default()).unwrap();
-
-    source.device = Some(fs::metadata(&library).unwrap().dev());
+    let source = scan_source(&card).unwrap();
+    assert_eq!(source.device, fs::metadata(&card).unwrap().dev());
+    assert_eq!(source.device, fs::metadata(&library).unwrap().dev(), "one temp device");
 
     match refused(&library, &[source]) {
-        PlanError::LibraryOnSource { library: l, source_root } => {
+        PlanError::LibraryOnSourceDevice { library: l, source_root } => {
             assert_eq!((l, source_root), (library, card));
         }
-        other => panic!("expected LibraryOnSource, got {other:?}"),
+        other => panic!("expected LibraryOnSourceDevice, got {other:?}"),
+    }
+}
+
+/// DEC-025, the review's case: a folder on a card is the source, another
+/// folder on that card the library. The paths share no prefix, only the
+/// device. Scanned as is, so the source keeps its real device.
+#[test]
+fn inv10_library_beside_a_source_folder_on_its_device_is_refused() {
+    let dir = TempDir::new();
+    let backup = dir.0.join("CARD/backup");
+    put(&backup, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    let library = dir.0.join("CARD/Photos");
+    fs::create_dir_all(&library).unwrap();
+
+    match refused(&library, &[scan_source(&backup).unwrap()]) {
+        PlanError::LibraryOnSourceDevice { library: l, source_root } => {
+            assert_eq!((l, source_root), (library, backup));
+        }
+        other => panic!("expected LibraryOnSourceDevice, got {other:?}"),
     }
 }
 
@@ -303,7 +319,7 @@ fn inv10_library_on_another_device_than_the_source_volume_is_planned() {
     let library = dir.0.join("lib");
     fs::create_dir(&library).unwrap();
     let mut source = scan(&card);
-    source.device = Some(fs::metadata(&library).unwrap().dev().wrapping_add(1));
+    source.device = fs::metadata(&library).unwrap().dev().wrapping_add(1);
 
     let plan = plan_sync(&library, &[source], &mut Monitor::default()).unwrap();
 

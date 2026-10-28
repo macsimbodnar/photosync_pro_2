@@ -718,10 +718,9 @@ fn injected(fault: Fault) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::{TempDir, at, date_command, write_file};
+    use crate::common::{TempDir, at, date_command, scan_elsewhere, write_file};
     use super::*;
     use crate::plan::plan_sync;
-    use crate::source::scan_source;
     use std::sync::Barrier;
 
     fn set_hook(hook: impl FnMut(Stage, &Path) + 'static) {
@@ -734,7 +733,7 @@ mod tests {
 
     /// Plans and copies `card` into `lib` as a sync named "Trip".
     fn sync(card: &Path, lib: &Path) -> (SyncPlan, CopyOutcome) {
-        let plan = plan_sync(lib, &[scan_source(card).unwrap()], &mut Monitor::default()).unwrap();
+        let plan = plan_sync(lib, &[scan_elsewhere(card)], &mut Monitor::default()).unwrap();
         let folder = sync_folder(&plan, Some("Trip")).unwrap().unwrap();
         let outcome = copy_plan(&plan, &folder, &mut Monitor::default()).unwrap();
         (plan, outcome)
@@ -832,7 +831,7 @@ mod tests {
             fs::create_dir_all(&lib).unwrap();
             let (one, two) = card_with_two_files(&card);
             write_file(&card, "DCIM/100_FUJI/DSCF0003.RAF", b"third raw", at(1_700_000_200));
-            let plan = plan_sync(&lib, &[scan_source(&card).unwrap()], &mut Monitor::default()).unwrap();
+            let plan = plan_sync(&lib, &[scan_elsewhere(&card)], &mut Monitor::default()).unwrap();
             let folder = sync_folder(&plan, Some("Trip")).unwrap().unwrap();
 
             let cancel = Cancel::new();

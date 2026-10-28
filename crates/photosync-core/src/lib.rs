@@ -15,6 +15,9 @@ mod volume;
 #[cfg(test)]
 #[path = "../tests/common/mod.rs"]
 mod common;
+// Lets `common` name this crate as the integration tests do.
+#[cfg(test)]
+extern crate self as photosync_core;
 
 pub use copy::{
     Copied, CopyError, CopyOutcome, FailReason, Failed, FolderError, SyncFolder, TempCleanup,

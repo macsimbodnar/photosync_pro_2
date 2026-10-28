@@ -9,11 +9,11 @@ use std::time::Duration;
 
 use photosync_core::{
     Cancel, Counts, Event, EventKind, Monitor, Phase, PlanError, SourceProgress, SourceScan,
-    SyncPlan, copy_plan, eta, plan_sync, scan_source, sync_folder,
+    SyncPlan, copy_plan, eta, plan_sync, sync_folder,
 };
 
 mod common;
-use common::{TempDir, at, manifest, write_file};
+use common::{TempDir, at, manifest, scan_elsewhere, write_file};
 
 const MIB: usize = 1 << 20;
 
@@ -113,7 +113,7 @@ fn two_cards(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
 fn copy_events_arrive_in_order_and_their_totals_match_the_plan() {
     let dir = TempDir::new();
     let (a, b, lib) = two_cards(&dir.0);
-    let sources = [scan_source(&a).unwrap(), scan_source(&b).unwrap()];
+    let sources = [scan_elsewhere(&a), scan_elsewhere(&b)];
     let plan = plan_sync(&lib, &sources, &mut quiet()).unwrap();
     let folder = sync_folder(&plan, Some("Trip")).unwrap().unwrap();
     // Taken after planning: the name collision fails at copy time.
@@ -153,7 +153,7 @@ fn copy_events_arrive_in_order_and_their_totals_match_the_plan() {
 fn eta_is_present_once_some_bytes_are_copied() {
     let dir = TempDir::new();
     let (a, b, lib) = two_cards(&dir.0);
-    let plan = plan_sync(&lib, &[scan_source(&a).unwrap(), scan_source(&b).unwrap()], &mut quiet()).unwrap();
+    let plan = plan_sync(&lib, &[scan_elsewhere(&a), scan_elsewhere(&b)], &mut quiet()).unwrap();
     let folder = sync_folder(&plan, None).unwrap().unwrap();
 
     let (mut monitor, events) = recorder(&Cancel::new(), |_, _| {});
@@ -183,7 +183,7 @@ fn backup_cards(dir: &Path) -> ([PathBuf; 2], PathBuf, [SourceScan; 2]) {
         put(card, "DCIM/100_FUJI/DSCF0002.RAF", b"raw two");
     }
     put(&lib, "2025-01-01/RAW/DSCF0002.RAF", b"raw two");
-    let scans = [scan_source(&a).unwrap(), scan_source(&b).unwrap()];
+    let scans = [scan_elsewhere(&a), scan_elsewhere(&b)];
     ([a, b], lib, scans)
 }
 
@@ -223,7 +223,7 @@ fn planning_unique_files_are_not_counted_and_nothing_to_hash_still_starts_and_fi
     fs::create_dir_all(&lib).unwrap();
 
     let (mut monitor, events) = recorder(&Cancel::new(), |_, _| {});
-    let plan = plan_sync(&lib, &[scan_source(&card).unwrap()], &mut monitor).unwrap();
+    let plan = plan_sync(&lib, &[scan_elsewhere(&card)], &mut monitor).unwrap();
     drop(monitor);
     let kinds: Vec<EventKind> = events.lock().unwrap().iter().map(|e| e.kind.clone()).collect();
 
@@ -268,7 +268,7 @@ fn temps_under(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn plan_one(card: &Path, lib: &Path) -> SyncPlan {
-    plan_sync(lib, &[scan_source(card).unwrap()], &mut quiet()).unwrap()
+    plan_sync(lib, &[scan_elsewhere(card)], &mut quiet()).unwrap()
 }
 
 #[test]
@@ -380,7 +380,7 @@ fn monitor_events_and_cancel_can_cross_threads() {
         let cancel = cancel.clone();
         std::thread::spawn(move || {
             let mut monitor = Monitor::new(cancel, move |e| tx.send(e).unwrap());
-            let plan = plan_sync(&lib, &[scan_source(&card).unwrap()], &mut monitor).unwrap();
+            let plan = plan_sync(&lib, &[scan_elsewhere(&card)], &mut monitor).unwrap();
             let folder = sync_folder(&plan, None).unwrap().unwrap();
             copy_plan(&plan, &folder, &mut monitor).unwrap()
         })

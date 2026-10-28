@@ -7,13 +7,14 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use crate::hash::{Hash, hash_file_with};
 use crate::library::scan_library;
 use crate::progress::{Monitor, Phase, Tracker};
 use crate::source::{ScanError, SourceFile, SourceScan};
-use crate::volume::device_id;
+use crate::volume::{device_id, volume_root};
 
 /// What a sync of `sources` into a library would do. Every supported source
 /// file is in exactly one list (INV-6). Ignored files and scan failures stay
@@ -57,9 +58,15 @@ pub struct Duplicate {
 /// Why a sync cannot be planned at all.
 #[derive(Debug)]
 pub enum PlanError {
-    /// INV-10: the library is a source root or under one, or on the device
-    /// of a source volume (`SourceScan::device`).
+    /// INV-10: the library is a source root or under one.
     LibraryOnSource { library: PathBuf, source_root: PathBuf },
+    /// INV-10: the library is on the same device (`st_dev`) as a source,
+    /// under another path: a second mount of the card, or a folder on the
+    /// disk the source folder is on (DEC-025).
+    LibraryOnSourceDevice { library: PathBuf, source_root: PathBuf },
+    /// INV-10: the library's volume has a `DCIM` folder at its top: it is a
+    /// card, a source or not (DEC-025).
+    LibraryOnCard { library: PathBuf, volume: PathBuf },
     /// INV-10: the library is inside a `DCIM` tree.
     LibraryInDcim { library: PathBuf },
     /// INV-10: a source root is under the library.
@@ -80,6 +87,18 @@ impl fmt::Display for PlanError {
                 "library {} is on source {}",
                 library.display(),
                 source_root.display()
+            ),
+            PlanError::LibraryOnSourceDevice { library, source_root } => write!(
+                f,
+                "library {} is on the same device as source {}",
+                library.display(),
+                source_root.display()
+            ),
+            PlanError::LibraryOnCard { library, volume } => write!(
+                f,
+                "library {} is on card {}, which has a DCIM folder",
+                library.display(),
+                volume.display()
             ),
             PlanError::LibraryInDcim { library } => {
                 write!(f, "library {} is inside a DCIM folder", library.display())
@@ -234,11 +253,21 @@ fn key(file: &SourceFile) -> (OsString, u64) {
 }
 
 /// INV-10, on resolved paths, so a symlink or `..` cannot hide an overlap.
-/// A source root is its volume's mount point, so "under the root" is "on the
-/// source volume". The device check catches what paths cannot: a second
-/// mount or a bind mount of the card has an unrelated path but the same
-/// device.
+/// The path checks name the plain overlaps. The device check catches what
+/// paths cannot: a second mount or a bind mount of the card, or another
+/// folder on the disk a source folder is on, has an unrelated path but the
+/// same device (DEC-025).
 fn check_library(library: &Path, sources: &[SourceScan]) -> Result<(), PlanError> {
+    check_library_with(library, sources, volume_root)
+}
+
+/// `check_library` with the volume lookup injected, so unit tests can make
+/// a temp folder a card's volume.
+fn check_library_with(
+    library: &Path,
+    sources: &[SourceScan],
+    volume_root: impl Fn(&Path) -> io::Result<Option<PathBuf>>,
+) -> Result<(), PlanError> {
     let resolved = fs::canonicalize(library)
         .map_err(|source| PlanError::Library(ScanError { path: library.to_path_buf(), source }))?;
     // Cards are FAT or exFAT, which ignore case, so `dcim` is a DCIM too.
@@ -254,7 +283,7 @@ fn check_library(library: &Path, sources: &[SourceScan]) -> Result<(), PlanError
     for scan in sources {
         let root = fs::canonicalize(&scan.root)
             .map_err(|source| PlanError::Source(ScanError { path: scan.root.clone(), source }))?;
-        if resolved.starts_with(&root) || scan.device == Some(library_device) {
+        if resolved.starts_with(&root) {
             return Err(PlanError::LibraryOnSource {
                 library: library.to_path_buf(),
                 source_root: scan.root.clone(),
@@ -266,6 +295,120 @@ fn check_library(library: &Path, sources: &[SourceScan]) -> Result<(), PlanError
                 source_root: scan.root.clone(),
             });
         }
+        if scan.device == library_device {
+            return Err(PlanError::LibraryOnSourceDevice {
+                library: library.to_path_buf(),
+                source_root: scan.root.clone(),
+            });
+        }
+    }
+    // A card that is not a source: nothing above knows it, only its `DCIM`.
+    let volume = volume_root(&resolved)
+        .map_err(|source| PlanError::Library(ScanError { path: library.to_path_buf(), source }))?;
+    if let Some(volume) = volume {
+        // Followed, as discovery and `scan_source` follow it.
+        let dcim = volume.join("DCIM");
+        match fs::metadata(&dcim) {
+            Ok(meta) if meta.is_dir() => {
+                return Err(PlanError::LibraryOnCard { library: library.to_path_buf(), volume });
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            // It may be a card: fail closed.
+            Err(source) => return Err(PlanError::Library(ScanError { path: dcim, source })),
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::common::{TempDir, at, scan_elsewhere, write_file};
+    use super::*;
+
+    fn card(root: &Path) -> PathBuf {
+        write_file(root, "DCIM/100_FUJI/DSCF0001.RAF", b"raw", at(1_700_000_000));
+        fs::canonicalize(root).unwrap()
+    }
+
+    /// The review's case: a card that is not a source, with the library on
+    /// it or at its top. Only its `DCIM` tells it is a card (DEC-025).
+    #[test]
+    fn inv10_library_on_a_card_volume_is_refused_even_if_it_is_not_a_source() {
+        let dir = TempDir::new();
+        let other = card(&dir.0.join("OTHER"));
+        let vol = card(&dir.0.join("CARD"));
+        fs::create_dir(vol.join("Photos")).unwrap();
+        let sources = [scan_elsewhere(&other)];
+
+        for library in [vol.join("Photos"), vol.clone()] {
+            match check_library_with(&library, &sources, |_| Ok(Some(vol.clone()))) {
+                Err(PlanError::LibraryOnCard { library: l, volume }) => {
+                    assert_eq!((l, volume), (library, vol.clone()));
+                }
+                other => panic!("expected LibraryOnCard, got {other:?}"),
+            }
+        }
+    }
+
+    /// A `DCIM` deeper in the volume (a source folder) or a file named
+    /// `DCIM` at its top does not make a card; the boot disk (`None`) is
+    /// never one.
+    #[test]
+    fn inv10_library_on_a_volume_without_a_dcim_folder_at_its_top_is_planned() {
+        let dir = TempDir::new();
+        let other = card(&dir.0.join("OTHER"));
+        let drive = card(&dir.0.join("DRIVE/backup"));
+        let drive = drive.parent().unwrap().to_path_buf();
+        let odd = dir.0.join("ODD");
+        write_file(&odd, "DCIM", b"x", at(1_700_000_000));
+        let odd = fs::canonicalize(odd).unwrap();
+        fs::create_dir(drive.join("Photos")).unwrap();
+        fs::create_dir(odd.join("Photos")).unwrap();
+        let sources = [scan_elsewhere(&other)];
+
+        for vol in [drive, odd] {
+            let library = vol.join("Photos");
+            check_library_with(&library, &sources, |_| Ok(Some(vol.clone()))).unwrap();
+        }
+        check_library_with(&dir.0.join("DRIVE/Photos"), &sources, |_| Ok(None)).unwrap();
+    }
+
+    /// A volume whose top cannot be read may be a card: refused, as
+    /// discovery never offers it (DEC-024). Needs Unix permission bits:
+    /// skipped by `scripts/test_exfat.sh`.
+    #[cfg(unix)]
+    #[test]
+    fn inv10_library_whose_volume_top_cannot_be_checked_is_refused() {
+        use crate::common::Mode;
+        let dir = TempDir::new();
+        let other = card(&dir.0.join("OTHER"));
+        let library = dir.0.join("lib");
+        fs::create_dir(&library).unwrap();
+        let shut = dir.0.join("SHUT");
+        fs::create_dir(&shut).unwrap();
+        let _mode = Mode::set(&shut, 0o000);
+
+        match check_library_with(&library, &[scan_elsewhere(&other)], |_| Ok(Some(shut.clone()))) {
+            Err(PlanError::Library(e)) => {
+                assert_eq!(e.path, shut.join("DCIM"));
+                assert_eq!(e.source.kind(), io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("expected Library, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inv10_library_whose_volume_cannot_be_found_is_refused() {
+        let dir = TempDir::new();
+        let other = card(&dir.0.join("OTHER"));
+        let library = dir.0.join("lib");
+        fs::create_dir(&library).unwrap();
+        let gone = |_: &Path| Err(io::Error::other("unplugged"));
+
+        match check_library_with(&library, &[scan_elsewhere(&other)], gone) {
+            Err(PlanError::Library(e)) => assert_eq!(e.path, library),
+            other => panic!("expected Library, got {other:?}"),
+        }
+    }
 }

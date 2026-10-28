@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 
 use photosync_core::{
     CopyError, CopyOutcome, FailReason, FolderError, Monitor, SyncFolder, SyncPlan, copy_plan,
-    plan_sync, remove_stale_temps, scan_source, sync_folder,
+    plan_sync, remove_stale_temps, sync_folder,
 };
 
 mod common;
-use common::{TempDir, at, date_command, manifest, write_file};
+use common::{TempDir, at, date_command, manifest, scan_elsewhere, write_file};
 #[cfg(unix)]
 use common::Mode;
 
@@ -25,7 +25,7 @@ fn put(root: &Path, files: &[(&str, &[u8])]) {
 }
 
 fn plan(card: &Path, lib: &Path) -> SyncPlan {
-    plan_sync(lib, &[scan_source(card).unwrap()], &mut Monitor::default()).unwrap()
+    plan_sync(lib, &[scan_elsewhere(card)], &mut Monitor::default()).unwrap()
 }
 
 fn folder(plan: &SyncPlan, name: Option<&str>) -> SyncFolder {
