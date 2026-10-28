@@ -38,11 +38,12 @@ pub fn spawn(job: Job, send: impl FnMut(Msg) + Send + 'static) -> JoinHandle<()>
     })
 }
 
-/// `spawn` with the sync injected, so a test can make it panic.
-fn spawn_with<F, S>(job: Job, send: F, sync: S) -> JoinHandle<()>
+/// `spawn` with the sync injected, so a test can make it panic, or end
+/// it as no real sync does (`Session::record_refusal`, DEC-035).
+pub(crate) fn spawn_with<F, S>(job: Job, send: F, sync: S) -> JoinHandle<()>
 where
     F: FnMut(Msg) + Send + 'static,
-    S: FnOnce(&mut Session, &[PathBuf], &Cancel, &mut Forward<F>) + Send + 'static,
+    S: FnOnce(&mut Session, &[PathBuf], &Cancel, &mut dyn Watch) + Send + 'static,
 {
     thread::spawn(move || {
         let mut watch = Forward(send);

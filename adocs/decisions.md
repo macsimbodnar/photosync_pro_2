@@ -51,6 +51,7 @@ Why: one line.
 - DEC-032 2026-10-28 — S010 first part: core Session API, and the split of S010
 - DEC-033 2026-10-28 — S010 split accepted; worst outcome wins; F07 test change
 - DEC-034 2026-10-28 — one card after another in the CLI and TUI (S020)
+- DEC-035 2026-10-28 — S022: seam for a refused report, prompt poll, cancel during lookup
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -747,3 +748,27 @@ counts the card's files.
 Why: the session's rules stay in the core and each front-end only asks
 for the next card, so no exit or message can say "safe to format" while
 any sync of the session was not complete.
+
+## DEC-035  2026-10-28  S022: seam for a refused report, prompt poll, cancel during lookup
+Tags: tests, session, cli, api, safety
+Decision: agent's pick in S022, not yet confirmed by the user.
+(1) The coverage S020 dropped (DEC-034 (6)) is back through two seams.
+Core: a `#[cfg(test)]` thread-local switch in `session.rs` refuses the
+next report after its copy, for the core's own unit test (not the
+`test-support` feature, so nothing is exposed). Binary: the core gets a
+public `Session::record_refusal(roots, SyncError)`, and the app tests
+inject a sync through `worker::spawn_with` (now `pub(crate)`, its sync
+takes `&mut dyn Watch`) that records a `SyncError::Report` with it. A
+refusal is never `Complete`, so the call can only keep or worsen the
+session's verdict. Rejected: a `test-support` seam (the binary may not use
+it, DEC-027); scans crafted so a real sync's report fails (no such path
+found; it would lean on the core's internals); a general `record(RunEnd)`
+(it could record a complete report of cards never synced).
+(2) The prompt waits with `poll(2)` for at most 100 ms, then checks the
+cancel again, so a Ctrl-C that lands just before the wait is seen.
+(3) Cards the lookup (Enter, discovery) returns after a Ctrl-C are
+dropped: no sync runs and none is recorded. For the first card that is
+"No card was synced.", exit 2; for a later one the session ends with its
+summary.
+Why: no test may lean on a seam the binary could ship, and no cancel may
+turn into a recorded sync or a missed one.

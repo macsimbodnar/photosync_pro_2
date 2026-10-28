@@ -234,6 +234,16 @@ impl Session {
         self.push(roots, RunEnd::Crashed(what))
     }
 
+    /// Records a sync of `roots` that ended with `error`, not run here. For
+    /// a front-end's tests: no real sync gives some ends, such as a report
+    /// that does not add up, and a front-end may not use this crate's test
+    /// seam (DEC-027, DEC-035). A refusal is never `Complete`, so recording
+    /// one can only keep or worsen the session's verdict, never make the
+    /// cards look safe.
+    pub fn record_refusal(&mut self, roots: &[PathBuf], error: SyncError) -> &Run {
+        self.push(roots, RunEnd::Refused(error))
+    }
+
     /// The worst verdict of every sync; `Complete` with none.
     pub fn verdict(&self) -> Verdict {
         self.runs.iter().map(Run::verdict).max().unwrap_or(Verdict::Complete)
@@ -307,7 +317,7 @@ impl Session {
             None => CopyOutcome::nothing_to_copy(temps),
         };
         let earlier: HashSet<&PathBuf> = self.on_drive.values().collect();
-        Report::build(scans, plan, outcome, &earlier).map_err(SyncError::Report)
+        refused_for_test(Report::build(scans, plan, outcome, &earlier)).map_err(SyncError::Report)
     }
 
     /// Notes where each file of `report` that is on the drive is. A copy
@@ -327,6 +337,22 @@ impl Session {
     }
 }
 
+// TEST ONLY: no real sync gives a report that does not add up (DEC-034
+// (6)), so a unit test arms this to refuse the next one, after its copy.
+// A normal build has no switch and `refused_for_test` passes the report on.
+#[cfg(test)]
+thread_local! {
+    static REFUSE_REPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn refused_for_test(report: Result<Report, ReportError>) -> Result<Report, ReportError> {
+    #[cfg(test)]
+    if REFUSE_REPORT.with(|armed| armed.replace(false)) {
+        return Err(ReportError::Unaccounted(PathBuf::from("armed by a test")));
+    }
+    report
+}
+
 /// Adds `scan` to the sync's `scans`, unless it is one of them in another
 /// spelling (`/Volumes/A/` is `/Volumes/A`): refused before planning, as a
 /// twin would be planned, and copied, twice.
@@ -341,4 +367,38 @@ fn accept(
     watch.scanned(&scan);
     scans.push(scan);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::{TempDir, at, scan_elsewhere, write_file};
+
+    struct Quiet;
+    impl Watch for Quiet {}
+
+    /// S022, the case S020 dropped: a sync whose report is refused after
+    /// its copy is not complete. Files are on the drive, but nothing says
+    /// which, and a later complete sync of the same card does not hide it.
+    #[test]
+    fn a_report_refused_after_copying_is_not_complete() {
+        let dir = TempDir::new();
+        let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+        write_file(&card, "DCIM/100_FUJI/DSCF0001.RAF", b"raw", at(1_700_000_000));
+        std::fs::create_dir_all(&lib).unwrap();
+        let mut session = Session::new(&lib, None).unwrap();
+
+        REFUSE_REPORT.with(|armed| armed.set(true));
+        let run = session.sync_scans(vec![scan_elsewhere(&card)], &Cancel::new(), &mut Quiet);
+        assert!(matches!(run.end, RunEnd::Refused(SyncError::Report(_))), "{run:?}");
+        assert_eq!(run.verdict(), Verdict::NotComplete);
+        assert!(session.folder().unwrap().path().join("RAW/DSCF0001.RAF").is_file(), "not copied");
+        assert_eq!(session.verdict(), Verdict::NotComplete);
+
+        let again = session.sync_scans(vec![scan_elsewhere(&card)], &Cancel::new(), &mut Quiet);
+        assert!(matches!(&again.end, RunEnd::Report(r) if r.is_complete()), "{again:?}");
+        assert_eq!(session.verdict(), Verdict::NotComplete, "a later sync hid it");
+        let named: Vec<usize> = session.not_complete().map(|(i, _)| i).collect();
+        assert_eq!(named, [0]);
+    }
 }

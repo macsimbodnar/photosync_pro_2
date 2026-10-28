@@ -456,3 +456,21 @@ fn a_library_path_reused_by_a_later_sync_names_that_sync_as_the_original() {
     }
     assert!(third.is_complete());
 }
+
+/// S022: a front-end may record a sync's refusal itself, as its tests do
+/// for a report that does not add up, which no real sync gives. Such a run
+/// is never complete, so recording one cannot make the cards look safe.
+#[test]
+fn a_recorded_refusal_is_never_complete() {
+    let card = PathBuf::from("/V/CARD");
+    let mut session = Session::new(Path::new("/V/SSD/Photos"), None).unwrap();
+    let report = SyncError::Report(ReportError::Unaccounted(card.join("DCIM/DSCF0001.RAF")));
+    let run = session.record_refusal(std::slice::from_ref(&card), report);
+    assert!(matches!(run.end, RunEnd::Refused(SyncError::Report(_))), "{run:?}");
+    assert_eq!(run.sources, std::slice::from_ref(&card));
+    assert_eq!(run.verdict(), Verdict::NotComplete);
+    let twice = SyncError::SourceTwice { first: card.clone(), again: card.clone() };
+    assert_eq!(session.record_refusal(std::slice::from_ref(&card), twice).verdict(), Verdict::Refused);
+    assert_eq!(session.verdict(), Verdict::NotComplete);
+    assert_eq!(session.not_complete().count(), 2);
+}

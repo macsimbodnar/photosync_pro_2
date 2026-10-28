@@ -57,22 +57,50 @@ extern "C" fn on_sigint(_: libc::c_int) {
 }
 
 /// One line from stdin, without its newline. `None` at the end of the
-/// input, or when Ctrl-C interrupts the wait (its handler sets `cancel`).
-/// Not std's `read_line`: it retries after a signal, so a Ctrl-C would go
-/// on waiting for Enter. Byte by byte, so nothing after the line is taken
-/// from a script's input.
+/// input, or once Ctrl-C has set `cancel`. Not std's `read_line`: it
+/// retries after a signal, so a Ctrl-C would go on waiting for Enter. Byte
+/// by byte, so nothing after the line is taken from a script's input.
 #[cfg(unix)]
 pub fn read_line(cancel: &Cancel) -> io::Result<Option<OsString>> {
+    read_line_from(libc::STDIN_FILENO, cancel)
+}
+
+/// How long one wait for input lasts before the cancel is checked again.
+#[cfg(unix)]
+const CANCEL_CHECK_MS: libc::c_int = 100;
+
+#[cfg(unix)]
+fn read_line_from(fd: libc::c_int, cancel: &Cancel) -> io::Result<Option<OsString>> {
     let mut line = Vec::new();
     loop {
-        // A Ctrl-C between two reads does not interrupt the next one.
+        // A Ctrl-C that lands between this check and the wait does not
+        // interrupt the wait: so the wait is short, and the check comes
+        // round again (S022).
         if cancel.is_cancelled() {
             return Ok(None);
+        }
+        let mut ready = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: polls the one `pollfd` given, which lives across the call.
+        match unsafe { libc::poll(&mut ready, 1, CANCEL_CHECK_MS) } {
+            0 => continue,
+            n if n < 0 => {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+            // Readable, at its end (POLLHUP) or in error: the read says which.
+            _ => {}
         }
         let mut byte = 0u8;
         // SAFETY: reads at most one byte into `byte`, which lives across
         // the call.
-        let n = unsafe { libc::read(libc::STDIN_FILENO, (&raw mut byte).cast(), 1) };
+        let n = unsafe { libc::read(fd, (&raw mut byte).cast(), 1) };
         match n {
             1 if byte == b'\n' => break,
             1 => line.push(byte),
@@ -82,9 +110,6 @@ pub fn read_line(cancel: &Cancel) -> io::Result<Option<OsString>> {
                 let e = io::Error::last_os_error();
                 if e.kind() != io::ErrorKind::Interrupted {
                     return Err(e);
-                }
-                if cancel.is_cancelled() {
-                    return Ok(None);
                 }
             }
         }
@@ -151,5 +176,55 @@ mod tests {
             cancel_on_ctrl_c(Cancel::new()).unwrap_err().kind(),
             io::ErrorKind::AlreadyExists
         );
+    }
+
+    /// A pipe: (read end, write end).
+    #[cfg(unix)]
+    fn pipe() -> (libc::c_int, libc::c_int) {
+        let mut fds = [0; 2];
+        // SAFETY: pipe writes two fds into `fds`, which lives across the call.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        (fds[0], fds[1])
+    }
+
+    #[cfg(unix)]
+    fn close(fd: libc::c_int) {
+        // SAFETY: the fd is the test's own, closed once.
+        unsafe { libc::close(fd) };
+    }
+
+    /// S022: a Ctrl-C that lands just before the wait for input begins
+    /// interrupts nothing: only the cancel says it came. The wait must see
+    /// it anyway, not wait for a line that may never come. Setting the
+    /// cancel with no signal is that case.
+    #[cfg(unix)]
+    #[test]
+    fn a_cancel_set_while_the_prompt_waits_is_never_missed() {
+        let (read, write) = pipe();
+        let cancel = Cancel::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiting = cancel.clone();
+        std::thread::spawn(move || tx.send(read_line_from(read, &waiting).unwrap()));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        cancel.cancel();
+        let got = rx.recv_timeout(std::time::Duration::from_secs(10));
+        // Ends a wait that missed the cancel, so the thread does not leak.
+        close(write);
+        assert_eq!(got.expect("the cancel was missed"), None);
+        close(read);
+    }
+
+    /// The wait still reads what comes: a line, then the end of the input.
+    #[cfg(unix)]
+    #[test]
+    fn the_prompt_reads_a_line_then_the_end_of_the_input() {
+        let (read, write) = pipe();
+        // SAFETY: writes from a live buffer of that length.
+        assert_eq!(unsafe { libc::write(write, b"/V/B\n".as_ptr().cast(), 5) }, 5);
+        let cancel = Cancel::new();
+        assert_eq!(read_line_from(read, &cancel).unwrap(), Some(OsString::from("/V/B")));
+        close(write);
+        assert_eq!(read_line_from(read, &cancel).unwrap(), None);
+        close(read);
     }
 }

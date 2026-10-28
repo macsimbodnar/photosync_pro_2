@@ -155,9 +155,32 @@ fn sync(args: &SyncArgs) -> u8 {
             return EXIT_REFUSED;
         }
     };
-    let mut sources = args.sources.clone();
+    sync_cards(
+        &mut session,
+        args.sources.clone(),
+        args.one_by_one,
+        &cancel,
+        |which| next_cards(args, &cancel, which),
+    )
+}
+
+/// The syncs of `session`: `sources`, then with `one_by_one` each set of
+/// cards `next` gives, until it gives none; `next("first")` asks for the
+/// first cards when `sources` is empty. Each sync's end is printed as it
+/// comes, then the session's summary after several. The session's exit code.
+fn sync_cards(
+    session: &mut Session,
+    mut sources: Vec<PathBuf>,
+    one_by_one: bool,
+    cancel: &Cancel,
+    mut next: impl FnMut(&str) -> Option<Vec<PathBuf>>,
+) -> u8 {
+    // A Ctrl-C while the cards are looked for does not stop the look; it
+    // must still stop the session before their sync, which would only be
+    // a cancelled one, recorded as not complete (S022).
+    let mut next = |which: &str| next(which).filter(|_| !cancel.is_cancelled());
     if sources.is_empty() {
-        match next_cards(args, &cancel, "first") {
+        match next("first") {
             Some(cards) => sources = cards,
             None => {
                 system::say("No card was synced.");
@@ -166,18 +189,18 @@ fn sync(args: &SyncArgs) -> u8 {
         }
     }
     loop {
-        session.sync(&sources, &cancel, &mut text::StderrWatch::new());
-        if let Some(code) = print_last_run(&session) {
+        session.sync(&sources, cancel, &mut text::StderrWatch::new());
+        if let Some(code) = print_last_run(session) {
             // The report could not be written: say no more, keep the code.
-            if !args.one_by_one {
+            if !one_by_one {
                 return code;
             }
         }
         // A Ctrl-C during a sync stops the session too.
-        if !args.one_by_one || cancel.is_cancelled() {
+        if !one_by_one || cancel.is_cancelled() {
             break;
         }
-        match next_cards(args, &cancel, "next") {
+        match next("next") {
             Some(cards) => sources = cards,
             None => break,
         }
@@ -186,7 +209,7 @@ fn sync(args: &SyncArgs) -> u8 {
     if session.runs().len() > 1 {
         return print_report(
             &mut io::stdout().lock(),
-            &text::session_summary(&session),
+            &text::session_summary(session),
             code,
         );
     }
@@ -267,6 +290,8 @@ fn next_cards(args: &SyncArgs, cancel: &Cancel, which: &str) -> Option<Vec<PathB
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     /// Like a pipe whose reader is gone.
@@ -289,5 +314,28 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(print_report(&mut out, "Report\n", EXIT_OK), EXIT_OK);
         assert_eq!(out, b"Report\n");
+    }
+
+    /// S022: a Ctrl-C while the next cards are looked for (Enter, then
+    /// discovery) stops the session before their sync: none runs, none is
+    /// recorded. For the first cards nothing was synced, which is not a
+    /// success.
+    #[test]
+    fn a_cancel_while_looking_for_cards_runs_no_sync() {
+        let gone = PathBuf::from("/photosync-test/no-such-card");
+        for given in [vec![], vec![gone.clone()]] {
+            let mut session = Session::new(Path::new("/photosync-test/lib"), None).unwrap();
+            let cancel = Cancel::new();
+            let mut asked = 0;
+            let code = sync_cards(&mut session, given.clone(), true, &cancel, |_| {
+                asked += 1;
+                // The Ctrl-C lands while discovery runs; it finds a card.
+                cancel.cancel();
+                Some(vec![gone.clone()])
+            });
+            assert_eq!(asked, 1, "{given:?}");
+            assert_eq!(session.runs().len(), given.len(), "{given:?}: a sync ran");
+            assert_ne!(code, EXIT_OK, "{given:?}");
+        }
     }
 }

@@ -5,5 +5,5 @@ touches:    crates/photosync (main.rs, system.rs, app.rs, worker.rs, tests), pho
 excludes:   twin fallback (S021); parallel copying (S019); GUI
 closes:
 paused_by:
-author:
+author:     Claude agent (2026-10-28)
 done:

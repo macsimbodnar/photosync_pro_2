@@ -814,10 +814,35 @@ mod tests {
     fn run_job(app: &mut App, job: Job) {
         let (tx, rx) = mpsc::channel();
         worker::spawn(job, move |m| tx.send(m).unwrap());
+        take_all(app, rx);
+    }
+
+    /// `run_job` with the worker's sync injected.
+    fn run_job_with(
+        app: &mut App,
+        job: Job,
+        sync: impl FnOnce(&mut Session, &[PathBuf], &Cancel, &mut dyn flow::Watch) + Send + 'static,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        worker::spawn_with(job, move |m| tx.send(m).unwrap(), sync);
+        take_all(app, rx);
+    }
+
+    fn take_all(app: &mut App, rx: mpsc::Receiver<Msg>) {
         for msg in rx {
             app.update(msg);
         }
         app.update(Msg::WorkerGone);
+    }
+
+    /// A sync whose copy ran but whose report does not add up. No real
+    /// sync gives one and the binary may not use the core's test seam, so
+    /// the injected sync records it in the job's session (DEC-035).
+    fn refuse_report(session: &mut Session, sources: &[PathBuf], _: &Cancel, _: &mut dyn flow::Watch) {
+        session.record_refusal(
+            sources,
+            SyncError::Report(ReportError::SourceTwice(PathBuf::from("/V/CARD"))),
+        );
     }
 
     /// A card with one photo, in a temp dir: on the library's device, so a
@@ -1088,11 +1113,35 @@ mod tests {
         assert!(!again.cancel.is_cancelled());
     }
 
-    /// The session decides the exit now: a sync whose report was refused
-    /// after copying is not complete, so the exit is 1. No real sync can
-    /// give one, so the run is built here.
+    /// A sync whose report was refused after copying is not complete: it
+    /// exits 1 with the refusal's sentence, and a later sync's result names
+    /// it with what it left undone.
     #[test]
     fn a_report_that_does_not_add_up_exits_1() {
+        let (mut app, job) = running();
+        run_job_with(&mut app, job, refuse_report);
+        assert_eq!(app.screen(), Screen::Refused);
+        let exit = app.exit();
+        assert_eq!(exit.code, EXIT_INCOMPLETE, "{exit:?}");
+        let message = exit.message.unwrap();
+        assert!(
+            message.starts_with("The copy ran, but its report does not add up ("),
+            "{message}"
+        );
+        assert!(message.contains("Do not format the card."), "{message}");
+
+        // `/V/CARD` does not exist: the next card is refused at its scan.
+        keys(&mut app, &[Key::Char('n'), Key::Enter]);
+        let next = start(&mut app);
+        run_job(&mut app, next);
+        let exit = app.exit();
+        assert_eq!(exit.code, EXIT_INCOMPLETE, "{exit:?}");
+        let message = exit.message.unwrap();
+        assert!(
+            message.contains("sync 1 (/V/CARD): copied, but its report does not add up"),
+            "{message}"
+        );
+
         let run = Run {
             sources: vec![PathBuf::from("/V/CARD")],
             end: RunEnd::Refused(SyncError::Report(ReportError::SourceTwice(PathBuf::from(
@@ -1117,18 +1166,28 @@ mod tests {
     /// elsewhere must not exit 0 or lose the sentence.
     #[test]
     fn a_failure_is_kept_after_going_back_and_quitting_elsewhere() {
-        // A refused report cannot come from a real sync any more, now the
-        // session gives the end: a crash is the other way to exit 1.
+        type End = Box<dyn Fn(&mut App, Job)>;
         for (what, end) in [
             (
                 "worker gone",
-                Box::new(|| Msg::WorkerGone) as Box<dyn Fn() -> Msg>,
+                Box::new(|app: &mut App, _| {
+                    app.update(Msg::WorkerGone);
+                }) as End,
             ),
-            ("crashed", Box::new(|| Msg::Crashed("boom".into()))),
+            (
+                "crashed",
+                Box::new(|app: &mut App, _| {
+                    app.update(Msg::Crashed("boom".into()));
+                }),
+            ),
+            (
+                "report error",
+                Box::new(|app: &mut App, job| run_job_with(app, job, refuse_report)),
+            ),
         ] {
             for back in [Key::Enter, Key::Esc] {
-                let (mut app, _job) = running();
-                app.update(end());
+                let (mut app, job) = running();
+                end(&mut app, job);
                 let failed = app.exit();
                 assert_eq!(failed.code, EXIT_INCOMPLETE, "{what}");
                 assert!(failed.message.is_some(), "{what}");
