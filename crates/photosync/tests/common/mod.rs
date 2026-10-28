@@ -131,10 +131,68 @@ where
     }
 }
 
-/// `photosync(args)` with `input` on stdin, then the end of the input.
-/// Fails the test, and kills the binary, if it runs for over a minute: a
-/// prompt that waits for input nobody gives would hang the suite.
-pub fn photosync_fed<I, S>(args: I, input: &[u8]) -> Run
+/// A pseudo-terminal, so the binary's stdin is a terminal and its prompt
+/// asks, as for a person at the keyboard: the test types into `keys`. No
+/// echo, as nobody reads it back.
+#[cfg(unix)]
+pub struct Pty {
+    pub keys: File,
+    terminal: Option<File>,
+}
+
+#[cfg(unix)]
+impl Pty {
+    pub fn open() -> Pty {
+        use std::os::fd::FromRawFd;
+
+        let (mut keys, mut terminal) = (0, 0);
+        // SAFETY: openpty writes two fds into the ints given, which live
+        // across the call; name, termios and winsize may be null.
+        let rc = unsafe {
+            libc::openpty(
+                &mut keys,
+                &mut terminal,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, 0, "openpty: {}", std::io::Error::last_os_error());
+        // SAFETY: both fds are new and ours; `mode` is fully written by
+        // tcgetattr before it is changed and set.
+        unsafe {
+            // The binary must not hold the keys' side: it is only ours.
+            libc::fcntl(keys, libc::F_SETFD, libc::FD_CLOEXEC);
+            libc::fcntl(terminal, libc::F_SETFD, libc::FD_CLOEXEC);
+            let mut mode: libc::termios = std::mem::zeroed();
+            assert_eq!(libc::tcgetattr(terminal, &mut mode), 0);
+            mode.c_lflag &= !libc::ECHO;
+            assert_eq!(libc::tcsetattr(terminal, libc::TCSANOW, &mode), 0);
+            Pty {
+                keys: File::from_raw_fd(keys),
+                terminal: Some(File::from_raw_fd(terminal)),
+            }
+        }
+    }
+
+    /// The terminal's side, for the binary's stdin. Once.
+    pub fn stdin(&mut self) -> std::process::Stdio {
+        self.terminal.take().expect("stdin taken twice").into()
+    }
+
+    /// Ctrl-D at the start of a line: the end of the input.
+    pub fn end_input(&mut self) {
+        use std::io::Write;
+        self.keys.write_all(&[0x04]).unwrap();
+    }
+}
+
+/// `photosync(args)` on a terminal: `input` typed, then Ctrl-D, the end
+/// of the input. Fails the test, and kills the binary, if it runs for over
+/// a minute: a prompt that waits for input nobody gives would hang the
+/// suite.
+#[cfg(unix)]
+pub fn photosync_tty<I, S>(args: I, input: &[u8]) -> Run
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
@@ -142,16 +200,17 @@ where
     use std::io::Write;
     use std::process::Stdio;
 
-    let mut child = Command::new(binary())
+    let mut pty = Pty::open();
+    let child = Command::new(binary())
         .args(args)
-        .stdin(Stdio::piped())
+        .stdin(pty.stdin())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let pid = child.id();
-    // A binary that exits before reading it all closes the pipe: fine.
-    let _ = child.stdin.take().unwrap().write_all(input);
+    pty.keys.write_all(input).unwrap();
+    pty.end_input();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || tx.send(child.wait_with_output().unwrap()));
     let Ok(Output {
@@ -163,6 +222,8 @@ where
         let _ = Command::new("kill").arg(pid.to_string()).status();
         panic!("photosync hangs on its input");
     };
+    // Kept open to the end: a closed terminal is not the end of the input.
+    drop(pty);
     Run {
         code: status.code().unwrap_or(-1),
         stdout: String::from_utf8(stdout).unwrap(),

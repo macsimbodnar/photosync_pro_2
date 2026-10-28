@@ -17,10 +17,9 @@ not change the order.
 
 ## Open
 
-1. S022  session CLI/TUI hardening (S020 fast check)
-2. S021  twin fallback on a read error, F07 (split from S010)
-3. S019  copy several cards at once (split from S010)
-4. S017  hardware hand checks (waits for the user)
+1. S021  twin fallback on a read error, F07 (split from S010)
+2. S019  copy several cards at once (split from S010)
+3. S017  hardware hand checks (waits for the user)
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.
@@ -29,8 +28,8 @@ Linux verification.
 
 Last five; the full record is `plan_done/`.
 
+- S022  session CLI/TUI hardening (S020 fast check)
 - S020  one card after another in the CLI and TUI
 - S010  core session: several sources and one after another (part 1; rest split into S019-S021)
 - S018  TUI hardening (S009 fast check)
 - S009  TUI
-- S008  CLI commands

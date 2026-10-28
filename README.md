@@ -54,9 +54,10 @@ stderr: swap the card and press Enter (it copies the cards it finds
 mounted), or type a card's path. `q`, Ctrl-D or Ctrl-C finishes. Without
 `--source` it asks for the first card too. All cards go into one session
 and one folder; after several, a summary names each sync that was not
-complete, and the exit code is the worst of them. With stdin at its end
-(e.g. `</dev/null`) it stops after the first card, so a script never
-waits.
+complete, and the exit code is the worst of them. It asks only when
+stdin is a terminal: with stdin redirected (`</dev/null`, a pipe) it
+syncs the `--source` cards and ends, so a script never waits; with no
+`--source` there it prints "No card was synced." and exits 2.
 
 The X-T5 over a USB cable shows up as a card only in its "USB card reader"
 connection mode, not in the default PTP mode. `--source` can be given
@@ -158,7 +159,7 @@ and checks the files and the report text; the binary's unit test
 cancelled and a full sync there, then the same card again as the next
 card of the session, with scripted keys on ratatui's `TestBackend`.
 `tests/exfat_session.rs` runs `sync --one-by-one` over five cards in one
-session, one of them failing. Plain `cargo test` skips these
+session, one of them failing, typed at its prompt on a pseudo-terminal. Plain `cargo test` skips these
 tests and says so; it covers the binary's help, usage errors and refusals
 on temp dirs. The tests reach `photosync sources` and `drives` through a
 hidden `--search-root` option.

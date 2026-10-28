@@ -6,4 +6,4 @@ excludes:   twin fallback (S021); parallel copying (S019); GUI
 closes:
 paused_by:
 author:     Claude agent (2026-10-28)
-done:
+done:       2026-10-28. No terminal on stdin: never prompts (user's ruling, DEC-035 (4)); cli `one_by_one_never_waits_on_a_pipe_that_stays_open`. Prompt polls 100 ms and re-checks the cancel: system `a_cancel_set_while_the_prompt_waits_is_never_missed`. Cancel during lookup runs no sync: main `a_cancel_while_looking_for_cards_runs_no_sync`. Refused report restored: core `session::tests::a_report_refused_after_copying_is_not_complete` and `a_recorded_refusal_is_never_complete`; app `a_report_that_does_not_add_up_exits_1` and `a_failure_is_kept_after_going_back_and_quitting_elsewhere` through `worker::spawn_with` and `Session::record_refusal` (DEC-035). Four pipe-fed prompt tests moved to a pty, assertions unchanged. Doc comment fixed. cargo test --workspace green (226), clippy clean, scripts/test_exfat.sh exit 0.

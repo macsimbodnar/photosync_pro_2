@@ -3,7 +3,9 @@
 //! real copies, so the session's summary and exit code can be checked
 //! against a failed sync followed by complete and refused ones. Its own
 //! test binary, so it never runs beside `exfat_e2e.rs`, which counts the
-//! files on the shared card image. Without the images it says so.
+//! files on the shared card image. The cards are typed at the prompt on a
+//! pseudo-terminal, as it asks only on a terminal. Without the images it
+//! says so.
 
 #![cfg(unix)]
 
@@ -12,7 +14,7 @@ mod common;
 use std::fs;
 use std::path::PathBuf;
 
-use common::{TempDir, at, date_command, manifest, photosync_fed, write_file};
+use common::{TempDir, at, date_command, manifest, photosync_tty, write_file};
 
 const TAKEN: u64 = 1_700_000_000;
 
@@ -92,7 +94,7 @@ fn one_card_after_another_keeps_the_worst_outcome_on_exfat() {
     let mut args: Vec<&std::ffi::OsStr> = args.to_vec();
     args.push(root.as_os_str());
     let input = format!("{}\n\n{}\n\nq\n", y.display(), gone.display());
-    let run = photosync_fed(args, input.as_bytes());
+    let run = photosync_tty(args, input.as_bytes());
 
     assert_eq!(run.code, 1, "{run:?}");
     let folder = library.join(format!("{} - Trip", date_command(TAKEN)));

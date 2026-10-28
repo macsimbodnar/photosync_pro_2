@@ -93,8 +93,11 @@ picks. It is simple to use.
     stderr for the next card and reads a line on stdin: Enter alone takes
     the mounted cards, a line names one card, `q`, Ctrl-C or the end of
     the input finishes; with no `--source` the first card is asked for,
-    and none given exits 2. The end of the input ends the session, so a
-    script never hangs. All syncs are one session; after several, a
+    and none given exits 2. It asks only when stdin is a terminal:
+    otherwise (`</dev/null`, a pipe, open or not) it syncs the `--source`
+    cards and ends, and with none prints "No card was synced." and exits
+    2, so a script never hangs. A Ctrl-C at the prompt is always seen,
+    and one while the cards are looked for runs no further sync. All syncs are one session; after several, a
     summary ends the report, and the exit code and the result are the
     session's worst, naming each sync that was not complete (DEC-034).
     It refuses to run as root (euid 0): root can write to system volumes.

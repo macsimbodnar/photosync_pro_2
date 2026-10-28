@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{TempDir, at, manifest, photosync, photosync_fed, write_file};
+use common::{TempDir, at, manifest, photosync, photosync_tty, write_file};
 
 fn card(root: &Path) {
     write_file(
@@ -322,11 +322,11 @@ fn one_by_one(src: Option<&Path>, library: &Path, search: &Path) -> Vec<std::ffi
     args
 }
 
-/// S020: `--one-by-one` asks for the next card on stderr and reads stdin.
-/// Without input (a script, `</dev/null`) the input ends at once, so the
-/// session ends after its first card instead of hanging. With no
-/// `--source` the first card is asked for; none given, nothing synced is
-/// not a success.
+/// S020: `--one-by-one` asks for the next card on stderr and reads stdin,
+/// a terminal. At the end of the input (Ctrl-D) the session ends after
+/// its first card instead of hanging. With no `--source` the first card
+/// is asked for; none given, nothing synced is not a success. Without a
+/// terminal it never asks (S022).
 #[test]
 fn one_by_one_without_input_ends_after_the_first_card() {
     let dir = TempDir::new();
@@ -337,7 +337,7 @@ fn one_by_one_without_input_ends_after_the_first_card() {
     let empty = dir.0.join("mounts");
     fs::create_dir(&empty).unwrap();
 
-    let run = photosync_fed(one_by_one(Some(&src), &library, &empty), b"");
+    let run = photosync_tty(one_by_one(Some(&src), &library, &empty), b"");
     assert_eq!(run.code, 2, "{run:?}");
     assert!(
         run.stderr.contains("is on the same drive as source"),
@@ -352,7 +352,7 @@ fn one_by_one_without_input_ends_after_the_first_card() {
         "one sync, refused, has no report: {run:?}"
     );
 
-    let none = photosync_fed(one_by_one(None, &library, &empty), b"");
+    let none = photosync_tty(one_by_one(None, &library, &empty), b"");
     assert_eq!(none.code, 2, "{none:?}");
     assert!(
         none.stderr
@@ -360,6 +360,51 @@ fn one_by_one_without_input_ends_after_the_first_card() {
         "{none:?}"
     );
     assert_eq!(none.last_err_line(), "No card was synced.");
+}
+
+/// S022: with no terminal on stdin nobody can swap a card, so the prompt
+/// never waits, not even on a pipe that stays open: the session ends after
+/// the given cards, and with none given nothing was synced.
+#[cfg(unix)]
+#[test]
+fn one_by_one_never_waits_on_a_pipe_that_stays_open() {
+    let dir = TempDir::new();
+    let src = dir.0.join("card");
+    card(&src);
+    let library = dir.0.join("library");
+    fs::create_dir(&library).unwrap();
+    let empty = dir.0.join("mounts");
+    fs::create_dir(&empty).unwrap();
+
+    for (given, last) in [
+        (Some(&src), "is on the same drive as source"),
+        (None, "No card was synced."),
+    ] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_photosync"))
+            .args(one_by_one(given.map(|p| p.as_path()), &library, &empty))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Held open, never written: a script that keeps its pipe.
+        let stdin = child.stdin.take().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                panic!("{given:?}: waits on a pipe that stays open");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let out = child.wait_with_output().unwrap();
+        drop(stdin);
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert_eq!(out.status.code(), Some(2), "{given:?}: {stderr}");
+        assert!(!stderr.contains("Insert the"), "{given:?}: prompted: {stderr}");
+        let last_line = stderr.lines().last().unwrap_or("");
+        assert!(last_line.contains(last), "{given:?}: {stderr}");
+    }
 }
 
 /// S020: one card after another in one session: a typed path, Enter to
@@ -379,7 +424,7 @@ fn one_by_one_takes_cards_until_q_and_sums_up_the_session() {
     let before = manifest(&dir.0);
 
     let input = format!("{}\n\nq\n", b.display());
-    let run = photosync_fed(one_by_one(Some(&a), &library, &empty), input.as_bytes());
+    let run = photosync_tty(one_by_one(Some(&a), &library, &empty), input.as_bytes());
 
     assert_eq!(run.code, 2, "{run:?}");
     assert_eq!(
@@ -423,8 +468,9 @@ fn one_by_one_takes_cards_until_q_and_sums_up_the_session() {
     assert_eq!(manifest(&dir.0), before);
 }
 
-/// S020: Ctrl-C while the prompt waits ends the session at once, with its
-/// summary and its exit code, not by the signal: a second Ctrl-C would.
+/// S020: Ctrl-C while the prompt waits on its terminal ends the session at
+/// once, with its summary and its exit code, not by the signal: a second
+/// Ctrl-C would.
 #[cfg(unix)]
 #[test]
 fn ctrl_c_at_the_prompt_ends_the_session_with_its_summary() {
@@ -436,14 +482,14 @@ fn ctrl_c_at_the_prompt_ends_the_session_with_its_summary() {
     card(&b);
     let library = dir.0.join("library");
     fs::create_dir(&library).unwrap();
+    let mut pty = common::Pty::open();
     let mut child = Command::new(env!("CARGO_BIN_EXE_photosync"))
         .args(one_by_one(Some(&a), &library, &dir.0))
-        .stdin(Stdio::piped())
+        .stdin(pty.stdin())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let stderr = child.stderr.take().unwrap();
     std::thread::spawn(move || {
@@ -459,7 +505,7 @@ fn ctrl_c_at_the_prompt_ends_the_session_with_its_summary() {
         }
     };
     prompt(1);
-    writeln!(stdin, "{}", b.display()).unwrap();
+    writeln!(pty.keys, "{}", b.display()).unwrap();
     prompt(1);
     // Inside the wait for the answer, not just before it.
     std::thread::sleep(Duration::from_millis(300));
@@ -478,5 +524,5 @@ fn ctrl_c_at_the_prompt_ends_the_session_with_its_summary() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert_eq!(out.status.code(), Some(2), "{stdout}");
     assert!(stdout.starts_with("Session of 2 syncs\n"), "{stdout}");
-    drop(stdin);
+    drop(pty);
 }

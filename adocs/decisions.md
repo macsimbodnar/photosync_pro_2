@@ -751,7 +751,8 @@ any sync of the session was not complete.
 
 ## DEC-035  2026-10-28  S022: seam for a refused report, prompt poll, cancel during lookup
 Tags: tests, session, cli, api, safety
-Decision: agent's pick in S022, not yet confirmed by the user.
+Decision: (1)-(3) agent's pick in S022, not yet confirmed by the user;
+(4) user decided.
 (1) The coverage S020 dropped (DEC-034 (6)) is back through two seams.
 Core: a `#[cfg(test)]` thread-local switch in `session.rs` refuses the
 next report after its copy, for the core's own unit test (not the
@@ -770,5 +771,17 @@ cancel again, so a Ctrl-C that lands just before the wait is seen.
 dropped: no sync runs and none is recorded. For the first card that is
 "No card was synced.", exit 2; for a later one the session ends with its
 summary.
+(4) User decided (option A of three put to the user): with no terminal
+on stdin, `--one-by-one` never prompts: it syncs the `--source` cards and
+ends; with none, "No card was synced.", exit 2. This supersedes DEC-034
+(1)'s "stdin at its end ends the session after its first card": a pipe
+that stays open hung it. The tests that typed cards into a pipe
+(`cli.rs` `one_by_one_without_input_ends_after_the_first_card`,
+`one_by_one_takes_cards_until_q_and_sums_up_the_session`,
+`ctrl_c_at_the_prompt_ends_the_session_with_its_summary`, and
+`exfat_session.rs`) run on a pseudo-terminal (`tests/common` `Pty`,
+libc `openpty`, echo off, Ctrl-D for the end of the input), their
+assertions unchanged. Rejected: a bounded wait on a pipe (timing); reading
+only what a pipe holds already (races).
 Why: no test may lean on a seam the binary could ship, and no cancel may
 turn into a recorded sync or a missed one.

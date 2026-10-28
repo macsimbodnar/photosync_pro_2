@@ -155,12 +155,15 @@ fn sync(args: &SyncArgs) -> u8 {
             return EXIT_REFUSED;
         }
     };
+    // With no terminal on stdin nobody can swap a card: a pipe may stay
+    // open, so waiting on it could last for ever (DEC-035).
+    let prompt = io::stdin().is_terminal();
     sync_cards(
         &mut session,
         args.sources.clone(),
         args.one_by_one,
         &cancel,
-        |which| next_cards(args, &cancel, which),
+        |which| prompt.then(|| next_cards(args, &cancel, which)).flatten(),
     )
 }
 
@@ -239,8 +242,9 @@ fn print_last_run(session: &Session) -> Option<u8> {
 
 /// Asks on stderr for the next cards and reads the answer from stdin:
 /// Enter alone takes every mounted card, a line names one card, `q` or the
-/// end of the input (or Ctrl-C) finishes, `None`. With no terminal on
-/// stdin, e.g. `</dev/null`, the input ends at once: a script never hangs.
+/// end of the input (Ctrl-D, or Ctrl-C) finishes, `None`. Only asked with
+/// a terminal on stdin; without one (`</dev/null`, a pipe) the session
+/// ends after the given cards, so a script never hangs.
 fn next_cards(args: &SyncArgs, cancel: &Cancel, which: &str) -> Option<Vec<PathBuf>> {
     loop {
         system::say(&format!(

@@ -94,7 +94,8 @@ pub struct SyncArgs {
     /// the next and press Enter (photosync finds the mounted cards), or
     /// type its path. q, Ctrl-D, Ctrl-C or the end of the input finishes.
     /// All go into one sync folder; the summary and the exit code are
-    /// those of the worst sync.
+    /// those of the worst sync. Asks only when stdin is a terminal;
+    /// otherwise it syncs the --source cards and ends.
     #[arg(long = "one-by-one")]
     pub one_by_one: bool,
     #[command(flatten)]
