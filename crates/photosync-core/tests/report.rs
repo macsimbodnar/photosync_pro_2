@@ -542,7 +542,7 @@ fn report_refuses_a_duplicate_whose_original_is_not_reported() {
     let mut plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
     let original = a.join("DCIM/100_FUJI/DSCF0001.RAF");
     assert_eq!(plan.duplicates[0].of, original);
-    // Points at a file the scans hold but nothing reports.
+    // Points at a file no scan holds but nothing reports.
     plan.duplicates[0].of = lib.join("elsewhere.RAF");
     let copied = copy(&plan, None);
 
