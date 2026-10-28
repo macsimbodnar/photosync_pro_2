@@ -44,6 +44,7 @@ Why: one line.
 - DEC-025 2026-10-28 — strict INV-10: library never on a source's disk or on any card
 - DEC-026 2026-10-28 — strict INV-10 details left open by DEC-025 (S015)
 - DEC-027 2026-10-28 — INV-10 enforcement: read-only device, test-support seam, re-check before copy (S016)
+- DEC-028 2026-10-28 — CLI details left open by S008
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -477,3 +478,50 @@ builds unify dev-dependency features, so there the binary links a core with
 `test-support` on. Only a plain `cargo build` excludes the seam by
 construction. `crates/photosync/tests/no_test_seam.rs` therefore fails if
 the binary's source or manifest mentions the seam.
+
+## DEC-028  2026-10-28  CLI details left open by S008
+Tags: cli, safety, exit-codes, tests
+Decision: agent's pick in S008, not yet confirmed by the user.
+(1) A missing `--dest` is refused ("does not exist, create it on your
+external drive first"), never created. Rejected: creating it inside an
+allowed volume after the INV-10 checks; the checks need the folder, so
+the mkdir would come first, and a typo or an unplugged drive puts the
+library on the boot disk.
+(2) Exit codes: 0 every supported file copied or already on the drive;
+1 the sync ran but some file failed or was cancelled, a scan entry was
+unreadable (its contents are unknown), or the report was refused after
+copying; 2 usage error (clap's own code) or refused before copying (root,
+scan, twin source, INV-10, missing library, invalid name, copy re-check).
+Library read failures and temp cleanup failures leave the code alone:
+they hide no source file (DEC-015).
+(3) A twin source (same `resolved_root`) is refused right after its scan,
+before planning, in `flow::sync`; core's `Report::new` check stays.
+(4) The report goes to stdout; scan lines, progress and refusals to
+stderr. `sources` and `drives` print one path per line on stdout, notes
+on stderr. Progress is throttled on the events' clock: a phase's start
+and end always, between them one line per 250 ms rewritten in place on a
+terminal, one line per second otherwise. The report lists every file not
+copied or skipped, with its reason; copied and skipped files only count.
+Ignored files are counted by extension ("hidden" for dot files).
+(5) Ctrl-C: a `sigaction` SIGINT handler (libc, DEC-008) sets the core
+`Cancel`, with `SA_RESETHAND`, so a second Ctrl-C kills the process at
+once, which INV-7 makes safe. Rejected: the ctrlc crate (not approved).
+(6) Root (euid 0) is refused for every command, after argument parsing,
+so `--help` still works.
+(7) `sources` and `drives` take a hidden `--search-root`, for tests only:
+it changes where volumes are looked for, not what counts as one (mount
+points only, DEC-024), and `sync` takes explicit paths anyway.
+(8) The scan line prints each source's `st_dev` in decimal, so a hand
+check can compare it with `stat -f %d <card>`.
+(9) The binary has `args` (clap), `flow` (one sync, start to report,
+through a `Watch` trait), `text` (rendering) and `system` (euid,
+SIGINT); the TUI (S009) reuses `args` and `flow`. `--name` is checked by
+core's `sync_folder`, after planning, not again in the binary.
+(10) Tests: `tests/cli.rs` covers what one temp device allows (help,
+usage, twin source, every INV-10 refusal but the card, missing library,
+empty lists); `tests/exfat_e2e.rs` syncs for real on the images of
+`scripts/test_exfat.sh`, which now mounts a third one, the library drive
+(`PHOTOSYNC_TEST_LIBRARY`). Root refusal is tested on `refuses_user`
+only: the suite never runs as root.
+Why: each picks the reading that keeps a photo safe and the output
+scriptable, with no new dependency.

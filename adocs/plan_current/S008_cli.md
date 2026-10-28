@@ -5,5 +5,5 @@ touches:    crates/photosync, README.md
 excludes:   TUI
 closes:     2026-10-28_adversarial-F09
 paused_by:
-author:
+author:     Claude agent (2026-10-28)
 done:

@@ -4,4 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+libc = "0.2.191"
 photosync-core = { path = "../photosync-core" }

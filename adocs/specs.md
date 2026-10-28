@@ -81,7 +81,12 @@ picks. It is simple to use.
 - Plain Rust, no web view. Ships as one self-contained binary or app; the
   user installs nothing else.
 - One core library holds all sync logic. Front-ends are thin layers over it:
-  - CLI: scriptable commands with plain-text output.
+  - CLI: scriptable commands with plain-text output: `sources`, `drives`,
+    `sync --source <path>... --dest <library> [--name <name>]`. Exit code
+    0 when every supported file is copied or already on the drive, 1 when
+    some failed or were cancelled or part of a card could not be read, 2
+    for a usage error or a sync refused before copying (DEC-028).
+    It refuses to run as root (euid 0): root can write to system volumes.
   - TUI: a terminal interface, the first interactive front-end.
   - GUI: a native Rust GUI, later. Adding it must need no change to the core
     beyond new API, which keeps INV-8 true.
@@ -118,6 +123,7 @@ picks. It is simple to use.
   on it.
 - The library is never on a card, nor on the same drive as a source, even a
   source that is a plain folder (INV-10).
+- The library folder must exist; the app never creates it (DEC-028).
 - The app may remember the last choice in its own config on the computer,
   never on the drive (INV-9).
 

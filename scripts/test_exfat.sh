@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Runs the photosync-core tests with TMPDIR on a fresh exFAT disk image, so
-# every test file lives on exFAT (macOS only: needs hdiutil). A second small
-# image with a DCIM folder at its top stands in for a card: its mount path
-# goes to the tests in PHOTOSYNC_TEST_CARD, and the INV-10 end-to-end test
-# plans a library on it with the real volume lookup. Both images are made in
-# a temp dir outside the repo and detached at the end, even on failure; if a
-# detach fails, the script says so and removes nothing.
+# Runs the photosync-core and photosync tests with TMPDIR on a fresh exFAT
+# disk image, so every test file lives on exFAT (macOS only: needs hdiutil).
+# A second small image with a DCIM folder at its top stands in for a card:
+# its mount path goes to the tests in PHOTOSYNC_TEST_CARD, and the INV-10
+# end-to-end test plans a library on it with the real volume lookup. A third
+# small image stands in for the external drive (PHOTOSYNC_TEST_LIBRARY): the
+# binary's end-to-end test syncs the card to it, on three devices as strict
+# INV-10 requires. All images are made in a temp dir outside the repo and
+# detached at the end, even on failure; if a detach fails, the script says so
+# and removes nothing.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,12 +46,13 @@ fi
 work="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/photosync-exfat.XXXXXX")" && pwd -P)"
 mnt="$work/mnt"
 card="$work/card"
+library="$work/lib"
 cleanup() {
     local status=$?
     # Every mount point is detached and checked, attached or not: one
     # attach may have mounted before it failed.
     local point mounts left=()
-    for point in "$card" "$mnt"; do
+    for point in "$library" "$card" "$mnt"; do
         if mounts=$(mount) && [[ $mounts == *" on $point "* ]]; then
             hdiutil detach "$point" -quiet || hdiutil detach "$point" -force -quiet || true
         fi
@@ -87,9 +91,13 @@ echo "exFAT image mounted at $mnt"
 attach_exfat PSCARD 16m "$card"
 mkdir "$card/DCIM"
 echo "card image (DCIM at its top) mounted at $card"
+attach_exfat PSLIB 16m "$library"
+echo "library drive image mounted at $library"
 
 args=()
 for name in ${skip[@]+"${skip[@]}"}; do
     args+=(--skip "$name")
 done
-TMPDIR="$mnt" PHOTOSYNC_TEST_CARD="$card" cargo test --manifest-path "$repo/Cargo.toml" -p photosync-core --no-fail-fast -- --exact ${args[@]+"${args[@]}"}
+TMPDIR="$mnt" PHOTOSYNC_TEST_CARD="$card" PHOTOSYNC_TEST_LIBRARY="$library" \
+    cargo test --manifest-path "$repo/Cargo.toml" -p photosync-core -p photosync \
+    --no-fail-fast -- --exact ${args[@]+"${args[@]}"}
