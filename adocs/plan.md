@@ -5,9 +5,8 @@ photos from a Fujifilm X-T5 (SD cards or the camera over USB) to an external
 drive the user picks. RAW and JPEG go to separate folders, optionally under a
 named folder such as "Tirana trip". Photos already in the library are
 skipped. The app shows progress with an ETA and a report at the end. No
-existing tool covers this (`research.md`). Detail in `specs.md`. Steps are
-written once the open items in specs.md and the technology choice are
-settled.
+existing tool covers this (`research.md`). Detail in `specs.md`. Plain Rust: a UI-free core
+library with CLI and TUI front-ends first, a native GUI later (DEC-002).
 
 Order lives here and nowhere else. Step detail lives in the step files under
 `plan_todo/`, `plan_current/`, and `plan_done/`. Ids are allocated in creation
@@ -18,7 +17,19 @@ not change the order.
 
 ## Open
 
-<!-- 1. S001  short goal -->
+1. S001  workspace skeleton and test suite
+2. S002  scan source DCIM, classify by type
+3. S003  in-memory library scan, already-synced detection
+4. S004  copy engine: folder naming, temp copy, verify, rename
+5. S005  progress events, ETA, cancel
+6. S006  sync report
+7. S007  volume discovery (Mac, then Linux)
+8. S008  CLI commands
+9. S009  TUI
+10. S010  multi-source and one-by-one session
+
+Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
+Linux verification.
 
 ## Done recently
 

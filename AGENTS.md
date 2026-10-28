@@ -125,7 +125,7 @@ One line per rule, stable id first.
 
 - GIT: commit freely; never push — the user pushes.
 - AGENTS: subagents allowed freely.
-- TESTS: no automated suite — each done: stamp says what was verified by hand.
+- TESTS: the suite is green before a step is marked done (`cargo test --workspace`); a defect gets a failing test before its fix.
 - PLAN: one active (non-paused) step per agent.
 - DOCS: README checked at every step completion.
 - REVIEW: fast check after each completed step.

@@ -84,9 +84,15 @@ picks. It is simple to use.
 
 `<library>/<date>[ - <name>]/<TYPE>/<camera file name>`
 
-- `<date>` is `YYYY-MM-DD`. Which date: see Open items.
+- One sync puts all its new files in one folder, `<date>[ - <name>]`.
+  Files skipped as already synced stay where they already are.
+- `<date>` is `YYYY-MM-DD`, the earliest capture date among the new files.
+- The capture date is the file's modification time as the camera wrote it,
+  read as local time.
 - `<name>` is the optional name the user gives the sync, e.g. "Tirana":
   `2026-10-28 - Tirana/RAW/DSCF1234.RAF`. With no name: `2026-10-28/RAW/...`.
+- If that folder already exists, new files are added to it (with collision
+  suffixes as below).
 - `<TYPE>` and the extensions that map to it (case-insensitive):
   - `RAW`: `.RAF`
   - `JPEG`: `.JPG`, `.JPEG`
@@ -127,13 +133,7 @@ picks. It is simple to use.
 
 ## Open items
 
-- Which date goes in the folder name: each photo's capture date (a 5-day
-  trip gives 5 folders), the earliest capture date in the sync (one folder),
-  or the sync date?
-- Where the capture date comes from: EXIF (needs a parser crate that reads
-  RAF, HIF and MOV), or the file's modification time as the camera wrote it
-  (no dependency, but FAT stores local time with 2 s resolution).
-- How copies are verified: a hash crate (fast, one extra read of the
-  destination), or a byte compare with no dependency (also re-reads the
-  source).
-- Native GUI framework, for later: see DEC-002.
+- Naming a selection of photos, instead of the whole sync, is a possible
+  future feature.
+- Capture date from EXIF instead of the file timestamp: maybe later.
+- Native GUI framework: iced is proposed, not chosen (DEC-002).

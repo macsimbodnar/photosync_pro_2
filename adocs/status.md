@@ -4,15 +4,14 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: <!-- date, by whom -->
+Updated: 2026-10-28, by Claude (first plan)
 
 - Last done: nothing yet
 - In progress: none
-- Next: no steps planned yet
+- Next: S001  workspace skeleton and test suite
 - Blocked: none
 - Parked:
-  - everything below `Parked:` is human memory: carry it forward when
-    rewriting this file, prune it only deliberately. Anything worth
-    remembering that no other file holds goes here — an unanswered question,
-    a decision waiting on someone else, a constraint that is not yet a step.
-    Delete this entry once you have one of your own.
+  - The camera's PTP mode (USB without card-reader mode) is unsupported
+    (DEC-004). Revisit if card-reader mode proves unreliable.
+  - The folder date is the earliest new-file date: the agent's pick, not
+    yet confirmed by the user (DEC-005).
