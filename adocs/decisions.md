@@ -49,6 +49,7 @@ Why: one line.
 - DEC-030 2026-10-28 — TUI details left open by S009
 - DEC-031 2026-10-28 — TUI hardening details left open by S018
 - DEC-032 2026-10-28 — S010 first part: core Session API, and the split of S010
+- DEC-033 2026-10-28 — S010 split accepted; worst outcome wins; F07 test change
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -592,6 +593,8 @@ Decision: agent's pick in S018, not yet confirmed by the user.
 (`Finished`, `WorkerGone`, `Crashed`), never by going back or by
 starting: the last sync wins. So a retry that is refused before copying
 (exit 2) replaces an earlier worker death (exit 1); both say not safe.
+Superseded by DEC-033 (2): across a session the worst outcome wins; S020
+brings the TUI to that rule.
 While a retry runs, quitting exits 1 as before (DEC-030 (4)).
 (2) Worker panic: after `ratatui::try_init`, `tui::run` wraps the panic
 hook so it acts for the TUI's own thread only. Another thread's panic is
@@ -659,7 +662,20 @@ the CLI and the TUI (supersedes DEC-031 (1) once the user drops or changes
 `app::tests::a_later_sync_replaces_the_kept_failure`), S021 twin fallback
 on a read error (F07; the user to say how
 `duplicate_of_an_original_that_failed_to_read_is_failed_not_skipped`
-changes). S010 stays in `plan_current/` until the user confirms the split
-and trims its accepts.
+changes). The user accepted the split (DEC-033), ordered S020, S021, S019,
+and ruled on both tests; S010 closed on part 1.
 Why: the core holds every session rule for the CLI, TUI and GUI alike;
 each choice errs toward "not safe to format".
+
+## DEC-033  2026-10-28  S010 split accepted; worst outcome wins; F07 test change
+Tags: plan, session, exit-codes, tests, safety
+Decision: user decided. (1) The split of DEC-032 (9) is accepted: S010
+closes on its first part; order S020, S021, S019 (parallel copying last),
+then S017. (2) Worst outcome wins across a session, superseding DEC-031
+(1): in S020, `app::tests::a_later_sync_replaces_the_kept_failure` may be
+rewritten to the session rule (exit 1, the message names the crashed run).
+(3) F07: in S021, `duplicate_of_an_original_that_failed_to_read_is_failed_not_skipped`
+may make both copies unreadable, which keeps its purpose, and a new test
+proves a readable twin is copied by the fallback.
+Why: a later sync must never hide an earlier one that was not safe, and
+backup mode must use the good card.

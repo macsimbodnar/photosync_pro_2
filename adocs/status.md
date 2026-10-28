@@ -4,17 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-28, by Claude agent (S010 first part, split proposed)
+Updated: 2026-10-28, by Claude agent (S010 done on part 1)
 
-- Last done: S018  TUI hardening (S009 fast check)
-- In progress: S010  multi-source and one-by-one session. First part
-  committed: core `Session` (one card after another, memory of earlier
-  cards, temp cleanup once, worst verdict), planned files with source,
-  hash and twins, copy checked against the planning hash, INV-10 re-check
-  per folder, renames under the folder lock, CLI report names library and
-  folder. Split proposed (DEC-032): S019, S020, S021. Waits for the user:
-  confirm the split; the two tests S020 and S021 name.
-- Next: S019  copy several cards at once
+- Last done: S010  core session (part 1; split into S019-S021, DEC-033)
+- In progress: none
+- Next: S020  one card after another in the CLI and TUI
 - Blocked: S017 waits for the user's hardware (DEC-029)
 - Parked:
   - The camera's PTP mode (USB without card-reader mode) is unsupported

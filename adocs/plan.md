@@ -17,11 +17,10 @@ not change the order.
 
 ## Open
 
-1. S010  multi-source and one-by-one session (first part done; split proposed, DEC-032)
-2. S019  copy several cards at once (split from S010)
-3. S020  one card after another in the CLI and TUI (split from S010, needs the user)
-4. S021  twin fallback on a read error, F07 (split from S010, needs the user)
-5. S017  hardware hand checks (waits for the user)
+1. S020  one card after another in the CLI and TUI (split from S010)
+2. S021  twin fallback on a read error, F07 (split from S010)
+3. S019  copy several cards at once (split from S010)
+4. S017  hardware hand checks (waits for the user)
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.
@@ -30,8 +29,8 @@ Linux verification.
 
 Last five; the full record is `plan_done/`.
 
+- S010  core session: several sources and one after another (part 1; rest split into S019-S021)
 - S018  TUI hardening (S009 fast check)
 - S009  TUI
 - S008  CLI commands
 - S016  enforce INV-10: e2e card test, read-only device, re-check before copy
-- S015  strict INV-10: library never on a source disk or a card
