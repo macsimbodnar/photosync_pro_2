@@ -24,8 +24,8 @@ fn scan(root: &Path) -> SourceScan {
     scan_elsewhere(root)
 }
 
-fn paths(files: &[photosync_core::SourceFile]) -> Vec<PathBuf> {
-    files.iter().map(|f| f.path.clone()).collect()
+fn paths(files: &[photosync_core::Planned]) -> Vec<PathBuf> {
+    files.iter().map(|f| f.file.path.clone()).collect()
 }
 
 /// INV-6 holds for the plan: each supported file is in exactly one list.
@@ -471,4 +471,30 @@ fn trashed_and_hidden_library_files_do_not_count_as_synced() {
     assert!(plan.skipped.is_empty(), "skipped: {:?}", plan.skipped);
     assert_eq!(plan.to_copy.len(), 4);
     assert_complete(&plan, &sources);
+}
+
+/// Each planned file carries its source's index, its hash if planning read
+/// it, and its duplicates on other sources, so a copy can check what it
+/// reads and read a twin instead, with no new hashing or path matching.
+#[test]
+fn planned_files_carry_their_source_hash_and_twins() {
+    let dir = TempDir::new();
+    let (a, b, c, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("c"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"backup")]);
+    put(&b, &[("DCIM/100_FUJI/DSCF0001.RAF", b"backup"), ("DCIM/100_FUJI/DSCF0002.RAF", b"only b")]);
+    put(&c, &[("DCIM/100_FUJI/DSCF0001.RAF", b"backup")]);
+    fs::create_dir_all(&lib).unwrap();
+    let sources = [scan(&a), scan(&b), scan(&c)];
+
+    let plan = plan_sync(&lib, &sources, &mut Monitor::default()).unwrap();
+
+    assert_complete(&plan, &sources);
+    let [backup, only_b] = &plan.to_copy[..] else { panic!("{:?}", plan.to_copy) };
+    assert_eq!((backup.source(), only_b.source()), (0, 1));
+    assert!(backup.is_hashed());
+    assert!(!only_b.is_hashed(), "unique by name and size: never read");
+    let twins: Vec<&Path> = backup.twins().iter().map(|f| f.path.as_path()).collect();
+    assert_eq!(twins, [b.join("DCIM/100_FUJI/DSCF0001.RAF"), c.join("DCIM/100_FUJI/DSCF0001.RAF")]);
+    assert!(only_b.twins().is_empty());
+    assert!(plan.seen_earlier.is_empty(), "only a session fills it");
 }

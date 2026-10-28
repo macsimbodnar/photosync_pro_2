@@ -134,14 +134,6 @@ pub fn eta(done_bytes: u64, total_bytes: u64, elapsed: Duration) -> Option<Durat
     Some(Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX)))
 }
 
-/// The index of the source whose root holds `path`, the deepest if roots
-/// nest.
-pub(crate) fn source_of(roots: &[PathBuf], path: &Path) -> Option<usize> {
-    (0..roots.len())
-        .filter(|i| path.starts_with(&roots[*i]))
-        .max_by_key(|i| roots[*i].components().count())
-}
-
 /// Keeps the counts for one phase and sends each event.
 pub(crate) struct Tracker<'m, 'a> {
     monitor: &'m mut Monitor<'a>,
@@ -253,15 +245,6 @@ mod tests {
         assert_eq!(eta(150, 100, s(10)), Some(Duration::ZERO));
         assert_eq!(eta(1, 3, Duration::from_nanos(1)), Some(Duration::from_nanos(2)));
         assert_eq!(eta(1, u64::MAX, s(u64::MAX)), Some(Duration::from_nanos(u64::MAX)));
-    }
-
-    #[test]
-    fn source_of_picks_the_deepest_root_holding_the_path() {
-        let roots = [PathBuf::from("/v/a"), PathBuf::from("/v/a/b"), PathBuf::from("/v/c")];
-        assert_eq!(source_of(&roots, Path::new("/v/a/DCIM/x.RAF")), Some(0));
-        assert_eq!(source_of(&roots, Path::new("/v/a/b/DCIM/x.RAF")), Some(1));
-        assert_eq!(source_of(&roots, Path::new("/v/c/DCIM/x.RAF")), Some(2));
-        assert_eq!(source_of(&roots, Path::new("/v/ab/DCIM/x.RAF")), None);
     }
 
     #[test]

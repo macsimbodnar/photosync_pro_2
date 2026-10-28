@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use photosync_core::Verdict;
 
 /// Every supported file was copied or was already on the drive.
 pub const EXIT_OK: u8 = 0;
@@ -13,6 +14,15 @@ pub const EXIT_INCOMPLETE: u8 = 1;
 /// Nothing was copied: a usage error, or the sync was refused before it
 /// started (also clap's own code for a usage error).
 pub const EXIT_REFUSED: u8 = 2;
+
+/// The exit code for a session's verdict: the worst of its syncs.
+pub fn exit_code(verdict: Verdict) -> u8 {
+    match verdict {
+        Verdict::Complete => EXIT_OK,
+        Verdict::NotComplete => EXIT_INCOMPLETE,
+        Verdict::Refused => EXIT_REFUSED,
+    }
+}
 
 const EXIT_CODES: &str = "\
 Exit codes:
@@ -85,6 +95,16 @@ mod tests {
     #[test]
     fn arguments_are_consistent() {
         Cli::command().debug_assert();
+    }
+
+    /// A session exits with its worst sync: not complete over refused over
+    /// complete, so no later sync can turn a failure into 0.
+    #[test]
+    fn a_verdict_maps_to_the_cli_exit_code() {
+        assert_eq!(exit_code(Verdict::Complete), EXIT_OK);
+        assert_eq!(exit_code(Verdict::Refused), EXIT_REFUSED);
+        assert_eq!(exit_code(Verdict::NotComplete), EXIT_INCOMPLETE);
+        assert!(Verdict::NotComplete > Verdict::Refused && Verdict::Refused > Verdict::Complete);
     }
 
     #[test]

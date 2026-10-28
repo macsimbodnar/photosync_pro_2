@@ -28,11 +28,15 @@ pub struct SyncPlan {
     /// reported per source in this order.
     pub sources: Vec<PathBuf>,
     /// New to the library, in source order, then path order.
-    pub to_copy: Vec<SourceFile>,
+    pub to_copy: Vec<Planned>,
     /// Already synced: same name, size and hash as a library file.
     pub skipped: Vec<Skipped>,
-    /// Same content as a file earlier in the session, so it is planned once.
+    /// Same content as a file earlier in this plan, so it is planned once.
     pub duplicates: Vec<Duplicate>,
+    /// Same content as a file an earlier sync of the session copied or
+    /// found on the drive (`of`, on an earlier card): "duplicate in
+    /// session", not "already on drive". Only a `Session` fills it.
+    pub seen_earlier: Vec<Duplicate>,
     /// Source files that could not be read while hashing. Not planned.
     pub failures: Vec<ScanError>,
     /// Library entries that could not be read or hashed. A source file whose
@@ -47,6 +51,39 @@ pub struct SyncPlan {
     pub(crate) library_volume: Option<PathBuf>,
     /// The device of each source, in the order of `sources`.
     pub(crate) source_devices: Vec<u64>,
+}
+
+/// A file to copy, with what planning learnt about it. The extras are
+/// crate-only, so they come from planning and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Planned {
+    pub file: SourceFile,
+    /// Its scan's index in `SyncPlan::sources`. Progress counts the file
+    /// there, whatever other root its path is under.
+    pub(crate) source: usize,
+    /// Its content, if planning read it (it had a name + size candidate).
+    /// The copy must read the same, so a file changed since cannot vouch
+    /// for its duplicates.
+    pub(crate) hash: Option<Hash>,
+    /// The plan's duplicates of it, in plan order: the same content on
+    /// other sources, which a copy can read instead with no new hashing
+    /// (F07: the copy does not fall back yet, S021).
+    pub(crate) twins: Vec<SourceFile>,
+}
+
+impl Planned {
+    pub fn source(&self) -> usize {
+        self.source
+    }
+
+    /// Whether planning read it, so its copy is checked against that hash.
+    pub fn is_hashed(&self) -> bool {
+        self.hash.is_some()
+    }
+
+    pub fn twins(&self) -> &[SourceFile] {
+        &self.twins
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +186,18 @@ pub fn plan_sync(
     sources: &[SourceScan],
     monitor: &mut Monitor,
 ) -> Result<SyncPlan, PlanError> {
+    plan_in_session(library, sources, monitor, &HashMap::new())
+}
+
+/// `plan_sync` within a session: `earlier` maps each library file an
+/// earlier sync of the session copied or found to the session file it
+/// holds. A file matching one is a duplicate in session of that file.
+pub(crate) fn plan_in_session(
+    library: &Path,
+    sources: &[SourceScan],
+    monitor: &mut Monitor,
+    earlier: &HashMap<PathBuf, PathBuf>,
+) -> Result<SyncPlan, PlanError> {
     let (library_device, library_volume) = check_library(library, sources)?;
     let mut index = scan_library(library).map_err(PlanError::Library)?;
     let library_failures = std::mem::take(&mut index.failures);
@@ -178,6 +227,7 @@ pub fn plan_sync(
         to_copy: Vec::new(),
         skipped: Vec::new(),
         duplicates: Vec::new(),
+        seen_earlier: Vec::new(),
         failures: Vec::new(),
         library_failures,
         library_device,
@@ -187,8 +237,8 @@ pub fn plan_sync(
     // None: unreadable, already in library_failures. Cached because several
     // source files can share one candidate.
     let mut library_hashes: HashMap<PathBuf, Option<Hash>> = HashMap::new();
-    // Per name and size, the hashes planned so far, with the planned path.
-    let mut planned: HashMap<(OsString, u64), Vec<(Hash, PathBuf)>> = HashMap::new();
+    // Per name and size, the hashes planned so far.
+    let mut planned: HashMap<(OsString, u64), Vec<Seen>> = HashMap::new();
 
     for (source, file) in supported {
         if cancel.is_cancelled() {
@@ -196,7 +246,7 @@ pub fn plan_sync(
             return Err(PlanError::Cancelled);
         }
         if !to_hash(file) {
-            plan.to_copy.push(file.clone());
+            plan.to_copy.push(Planned { file: file.clone(), source, hash: None, twins: Vec::new() });
             continue;
         }
         let key = key(file);
@@ -215,12 +265,14 @@ pub fn plan_sync(
             }
         };
         let seen = planned.entry(key).or_default();
-        if let Some((_, of)) = seen.iter().find(|(h, _)| *h == hash) {
+        if let Some((_, of, copied)) = seen.iter().find(|(h, _, _)| *h == hash) {
+            if let Some(i) = copied {
+                plan.to_copy[*i].twins.push(file.clone());
+            }
             plan.duplicates.push(Duplicate { file: file.clone(), of: of.clone() });
             tracker.file_done(&file.path);
             continue;
         }
-        seen.push((hash, file.path.clone()));
         let mut in_library = None;
         for candidate in candidates {
             let cached = match library_hashes.get(candidate) {
@@ -247,17 +299,31 @@ pub fn plan_sync(
                 break;
             }
         }
-        match in_library {
-            Some(library_file) => plan
-                .skipped
-                .push(Skipped { file: file.clone(), library_file: library_file.clone() }),
-            None => plan.to_copy.push(file.clone()),
-        }
+        let copied = match in_library {
+            Some(library_file) => {
+                match earlier.get(library_file) {
+                    Some(of) => plan.seen_earlier.push(Duplicate { file: file.clone(), of: of.clone() }),
+                    None => plan
+                        .skipped
+                        .push(Skipped { file: file.clone(), library_file: library_file.clone() }),
+                }
+                None
+            }
+            None => {
+                plan.to_copy.push(Planned { file: file.clone(), source, hash: Some(hash), twins: Vec::new() });
+                Some(plan.to_copy.len() - 1)
+            }
+        };
+        seen.push((hash, file.path.clone(), copied));
         tracker.file_done(&file.path);
     }
     tracker.finish(false);
     Ok(plan)
 }
+
+/// A file planning has read: its hash, its path and, if it is to be
+/// copied, its index in `to_copy`.
+type Seen = (Hash, PathBuf, Option<usize>);
 
 fn key(file: &SourceFile) -> (OsString, u64) {
     (file.path.file_name().unwrap_or_default().to_os_string(), file.size)

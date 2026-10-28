@@ -437,7 +437,7 @@ fn not_flushed_is_failed_and_counted_apart() {
     let plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
     // No hook can fail a folder flush from outside the core, so the outcome
     // is built by hand.
-    let [raf, jpg] = [plan.to_copy[0].clone(), plan.to_copy[1].clone()];
+    let [raf, jpg] = [plan.to_copy[0].file.clone(), plan.to_copy[1].file.clone()];
     let error = || std::io::Error::other("injected");
     let failed = vec![
         Failed { file: raf, reason: FailReason::NotFlushed { to: lib.join("x/RAW/DSCF0001.RAF"), error: error() } },
@@ -498,7 +498,7 @@ fn report_refuses_a_plan_or_outcome_whose_size_or_mtime_differs_from_the_scan() 
         let mut plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
         assert_eq!((plan.skipped.len(), plan.to_copy.len()), (1, 1));
         // Built by hand, so nothing is written and every case starts alike.
-        let copied = Copied { file: plan.to_copy[0].clone(), to: lib.join("x/RAW/DSCF0002.RAF") };
+        let copied = Copied { file: plan.to_copy[0].file.clone(), to: lib.join("x/RAW/DSCF0002.RAF") };
         let mut outcome = CopyOutcome::nothing_to_copy(Default::default());
         outcome.copied.push(copied);
         tweak(&mut plan, &mut outcome);
@@ -524,7 +524,7 @@ fn report_refuses_a_plan_or_outcome_whose_size_or_mtime_differs_from_the_scan() 
     let plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
     write_file(&card, "DCIM/100_FUJI/DSCF0001.RAF", b"on drive", at(T0 + 60));
     let mut outcome = CopyOutcome::nothing_to_copy(Default::default());
-    outcome.copied.push(Copied { file: plan.to_copy[0].clone(), to: lib.join("x/RAW/DSCF0002.RAF") });
+    outcome.copied.push(Copied { file: plan.to_copy[0].file.clone(), to: lib.join("x/RAW/DSCF0002.RAF") });
     let err = Report::new(vec![scan(&card)], plan, outcome).unwrap_err();
     assert!(matches!(&err, ReportError::Changed(p) if *p == skipped), "{err}");
 }

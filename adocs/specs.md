@@ -28,7 +28,9 @@ stays listed as retired.
 - INV-3 Verified copy. A file counts as copied only after its destination
   copy is flushed to disk (file and folder) and its hash equals the source
   hash. Copies are written under a temporary name and moved into place only
-  after that check, by a rename that fails if the target exists.
+  after that check, by a rename that fails if the target exists. A file
+  that planning hashed must also read as that hash when copied: one that
+  changed since fails, and so does its duplicate.
 - INV-4 Idempotent. Syncing the same source to the same destination twice
   copies zero files the second time, whatever target folder is picked.
 - INV-5 Type separation. Every RAW file lands in a RAW folder and every JPEG
@@ -67,7 +69,8 @@ stays listed as retired.
   check (DEC-025, DEC-026). Copying checks again before it writes or
   deletes anything: if the library is now on another device or volume
   than when the sync was planned, or on a source's device, it refuses
-  (DEC-027).
+  (DEC-027). It checks again before it makes each folder, and once such
+  a check has failed, before every file: those files fail with the reason.
 
 ## Behaviour
 
@@ -116,7 +119,12 @@ picks. It is simple to use.
 - Several sources at once, when several readers are connected. Each source
   shows as its own entry with its own progress.
 - One source after another, with a single reader. The session stays open
-  between cards, and the report covers all of them.
+  between cards, and the report covers all of them. A photo an earlier card
+  of the session put on the drive, or found there, is a "duplicate in
+  session" on a later card. The session's verdict is the worst of its
+  syncs, so a later sync never hides an earlier one that was not complete.
+  For now the core has the session; the CLI and the TUI run one sync each
+  (S020).
 - An unreadable file or folder under `DCIM` does not stop the scan: it is
   recorded as a failure with its path and error, and the rest of the card
   is still scanned. Only an unreadable source or `DCIM` fails the source.
@@ -181,7 +189,8 @@ picks. It is simple to use.
   OS metadata, photosync's own `.photosync-tmp-*` files), as well as
   `$RECYCLE.BIN` and `System Volume Information`, are not library files.
   The scan skips them, so a photo found only there is copied again
-  (DEC-016). The sync deletes its own stale temp files.
+  (DEC-016). A session deletes photosync's own stale temp files once,
+  before its first copy, never while one of its copies runs.
 - A source file counts as already synced if any library file anywhere has
   the same name and size and the same content (hash). Name + size picks
   the candidates, and the hash confirms them. So a photo synced earlier into
@@ -203,7 +212,8 @@ picks. It is simple to use.
 - At the end, shows what was done: copied, skipped (already on drive, or
   duplicate in session), failed with a reason (name collisions included),
   cancelled, ignored types, and the entries the scan could not read. Totals
-  per source and per type (INV-6).
+  per source and per type (INV-6). The CLI's report names the library and
+  the session folder.
 - The report is never built from inputs that would make it wrong: a source
   given twice (in any spelling), or a plan or copy that is not of these
   scans (a file not listed, listed with another size or mtime, left out, or

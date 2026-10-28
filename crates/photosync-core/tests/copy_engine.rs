@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use photosync_core::{
-    CopyError, CopyOutcome, FailReason, FolderError, Monitor, SyncFolder, SyncPlan, copy_plan,
-    plan_sync, remove_stale_temps, sync_folder,
+    CopyError, CopyOutcome, FailReason, FileOutcome, FolderError, Monitor, Report, SyncFolder,
+    SyncPlan, copy_plan, plan_sync, remove_stale_temps, sync_folder,
 };
 
 mod common;
@@ -437,4 +437,33 @@ fn symlinked_session_or_type_folder_is_refused_never_followed() {
         "{failed}"
     );
     assert_eq!(manifest(&outside), Default::default());
+}
+
+/// S014 fast check: the copy is checked against the hash planning took. A
+/// card file that changed since (same size) fails, so its twin on the
+/// other card, planned as its duplicate, is not reported safe.
+#[test]
+fn a_file_changed_between_planning_and_copy_fails() {
+    let dir = TempDir::new();
+    let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"backup raw")]);
+    put(&b, &[("DCIM/100_FUJI/DSCF0001.RAF", b"backup raw")]);
+    fs::create_dir_all(&lib).unwrap();
+    let scans = vec![scan_elsewhere(&a), scan_elsewhere(&b)];
+    let plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
+    assert_eq!(plan.duplicates.len(), 1);
+    assert!(plan.to_copy[0].is_hashed());
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"change raw")]);
+
+    let outcome = copy_plan(&plan, &folder(&plan, None), &mut Monitor::default()).unwrap();
+
+    assert!(outcome.copied.is_empty(), "{:?}", outcome.copied);
+    let [failed] = &outcome.failed[..] else { panic!("{:?}", outcome.failed) };
+    assert!(matches!(failed.reason, FailReason::SourceChanged), "{:?}", failed.reason);
+    assert!(temps_under(&lib).is_empty());
+    assert!(manifest(&lib).values().all(|(_, bytes)| bytes.is_none()), "a file was placed");
+    let report = Report::new(scans, plan, outcome).unwrap();
+    let twin = &report.sources()[1].files[0].outcome;
+    assert!(matches!(twin, FileOutcome::DuplicateOfFailed { .. }), "{twin:?}");
+    assert!(!report.is_complete());
 }

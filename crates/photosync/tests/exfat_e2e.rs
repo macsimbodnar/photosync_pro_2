@@ -159,6 +159,15 @@ fn sync_from_a_mounted_card_to_a_drive_end_to_end() {
         "  ignored 1 file (.txt 1)".to_string(),
     ];
     assert!(first.stdout.contains(&table.join("\n")), "{first:?}");
+    // S010: the report says where the photos went.
+    assert!(
+        first.stdout.starts_with(&format!(
+            "Report\nLibrary {}\nFolder  {}\n",
+            library.display(),
+            folder.display()
+        )),
+        "{first:?}"
+    );
     assert!(
         first.stdout.ends_with(
             "\nResult: all 3 photos or videos on the drive (3 copied, 0 already there).\n"

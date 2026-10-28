@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use photosync_core::{
     CopyError, Counts, Event, EventKind, FailReason, FileOutcome, FileReport, FolderError,
-    MediaType, Phase, PlanError, Progress, Report, ScanError, SourceReport, SourceScan, Tally,
-    TempCleanup,
+    MediaType, Phase, PlanError, Progress, Report, ScanError, SourceReport, SourceScan, SyncFolder,
+    Tally, TempCleanup,
 };
 
 use crate::flow::{SyncError, Watch};
@@ -207,17 +207,37 @@ pub fn scanned(scan: &SourceScan) -> String {
 
 /// Whether every supported file is on the drive and every entry of every
 /// card was read: the only state in which a card is safe to format.
+/// The rule is the core's, so the front-ends and the session agree.
 pub fn complete(totals: &Tally, sources: &[SourceReport]) -> bool {
-    totals.failed.files == 0
-        && totals.cancelled.files == 0
-        && sources.iter().all(|s| s.unreadable.is_empty())
+    photosync_core::is_complete(totals, sources)
 }
 
 /// The whole report: a section per source, overall totals, and a result
 /// line saying whether the cards are safe to format.
 pub fn report(report: &Report) -> String {
+    report_with(report, Vec::new())
+}
+
+/// `report`, with the session's library and folder under its title, so
+/// the report says where the photos went.
+pub fn report_in(report: &Report, library: &Path, folder: Option<&SyncFolder>) -> String {
+    let folder = folder.map_or_else(
+        || "none (nothing to copy)".to_string(),
+        |f| f.path().display().to_string(),
+    );
+    report_with(
+        report,
+        vec![
+            format!("Library {}", library.display()),
+            format!("Folder  {folder}"),
+        ],
+    )
+}
+
+fn report_with(report: &Report, header: Vec<String>) -> String {
     let mut out = Vec::new();
     out.push("Report".to_string());
+    out.extend(header);
     for source in report.sources() {
         out.push(String::new());
         out.extend(source_section(source));

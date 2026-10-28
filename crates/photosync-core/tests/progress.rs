@@ -129,10 +129,11 @@ fn copy_events_arrive_in_order_and_their_totals_match_the_plan() {
     assert_eq!(outcome.failed.len(), 1, "the collision still counts as done");
     assert!(outcome.cancelled.is_empty());
     let started = assert_order(&events, Phase::Copying);
-    let planned: Vec<PathBuf> = plan.to_copy.iter().map(|f| f.path.clone()).collect();
+    let planned: Vec<PathBuf> = plan.to_copy.iter().map(|f| f.file.path.clone()).collect();
     assert_eq!(started, planned, "every planned file, in plan order");
-    let of = |root: &Path| plan.to_copy.iter().filter(|f| f.path.starts_with(root)).collect::<Vec<_>>();
-    let all: Vec<_> = plan.to_copy.iter().collect();
+    let files: Vec<_> = plan.to_copy.iter().map(|p| &p.file).collect();
+    let of = |root: &Path| files.iter().copied().filter(|f| f.path.starts_with(root)).collect::<Vec<_>>();
+    let all = files.clone();
     let want = [
         SourceProgress { root: a.clone(), done: counts(&of(&a)), total: counts(&of(&a)) },
         SourceProgress { root: b.clone(), done: counts(&of(&b)), total: counts(&of(&b)) },
@@ -307,7 +308,7 @@ fn inv7_cancel_mid_file_removes_its_temp_and_a_rerun_finishes_the_job() {
     assert!(!raw.join("DSCF0002.RAF").exists() && !raw.join("DSCF0003.RAF").exists());
     assert_eq!(outcome.copied.len(), 1);
     assert!(outcome.failed.is_empty());
-    assert_eq!(outcome.cancelled, plan.to_copy[1..]);
+    assert_eq!(outcome.cancelled, plan.to_copy[1..].iter().map(|p| p.file.clone()).collect::<Vec<_>>());
     assert_eq!(assert_order(&events, Phase::Copying).len(), 2, "nothing started after the cancel");
     assert_eq!(events.last().unwrap().kind, EventKind::Cancelled);
     assert_eq!(manifest(&card), source, "INV-1 around a cancelled sync");
@@ -341,11 +342,11 @@ fn cancel_between_files_stops_at_the_file_boundary() {
     let events = events.lock().unwrap();
 
     assert_eq!(outcome.copied.len(), 1);
-    assert_eq!(outcome.cancelled, plan.to_copy[1..]);
+    assert_eq!(outcome.cancelled, plan.to_copy[1..].iter().map(|p| p.file.clone()).collect::<Vec<_>>());
     assert!(!folder.path().join("RAW/DSCF0002.RAF").exists());
     assert!(temps_under(&lib).is_empty());
     let kinds: Vec<&EventKind> = events.iter().map(|e| &e.kind).collect();
-    let first = plan.to_copy[0].path.clone();
+    let first = plan.to_copy[0].file.path.clone();
     assert_eq!(
         kinds,
         [
@@ -418,4 +419,30 @@ fn plan_cancelled_before_it_starts_sends_no_file_or_bytes_events() {
     assert!(matches!(result, Err(PlanError::Cancelled)), "{result:?}");
     let kinds: Vec<EventKind> = events.lock().unwrap().iter().map(|e| e.kind.clone()).collect();
     assert_eq!(kinds, [EventKind::Started, EventKind::Cancelled]);
+}
+
+/// S005 fast check: copy progress counts a file under the source it was
+/// planned from. With one root nested in another's `DCIM`, the file is in
+/// both scans; it is planned from the first, though the second root is
+/// the deeper match by path.
+#[test]
+fn copy_progress_counts_a_file_under_the_source_it_was_planned_from() {
+    let dir = TempDir::new();
+    let (outer, lib) = (dir.0.join("outer"), dir.0.join("lib"));
+    let inner = outer.join("DCIM/100_FUJI");
+    put(&inner, "DCIM/DSCF0001.RAF", b"nested raw");
+    fs::create_dir_all(&lib).unwrap();
+    let sources = [scan_elsewhere(&outer), scan_elsewhere(&inner)];
+    let plan = plan_sync(&lib, &sources, &mut quiet()).unwrap();
+    let folder = sync_folder(&plan, None).unwrap().unwrap();
+
+    let (mut monitor, events) = recorder(&Cancel::new(), |_, _| {});
+    let outcome = copy_plan(&plan, &folder, &mut monitor).unwrap();
+    drop(monitor);
+
+    assert_eq!(outcome.copied.len(), 1);
+    let last = events.lock().unwrap().last().unwrap().progress.clone();
+    let one = Counts { files: 1, bytes: 10 };
+    assert_eq!(last.sources[0].done, one, "{:?}", last.sources);
+    assert_eq!(last.sources[1].done, Counts::default(), "{:?}", last.sources);
 }

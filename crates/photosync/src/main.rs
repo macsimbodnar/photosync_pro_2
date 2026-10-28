@@ -17,10 +17,10 @@ use std::process::ExitCode;
 
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
-use photosync_core::{Cancel, Volumes, default_search_roots, discover_volumes};
+use photosync_core::{Cancel, RunEnd, Volumes, default_search_roots, discover_volumes};
 
-use args::{Cli, Command, EXIT_INCOMPLETE, EXIT_OK, EXIT_REFUSED, Search, SyncArgs};
-use flow::{SyncError, SyncRequest};
+use args::{Cli, Command, EXIT_INCOMPLETE, EXIT_OK, EXIT_REFUSED, Search, SyncArgs, exit_code};
+use flow::SyncRequest;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -148,23 +148,28 @@ fn sync(args: &SyncArgs) -> u8 {
         library: &args.dest,
         name: args.name.as_deref(),
     };
-    match flow::sync(&request, &cancel, &mut text::StderrWatch::new()) {
-        Ok(report) => {
-            let code = if text::complete(&report.totals(), report.sources()) {
-                EXIT_OK
-            } else {
-                EXIT_INCOMPLETE
-            };
-            print_report(&mut io::stdout().lock(), &text::report(&report), code)
-        }
+    let session = match flow::session(&request, &cancel, &mut text::StderrWatch::new()) {
+        Ok(session) => session,
         Err(e) => {
             system::say(&text::refusal(&e));
-            match e {
-                // Files may be on the drive, but nothing says which.
-                SyncError::Report(_) => EXIT_INCOMPLETE,
-                _ => EXIT_REFUSED,
-            }
+            return EXIT_REFUSED;
         }
+    };
+    let code = exit_code(session.verdict());
+    match session.runs().last().map(|run| &run.end) {
+        Some(RunEnd::Report(report)) => {
+            let text = text::report_in(report, session.library(), session.folder());
+            print_report(&mut io::stdout().lock(), &text, code)
+        }
+        Some(RunEnd::Refused(e)) => {
+            system::say(&text::refusal(e));
+            code
+        }
+        Some(RunEnd::Crashed(what)) => {
+            system::say(what);
+            code
+        }
+        None => code,
     }
 }
 

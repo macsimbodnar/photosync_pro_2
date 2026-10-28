@@ -46,9 +46,13 @@ photosync sync --source /Volumes/X-T5 --dest /Volumes/SSD/Photos --name Tirana
 The X-T5 over a USB cable shows up as a card only in its "USB card reader"
 connection mode, not in the default PTP mode. `--source` can be given
 several times; the cards are copied one after another into one sync folder,
-`<library>/<date>[ - <name>]/<RAW|JPEG|HEIF|VIDEO>/`. The library folder
-must exist. It is never on a card, nor on the same drive as a source.
-Photos already anywhere in the library are skipped. Ctrl-C cancels
+`<library>/<date>[ - <name>]/<RAW|JPEG|HEIF|VIDEO>/`. A photo on two cards
+(backup slots) is copied once; the other card's copy is a "duplicate in
+session". The library folder must exist. It is never on a card, nor on the
+same drive as a source. Photos already anywhere in the library are
+skipped. A photo that changed on the card after it was compared with the
+library fails, and so does its copy on the other card. A `--name` that
+cannot be a folder name is refused before any card is read. Ctrl-C cancels
 between chunks and still prints the report; a second Ctrl-C quits at once.
 photosync refuses to run as root.
 
@@ -59,6 +63,8 @@ scanned /Volumes/X-T5: 3 photos or videos (24 B), 1 ignored, 0 unreadable, devic
 copying 0/3 files, 0 B of 24 B (0%), ETA --
 copying 3/3 files, 24 B of 24 B (100%), ETA 0s
 Report
+Library /Volumes/SSD/Photos
+Folder  /Volumes/SSD/Photos/2026-10-28 - Tirana
 
 Source /Volumes/X-T5
            copied   skipped   failed   cancelled
@@ -89,12 +95,16 @@ Exit codes:
 
 ## Layout
 
-- `crates/photosync-core`: all sync logic, UI-free (INV-8).
+- `crates/photosync-core`: all sync logic, UI-free (INV-8). A `Session`
+  runs one sync after another into one library and folder: it scans,
+  plans, copies and reports each, removes stale temp files once, knows
+  which photos earlier cards put on the drive, and keeps the worst
+  outcome (`Session::verdict`). Front-ends drive it through `Watch`.
 - `crates/photosync`: the `photosync` binary. `app` is the interactive
   model (screens, keys, what each message changes) and `worker` runs a sync
   on its own thread; no file outside `src/tui/` names ratatui or crossterm
   (`tests/ui_split.rs` checks every file), so a GUI can reuse them with
-  `flow` (one sync) and `text` (sentences, the report). `tui` and
+  `flow` (a session of one sync) and `text` (sentences, the report). `tui` and
   `tui/view` are the terminal shell around them.
 
 ## Build and test

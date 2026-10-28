@@ -48,6 +48,7 @@ Why: one line.
 - DEC-029 2026-10-28 — hardware hand checks deferred to S017
 - DEC-030 2026-10-28 — TUI details left open by S009
 - DEC-031 2026-10-28 — TUI hardening details left open by S018
+- DEC-032 2026-10-28 — S010 first part: core Session API, and the split of S010
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -609,3 +610,56 @@ matched as identifiers, after cutting `//` comments. A renamed
 dependency in `Cargo.toml` (`package = "ratatui"`) is not checked.
 Why: each errs toward "not safe to format" and keeps the check from
 depending on a list someone must remember to extend.
+
+## DEC-032  2026-10-28  S010 first part: core Session API, and the split of S010
+Tags: session, api, safety, plan, gui
+Decision: agent's pick in S010, not yet confirmed by the user.
+(1) API: `Session::new(library, name)` (refuses a bad name before any card
+is read), `sync(roots, cancel, &mut dyn Watch)` or `sync_scans(scans, ..)`
+for cards already scanned, `record_crash(roots, what)`, then `runs()`,
+`folder()`, `totals()`, `by_type()`, `verdict()` and `not_complete()`. Each
+`Run` keeps its sources and its end: `RunEnd::Report`, `Refused(SyncError)`
+or `Crashed(text)`. `SyncError` and `Watch` moved from the binary's `flow`
+into the core; `flow` is now a session of one sync.
+(2) `Verdict` order, worst last: `Complete`, `Refused`, `NotComplete`. The
+session's verdict is the worst of every run, none = `Complete`. A refused
+run counts: its cards were not synced, and with one reader a later card at
+the same path cannot be told from it. A refused report (`SyncError::Report`)
+and a crash are `NotComplete`. The CLI maps them to 0, 2 and 1.
+(3) Memory between cards: each library file a run copied or found already
+synced, with the session file it holds. A later file whose library match is
+one of them goes to the new `SyncPlan::seen_earlier` and is reported as
+"duplicate in session" of the earlier card's file. A copy in place but not
+flushed is not remembered: a later twin of it is "already on drive", as
+the next sync would find it (DEC-017 (4)). `Report::new` refuses a plan with
+`seen_earlier` (only a session can vouch for those).
+(4) Stale temps are removed once per session, by its first run that gets
+past planning, after the INV-10 re-check, even with nothing to copy. The
+session copies through a crate-only `copy_files`, which never cleans;
+`copy_plan` stays as a session of one plan and still cleans first.
+(5) `SyncPlan::to_copy` holds `Planned`: the file, its source index, its
+hash if planning read it, and its twins (the plan's duplicates of it).
+Progress uses the index; path matching (`source_of`) and its unit test are
+gone. A copy whose bytes read differ from the planning hash fails with the
+new `FailReason::SourceChanged` and its duplicates take that failure. A
+file that planning did not hash has no duplicate to protect and is not
+read twice.
+(6) INV-10 re-check before each new type folder; after one fails, before
+every file. The file fails with the new `FailReason::Library(CopyError)`.
+Tested through a test-only device fault that stays armed.
+(7) Every rename takes the target folder's lock, not only the exFAT
+fallback (DEC-008).
+(8) The twin root check is in the session (after each scan, before
+planning), not in `plan_sync`: a `plan_sync` refusal would break the kept
+test `report_refuses_a_source_root_given_twice_in_any_spelling`.
+(9) Split: S010 is too big for one change, and two of its items contradict
+tests the user's rules say not to change without asking. Proposed: S019
+copy several cards at once (concurrency), S020 one card after another in
+the CLI and the TUI (supersedes DEC-031 (1) once the user drops or changes
+`app::tests::a_later_sync_replaces_the_kept_failure`), S021 twin fallback
+on a read error (F07; the user to say how
+`duplicate_of_an_original_that_failed_to_read_is_failed_not_skipped`
+changes). S010 stays in `plan_current/` until the user confirms the split
+and trims its accepts.
+Why: the core holds every session rule for the CLI, TUI and GUI alike;
+each choice errs toward "not safe to format".

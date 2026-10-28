@@ -128,6 +128,20 @@ pub struct Tally {
 }
 
 impl Tally {
+    /// Adds `other`'s counts to these.
+    pub(crate) fn merge(&mut self, other: &Tally) {
+        for (to, from) in [
+            (&mut self.copied, other.copied),
+            (&mut self.skipped, other.skipped),
+            (&mut self.failed, other.failed),
+            (&mut self.cancelled, other.cancelled),
+            (&mut self.ignored, other.ignored),
+            (&mut self.not_flushed, other.not_flushed),
+        ] {
+            add(to, from.files, from.bytes);
+        }
+    }
+
     /// copied + skipped + failed + cancelled: the supported files listed
     /// (INV-6).
     pub fn supported(&self) -> Counts {
@@ -169,7 +183,15 @@ impl SourceReport {
     }
 }
 
-fn add_by_type(types: &mut BTreeMap<MediaType, Tally>, source: &SourceReport) {
+/// Whether every supported file is on the drive and every entry of every
+/// card was read: the only state in which a card is safe to format.
+pub fn is_complete(totals: &Tally, sources: &[SourceReport]) -> bool {
+    totals.failed.files == 0
+        && totals.cancelled.files == 0
+        && sources.iter().all(|s| s.unreadable.is_empty())
+}
+
+pub(crate) fn add_by_type(types: &mut BTreeMap<MediaType, Tally>, source: &SourceReport) {
     for entry in &source.files {
         if let Some(media) = entry.file.media_type {
             types.entry(media).or_default().count(entry);
@@ -238,6 +260,18 @@ impl Report {
         plan: SyncPlan,
         outcome: CopyOutcome,
     ) -> Result<Report, ReportError> {
+        Report::build(scans, plan, outcome, &HashSet::new())
+    }
+
+    /// `Report::new` within a session: `earlier` holds the files earlier
+    /// syncs of the session put on the drive or found there, the only ones
+    /// `plan.seen_earlier` may point to.
+    pub(crate) fn build(
+        scans: Vec<SourceScan>,
+        plan: SyncPlan,
+        outcome: CopyOutcome,
+        earlier: &HashSet<&PathBuf>,
+    ) -> Result<Report, ReportError> {
         let mut roots = HashSet::new();
         if let Some(twin) = scans.iter().find(|scan| !roots.insert(&scan.resolved_root)) {
             return Err(ReportError::SourceTwice(twin.root.clone()));
@@ -246,6 +280,7 @@ impl Report {
         // is taken as not safe.
         let mut originals = HashMap::new();
         let on_drive = plan.skipped.iter().map(|s| &s.file.path);
+        let on_drive = on_drive.chain(plan.seen_earlier.iter().map(|d| &d.file.path));
         for path in on_drive.chain(outcome.copied.iter().map(|c| &c.file.path)) {
             originals.insert(path.clone(), Original::OnDrive);
         }
@@ -260,6 +295,12 @@ impl Report {
         let mut slots = Slots::new(&scans);
         for s in plan.skipped {
             slots.put(s.file, FileOutcome::AlreadySynced { library_file: s.library_file })?;
+        }
+        for d in plan.seen_earlier {
+            if !earlier.contains(&d.of) {
+                return Err(ReportError::NoOriginal { file: d.file.path, of: d.of });
+            }
+            slots.put(d.file, FileOutcome::DuplicateInSession { of: d.of })?;
         }
         for d in plan.duplicates {
             let entry = match originals.get(&d.of) {
@@ -306,6 +347,12 @@ impl Report {
 
     pub fn sources(&self) -> &[SourceReport] {
         &self.sources
+    }
+
+    /// Every supported file is on the drive and every entry was read: the
+    /// cards of this sync are safe to format.
+    pub fn is_complete(&self) -> bool {
+        is_complete(&self.totals(), &self.sources)
     }
 
     /// Library entries that could not be read or hashed. They hide no source

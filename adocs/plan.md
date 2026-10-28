@@ -17,8 +17,11 @@ not change the order.
 
 ## Open
 
-1. S010  multi-source and one-by-one session
-2. S017  hardware hand checks (waits for the user)
+1. S010  multi-source and one-by-one session (first part done; split proposed, DEC-032)
+2. S019  copy several cards at once (split from S010)
+3. S020  one card after another in the CLI and TUI (split from S010, needs the user)
+4. S021  twin fallback on a read error, F07 (split from S010, needs the user)
+5. S017  hardware hand checks (waits for the user)
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.

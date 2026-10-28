@@ -7,6 +7,7 @@ mod library;
 mod plan;
 mod progress;
 mod report;
+mod session;
 mod source;
 mod volume;
 
@@ -20,14 +21,16 @@ mod common;
 extern crate self as photosync_core;
 
 pub use copy::{
-    Copied, CopyError, CopyOutcome, FailReason, Failed, FolderError, SyncFolder, TempCleanup,
-    copy_plan, remove_stale_temps, sync_folder,
+    Copied, CopyError, CopyOutcome, FailReason, Failed, FolderError, SyncFolder,
+    TempCleanup, copy_plan, remove_stale_temps, sync_folder,
 };
-pub use plan::{Duplicate, PlanError, Skipped, SyncPlan, plan_sync};
+pub use plan::{Duplicate, PlanError, Planned, Skipped, SyncPlan, plan_sync};
 pub use progress::{Cancel, Counts, Event, EventKind, Monitor, Phase, Progress, SourceProgress, eta};
 pub use report::{
     Bucket, FileOutcome, FileReport, Report, ReportError, SourceReport, Tally, Unreadable,
+    is_complete,
 };
+pub use session::{Run, RunEnd, Session, SyncError, Verdict, Watch};
 pub use source::{MediaType, ScanError, SourceFile, SourceScan, scan_source};
 pub use volume::{Volumes, default_search_roots, discover_volumes};
 

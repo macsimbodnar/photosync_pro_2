@@ -1,14 +1,12 @@
-//! One sync, start to report, as the front-ends run it: scan the sources,
-//! refuse a source given twice, plan, fix the folder, copy, report. Only
-//! calls into the core, which holds every rule (INV-8); rendering is the
-//! caller's, through `Watch`, so the TUI (S009) can reuse this as is.
+//! One sync, start to report, as the front-ends run it: a core `Session`
+//! of one sync. The session scans, refuses a source given twice, plans,
+//! fixes the folder, copies and reports; every rule is in the core
+//! (INV-8). Rendering is the caller's, through `Watch`.
 
 use std::path::{Path, PathBuf};
 
-use photosync_core::{
-    Cancel, CopyError, CopyOutcome, Event, FolderError, Monitor, PlanError, Report, ReportError,
-    ScanError, SourceScan, copy_plan, plan_sync, remove_stale_temps, scan_source, sync_folder,
-};
+use photosync_core::{Cancel, Report, RunEnd, Session};
+pub use photosync_core::{SyncError, Watch};
 
 pub struct SyncRequest<'a> {
     pub sources: &'a [PathBuf],
@@ -16,69 +14,32 @@ pub struct SyncRequest<'a> {
     pub name: Option<&'a str>,
 }
 
-/// What a front-end is told while a sync runs, on the calling thread.
-pub trait Watch {
-    /// A source was scanned, before anything is planned.
-    fn scanned(&mut self, scan: &SourceScan);
-    /// Planning or copying progress.
-    fn event(&mut self, event: Event);
+/// A session of one sync of `request`. `Err` only for a name that is not
+/// one folder name, refused before any card is read; any other refusal is
+/// the session's one run.
+pub fn session(
+    request: &SyncRequest,
+    cancel: &Cancel,
+    watch: &mut dyn Watch,
+) -> Result<Session, SyncError> {
+    let mut session =
+        Session::new(request.library, request.name).map_err(SyncError::Folder)?;
+    session.sync(request.sources, cancel, watch);
+    Ok(session)
 }
 
-/// Why a sync gave no report. Every variant but `Report` stopped before
-/// anything was written.
-#[derive(Debug)]
-pub enum SyncError {
-    /// A source could not be scanned: it is gone, or has no readable `DCIM`.
-    Scan(ScanError),
-    /// `again` is `first` in another spelling (or the same).
-    SourceTwice {
-        first: PathBuf,
-        again: PathBuf,
-    },
-    Plan(PlanError),
-    Folder(FolderError),
-    Copy(CopyError),
-    /// The copy ran but its report was refused, so nothing tells which
-    /// files are safe (DEC-022 (5)).
-    Report(ReportError),
-}
-
-/// Runs one sync. A cancel during planning gives the cancelled plan's
-/// report, as no file was written (`Report::plan_cancelled`).
+/// Runs one sync, for a front-end that shows one report. A cancel during
+/// planning gives the cancelled plan's report, as no file was written.
 pub fn sync(
     request: &SyncRequest,
     cancel: &Cancel,
-    watch: &mut (impl Watch + Send),
+    watch: &mut dyn Watch,
 ) -> Result<Report, SyncError> {
-    let mut scans: Vec<SourceScan> = Vec::new();
-    for root in request.sources {
-        let scan = scan_source(root).map_err(SyncError::Scan)?;
-        // Before planning: a twin would plan, and copy, every file twice.
-        if let Some(first) = scans.iter().find(|s| s.resolved_root == scan.resolved_root) {
-            return Err(SyncError::SourceTwice {
-                first: first.root.clone(),
-                again: scan.root,
-            });
-        }
-        watch.scanned(&scan);
-        scans.push(scan);
+    let mut runs = session(request, cancel, watch)?.into_runs();
+    match runs.pop().map(|run| run.end) {
+        Some(RunEnd::Report(report)) => Ok(report),
+        Some(RunEnd::Refused(e)) => Err(e),
+        // `Session::sync` records exactly one run, and never a crash.
+        Some(RunEnd::Crashed(_)) | None => unreachable!("a session sync ended with no result"),
     }
-    let planned = {
-        let mut monitor = Monitor::new(cancel.clone(), |e| watch.event(e));
-        plan_sync(request.library, &scans, &mut monitor)
-    };
-    let plan = match planned {
-        Ok(plan) => plan,
-        Err(PlanError::Cancelled) => return Ok(Report::plan_cancelled(scans)),
-        Err(e) => return Err(SyncError::Plan(e)),
-    };
-    let outcome = match sync_folder(&plan, request.name).map_err(SyncError::Folder)? {
-        Some(folder) => {
-            let mut monitor = Monitor::new(cancel.clone(), |e| watch.event(e));
-            copy_plan(&plan, &folder, &mut monitor).map_err(SyncError::Copy)?
-        }
-        // DEC-022 (2): `copy_plan` needs a folder, so the cleanup runs here.
-        None => CopyOutcome::nothing_to_copy(remove_stale_temps(&plan.library)),
-    };
-    Report::new(scans, plan, outcome).map_err(SyncError::Report)
 }

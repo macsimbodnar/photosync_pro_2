@@ -12,9 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::hash::{CHUNK, hash_file};
+use crate::hash::{CHUNK, Hash, hash_file};
 use crate::plan::SyncPlan;
-use crate::progress::{Cancel, Monitor, Phase, Tracker, source_of};
+use crate::progress::{Cancel, Monitor, Phase, Tracker};
 use crate::source::{ScanError, SourceFile};
 use crate::volume::{device_id, volume_root};
 
@@ -79,16 +79,14 @@ impl Error for FolderError {
 pub fn sync_folder(plan: &SyncPlan, name: Option<&str>) -> Result<Option<SyncFolder>, FolderError> {
     let library = &plan.library;
     if let Some(name) = name {
-        if name.trim().is_empty() || name.contains(['/', '\0']) {
-            return Err(FolderError::InvalidName(name.to_string()));
-        }
+        check_name(name)?;
         let existing = existing_named(library, name)
             .map_err(|source| FolderError::Io(ScanError { path: library.clone(), source }))?;
         if let Some(folder) = existing {
             return Ok(Some(SyncFolder { library: library.clone(), path: library.join(folder) }));
         }
     }
-    let Some(earliest) = plan.to_copy.iter().min_by_key(|f| f.modified) else {
+    let Some(earliest) = plan.to_copy.iter().map(|p| &p.file).min_by_key(|f| f.modified) else {
         return Ok(None);
     };
     let date = local_date(earliest.modified)
@@ -98,6 +96,14 @@ pub fn sync_folder(plan: &SyncPlan, name: Option<&str>) -> Result<Option<SyncFol
         None => date,
     };
     Ok(Some(SyncFolder { library: library.clone(), path: library.join(folder) }))
+}
+
+/// A sync name must be one folder name: not blank, no `/`, no NUL.
+pub(crate) fn check_name(name: &str) -> Result<(), FolderError> {
+    if name.trim().is_empty() || name.contains(['/', '\0']) {
+        return Err(FolderError::InvalidName(name.to_string()));
+    }
+    Ok(())
 }
 
 /// The earliest `YYYY-MM-DD - <name>` folder directly in `library`.
@@ -211,6 +217,12 @@ pub enum FailReason {
     NotFlushed { to: PathBuf, error: io::Error },
     /// The flushed copy's hash differs from what was read off the source.
     Mismatch,
+    /// The source file's content is not what planning read: it changed
+    /// since, so what planning compared it with says nothing about it.
+    SourceChanged,
+    /// INV-10 checked again before making a folder, and the library is no
+    /// longer where it was planned (DEC-027).
+    Library(CopyError),
     /// Not a supported file; only a hand-built plan can hold one.
     Unsupported,
 }
@@ -231,6 +243,8 @@ impl fmt::Display for FailReason {
                 to.display()
             ),
             FailReason::Mismatch => write!(f, "copy does not match the source"),
+            FailReason::SourceChanged => write!(f, "the file changed on the source since it was planned"),
+            FailReason::Library(e) => write!(f, "library check failed: {e}"),
             FailReason::Unsupported => write!(f, "not a supported file"),
         }
     }
@@ -248,6 +262,7 @@ impl Error for Failed {
             FailReason::Read(e)
             | FailReason::Write { error: e, .. }
             | FailReason::NotFlushed { error: e, .. } => Some(e),
+            FailReason::Library(e) => Some(e),
             _ => None,
         }
     }
@@ -327,11 +342,13 @@ pub struct TempCleanup {
     pub failures: Vec<ScanError>,
 }
 
-/// Copies every file in `plan.to_copy` into `folder`, one at a time. First
-/// checks the library is still on the device and volume it was planned on
-/// (INV-10), and refuses before writing or deleting anything if not. Stale
-/// temp files in the library are removed next. A failure fails that file
-/// only; the outcome lists each file once.
+/// Copies every file in `plan.to_copy` into `folder`, one at a time: a
+/// session of one sync. First checks the library is still on the device
+/// and volume it was planned on (INV-10), and refuses before writing or
+/// deleting anything if not. Stale temp files in the library are removed
+/// next; so this must not run beside another copy into the same library.
+/// A `Session` cleans once and copies through `copy_files`. A failure
+/// fails that file only; the outcome lists each file once.
 ///
 /// Progress counts the files in `plan.to_copy` (`Phase::Copying`). A cancel
 /// is checked between files and before each chunk read: a file cut short
@@ -349,45 +366,56 @@ pub fn copy_plan(
         });
     }
     recheck_library(plan)?;
-    let mut outcome = CopyOutcome {
-        copied: Vec::new(),
-        failed: Vec::new(),
-        cancelled: Vec::new(),
-        temps: remove_stale_temps(&folder.library),
-    };
-    let source = |file: &SourceFile| source_of(&plan.sources, &file.path);
-    let files = plan.to_copy.iter().map(|f| (source(f), f.size));
+    let temps = remove_stale_temps(&folder.library);
+    Ok(copy_files(plan, folder, monitor, temps))
+}
+
+/// The copy loop of `copy_plan`, with no check or cleanup first: the
+/// caller has done both. `folder` is in `plan.library`.
+pub(crate) fn copy_files(
+    plan: &SyncPlan,
+    folder: &SyncFolder,
+    monitor: &mut Monitor,
+    temps: TempCleanup,
+) -> CopyOutcome {
+    let mut outcome = CopyOutcome::nothing_to_copy(TempCleanup::default());
+    let files = plan.to_copy.iter().map(|p| (Some(p.source), p.file.size));
     let mut tracker = Tracker::start(monitor, Phase::Copying, &plan.sources, files);
-    let cancel = tracker.cancel();
-    let mut ready = Vec::new();
-    for (i, file) in plan.to_copy.iter().enumerate() {
-        if cancel.is_cancelled() {
-            outcome.cancelled.extend_from_slice(&plan.to_copy[i..]);
+    let mut copier = Copier { plan, folder, ready: Vec::new(), moved: false, temps, cancel: tracker.cancel() };
+    for (i, planned) in plan.to_copy.iter().enumerate() {
+        let file = &planned.file;
+        if copier.cancel.is_cancelled() {
+            outcome.cancelled.extend(plan.to_copy[i..].iter().map(|p| p.file.clone()));
             break;
         }
-        tracker.file_started(&file.path, source(file), file.size);
-        match copy_file(file, folder, &mut ready, &mut outcome.temps, &cancel, &mut tracker) {
+        tracker.file_started(&file.path, Some(planned.source), file.size);
+        match copier.copy_file(file, planned.hash, &mut tracker) {
             Ok(to) => outcome.copied.push(Copied { file: file.clone(), to }),
             Err(Stop::Failed(reason)) => outcome.failed.push(Failed { file: file.clone(), reason }),
             Err(Stop::Cancelled) => {
-                outcome.cancelled.extend_from_slice(&plan.to_copy[i..]);
+                outcome.cancelled.extend(plan.to_copy[i..].iter().map(|p| p.file.clone()));
                 break;
             }
         }
         tracker.file_done(&file.path);
     }
     tracker.finish(!outcome.cancelled.is_empty());
-    Ok(outcome)
+    outcome.temps = copier.temps;
+    outcome
 }
 
-/// INV-10 again, just before the first write: `plan_sync` checked the
-/// library on the device and volume it was on then. A card swapped in under
-/// the same path, or a drive remounted elsewhere, changes them.
-fn recheck_library(plan: &SyncPlan) -> Result<(), CopyError> {
+/// INV-10 again, before the first write and before each folder is made:
+/// `plan_sync` checked the library on the device and volume it was on
+/// then. A card swapped in under the same path, or a drive remounted
+/// elsewhere, changes them.
+pub(crate) fn recheck_library(plan: &SyncPlan) -> Result<(), CopyError> {
     let library = &plan.library;
     let lost = |source| CopyError::Library(ScanError { path: library.clone(), source });
     let resolved = fs::canonicalize(library).map_err(lost)?;
-    let now = fs::metadata(&resolved).and_then(|meta| device_id(&meta)).map_err(lost)?;
+    let now = injected(Fault::Device)
+        .and_then(|()| fs::metadata(&resolved))
+        .and_then(|meta| device_id(&meta))
+        .map_err(lost)?;
     if now != plan.library_device {
         return Err(CopyError::LibraryDeviceChanged {
             library: library.clone(),
@@ -472,60 +500,83 @@ fn write_error(path: &Path) -> impl FnOnce(io::Error) -> FailReason + '_ {
     move |error| FailReason::Write { path: path.to_path_buf(), error }
 }
 
-/// Copies one file to `<folder>/<TYPE>/<name>`. `ready` holds the type
-/// folders already made and flushed in this run.
-fn copy_file(
-    file: &SourceFile,
-    folder: &SyncFolder,
-    ready: &mut Vec<PathBuf>,
-    temps: &mut TempCleanup,
-    cancel: &Cancel,
-    tracker: &mut Tracker,
-) -> Result<PathBuf, Stop> {
-    let (Some(media), Some(name)) = (file.media_type, file.path.file_name()) else {
-        return Err(FailReason::Unsupported.into());
-    };
-    let dir = folder.path.join(media.dir_name());
-    if !ready.contains(&dir) {
-        prepare_dir(folder, &dir)?;
-        ready.push(dir.clone());
-    }
-    let target = dir.join(name);
-    // Saves reading the card; the rename below is what actually guards.
-    match fs::symlink_metadata(&target) {
-        Ok(_) => return Err(FailReason::NameCollision { existing: target }.into()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(FailReason::Write { path: target, error: e }.into()),
-    }
+/// One run of the copy loop.
+struct Copier<'p> {
+    plan: &'p SyncPlan,
+    folder: &'p SyncFolder,
+    /// The type folders made and flushed in this run.
+    ready: Vec<PathBuf>,
+    /// The INV-10 re-check has failed: from then on it runs before every
+    /// file, not only before a new folder.
+    moved: bool,
+    temps: TempCleanup,
+    cancel: Cancel,
+}
 
-    let temp = dir.join(temp_name(name));
-    let out = File::options()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(write_error(&temp))?;
-    // From here the temp file is ours: every failure and a cancel remove it.
-    let placed = fill_and_verify(file, out, &temp, &dir, cancel, tracker).and_then(|()| {
-        rename_noreplace(&temp, &target).map_err(|error| {
-            if error.kind() == io::ErrorKind::AlreadyExists {
-                FailReason::NameCollision { existing: target.clone() }.into()
-            } else {
-                FailReason::Write { path: target.clone(), error }.into()
+impl Copier<'_> {
+    /// Copies `file` to `<folder>/<TYPE>/<name>`. `expected`: the hash
+    /// planning took, which the bytes read must match.
+    fn copy_file(
+        &mut self,
+        file: &SourceFile,
+        expected: Option<Hash>,
+        tracker: &mut Tracker,
+    ) -> Result<PathBuf, Stop> {
+        let (Some(media), Some(name)) = (file.media_type, file.path.file_name()) else {
+            return Err(FailReason::Unsupported.into());
+        };
+        let dir = self.folder.path.join(media.dir_name());
+        let new_dir = !self.ready.contains(&dir);
+        if new_dir || self.moved {
+            // The library may have moved since this run checked it: a
+            // folder made now would land wherever its path leads (DEC-027).
+            if let Err(e) = recheck_library(self.plan) {
+                self.moved = true;
+                return Err(FailReason::Library(e).into());
             }
-        })
-    });
-    if let Err(reason) = placed {
-        if let Err(source) = fs::remove_file(&temp) {
-            temps.failures.push(ScanError { path: temp, source });
         }
-        return Err(reason);
-    }
-    at_stage(Stage::Renamed, &target);
-    // Until the folder is flushed the new name may not survive an unplug, so
-    // the file does not count as copied yet (INV-3).
-    match synced(Stage::RenameSynced, &target, sync_dir(&dir)) {
-        Ok(()) => Ok(target),
-        Err(error) => Err(FailReason::NotFlushed { to: target, error }.into()),
+        if new_dir {
+            prepare_dir(self.folder, &dir)?;
+            self.ready.push(dir.clone());
+        }
+        let target = dir.join(name);
+        // Saves reading the card; the rename below is what actually guards.
+        match fs::symlink_metadata(&target) {
+            Ok(_) => return Err(FailReason::NameCollision { existing: target }.into()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(FailReason::Write { path: target, error: e }.into()),
+        }
+
+        let temp = dir.join(temp_name(name));
+        let out = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(write_error(&temp))?;
+        // From here the temp file is ours: every failure and a cancel remove it.
+        let placed = fill_and_verify(file, expected, out, &temp, &dir, &self.cancel, tracker)
+            .and_then(|()| {
+                rename_noreplace(&temp, &target).map_err(|error| {
+                    if error.kind() == io::ErrorKind::AlreadyExists {
+                        FailReason::NameCollision { existing: target.clone() }.into()
+                    } else {
+                        FailReason::Write { path: target.clone(), error }.into()
+                    }
+                })
+            });
+        if let Err(reason) = placed {
+            if let Err(source) = fs::remove_file(&temp) {
+                self.temps.failures.push(ScanError { path: temp, source });
+            }
+            return Err(reason);
+        }
+        at_stage(Stage::Renamed, &target);
+        // Until the folder is flushed the new name may not survive an unplug, so
+        // the file does not count as copied yet (INV-3).
+        match synced(Stage::RenameSynced, &target, sync_dir(&dir)) {
+            Ok(()) => Ok(target),
+            Err(error) => Err(FailReason::NotFlushed { to: target, error }.into()),
+        }
     }
 }
 
@@ -563,11 +614,13 @@ fn temp_name(name: &OsStr) -> OsString {
     temp
 }
 
-/// Streams the source into `out` while hashing what was read, flushes file
-/// and folder, then checks the copy's hash against it (INV-3). The card is
+/// Streams the source into `out` while hashing what was read, checks that
+/// against `expected` if planning hashed the file, flushes file and folder,
+/// then checks the copy's hash against what was read (INV-3). The card is
 /// read once. `cancel` is checked before each read.
 fn fill_and_verify(
     file: &SourceFile,
+    expected: Option<Hash>,
     mut out: File,
     temp: &Path,
     dir: &Path,
@@ -592,11 +645,15 @@ fn fill_and_verify(
         at_stage(Stage::Written, temp);
         tracker.bytes(n as u64);
     }
+    let read = hasher.finalize();
+    if expected.is_some_and(|planned| planned != read) {
+        return Err(FailReason::SourceChanged.into());
+    }
     synced(Stage::FileSynced, temp, out.sync_all()).map_err(write_error(temp))?;
     drop(out);
     synced(Stage::DirSynced, temp, sync_dir(dir)).map_err(write_error(dir))?;
     // The read may come from the OS cache (DEC-012).
-    if hash_file(temp).map_err(write_error(temp))? != hasher.finalize() {
+    if hash_file(temp).map_err(write_error(temp))? != read {
         return Err(FailReason::Mismatch.into());
     }
     at_stage(Stage::Verified, temp);
@@ -627,8 +684,9 @@ pub(crate) fn c_path(path: &Path) -> io::Result<std::ffi::CString> {
 /// Renames `from` to `to`, failing with `AlreadyExists` if `to` exists. The
 /// OS checks and renames in one step, so no other writer can slip in between
 /// (DEC-008). `std::fs::rename` would replace `to`. Where the filesystem has
-/// no such rename (exFAT), it checks and renames under the lock of `to`'s
-/// folder instead (DEC-018).
+/// no such rename (exFAT), it checks and renames instead (DEC-018). Either
+/// way it holds the lock of `to`'s folder, so this process's renames into
+/// one folder never overlap (DEC-008).
 fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     rename_noreplace_with(rename_excl, from, to)
 }
@@ -639,21 +697,6 @@ fn rename_noreplace_with(
     from: &Path,
     to: &Path,
 ) -> io::Result<()> {
-    match excl(from, to) {
-        // Only this errno: any other error may mean the rename half-ran or
-        // the target is unusable, and falling back could hide it.
-        Err(e) if EXCL_UNSUPPORTED.is_some_and(|code| e.raw_os_error() == Some(code)) => {
-            rename_locked(from, to)
-        }
-        result => result,
-    }
-}
-
-/// Checks that `to` is free, then renames, both under the lock of `to`'s
-/// folder, so photosync's own threads never race on a name. Another program
-/// could still create `to` in between; DEC-018 accepts that for filesystems
-/// without a no-replace rename.
-fn rename_locked(from: &Path, to: &Path) -> io::Result<()> {
     let folder = match to.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
@@ -661,6 +704,21 @@ fn rename_locked(from: &Path, to: &Path) -> io::Result<()> {
     let lock = folder_lock(folder)?;
     // The lock guards no data, so one a panic poisoned is still sound.
     let _held = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    match excl(from, to) {
+        // Only this errno: any other error may mean the rename half-ran or
+        // the target is unusable, and falling back could hide it.
+        Err(e) if EXCL_UNSUPPORTED.is_some_and(|code| e.raw_os_error() == Some(code)) => {
+            rename_checked(from, to)
+        }
+        result => result,
+    }
+}
+
+/// Checks that `to` is free, then renames. The caller holds the lock of
+/// `to`'s folder, so photosync's own threads never race on a name. Another
+/// program could still create `to` in between; DEC-018 accepts that for
+/// filesystems without a no-replace rename.
+fn rename_checked(from: &Path, to: &Path) -> io::Result<()> {
     match fs::symlink_metadata(to) {
         Ok(_) => return Err(io::Error::new(io::ErrorKind::AlreadyExists, "target exists")),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -771,11 +829,15 @@ fn at_stage(stage: Stage, path: &Path) {
     let _ = (stage, path);
 }
 
-/// An I/O error a test hook can make the next read or folder flush return.
+/// An I/O error a test hook can make the next read or folder flush return,
+/// or every device read of the INV-10 re-check from then on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Fault {
     Read,
     SyncDir,
+    /// Reading the library's device in the INV-10 re-check. Stays armed,
+    /// as a drive that is gone stays gone.
+    Device,
 }
 
 #[cfg(test)]
@@ -783,11 +845,14 @@ thread_local! {
     static FAULT: std::cell::Cell<Option<Fault>> = const { std::cell::Cell::new(None) };
 }
 
-/// EIO, once, if a test hook armed `fault`. A normal build never fails here.
+/// EIO if a test hook armed `fault`: once, or for `Device` until cleared. A
+/// normal build never fails here.
 fn injected(fault: Fault) -> io::Result<()> {
     #[cfg(test)]
     if FAULT.with(|f| f.get()) == Some(fault) {
-        FAULT.with(|f| f.set(None));
+        if fault != Fault::Device {
+            FAULT.with(|f| f.set(None));
+        }
         return Err(io::Error::from_raw_os_error(libc::EIO));
     }
     #[cfg(not(test))]
@@ -1216,6 +1281,28 @@ mod tests {
         assert_eq!(fs::read(&to).unwrap(), b"new");
     }
 
+    /// DEC-008: every rename into a folder, not only the exFAT fallback,
+    /// waits for that folder's lock, so two copies in one process never
+    /// rename into one folder at once.
+    #[test]
+    fn supported_rename_also_waits_for_the_folder_lock() {
+        let dir = TempDir::new();
+        let (from, to) = (dir.0.join("from"), dir.0.join("to"));
+        fs::write(&from, b"new").unwrap();
+        let lock = folder_lock(&dir.0).unwrap();
+        let held = lock.lock().unwrap();
+
+        let (f, t) = (from.clone(), to.clone());
+        let worker = std::thread::spawn(move || rename_noreplace(&f, &t));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!worker.is_finished(), "renamed without the folder's lock");
+        assert!(from.exists() && !to.exists());
+
+        drop(held);
+        worker.join().unwrap().unwrap();
+        assert_eq!(fs::read(&to).unwrap(), b"new");
+    }
+
     #[test]
     fn unsupported_rename_into_one_folder_by_two_paths_shares_a_lock() {
         let dir = TempDir::new();
@@ -1339,6 +1426,47 @@ mod tests {
         // Unchanged, the same plan copies.
         let outcome = copy_plan(&good, &folder, &mut Monitor::default()).unwrap();
         assert_eq!(outcome.copied.len(), 2);
+    }
+
+    /// S016 fast check: INV-10 is checked again before each folder is made,
+    /// not only when the copy starts. The library's device cannot be read
+    /// when the RAW folder is due: it is not made, its file fails with the
+    /// reason, and from then on every file is checked, folder made or not.
+    #[test]
+    fn inv10_copy_checks_the_library_again_before_each_new_folder() {
+        let dir = TempDir::new();
+        let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+        fs::create_dir_all(&lib).unwrap();
+        // Path order: JPEG first, then RAW, then a JPEG into a folder made.
+        write_file(&card, "DCIM/100_FUJI/DSCF0001.JPG", b"jpeg", at(1_700_000_000));
+        write_file(&card, "DCIM/100_FUJI/DSCF0001.RAF", b"raw", at(1_700_000_000));
+        write_file(&card, "DCIM/100_FUJI/DSCF0002.JPG", b"jpeg two", at(1_700_000_000));
+        let plan = plan_sync(&lib, &[scan_elsewhere(&card)], &mut Monitor::default()).unwrap();
+        let folder = sync_folder(&plan, None).unwrap().unwrap();
+        set_hook(|stage, path| {
+            if stage == Stage::RenameSynced && path.ends_with("JPEG/DSCF0001.JPG") {
+                FAULT.with(|f| f.set(Some(Fault::Device)));
+            }
+        });
+        let outcome = copy_plan(&plan, &folder, &mut Monitor::default());
+        clear_hook();
+        FAULT.with(|f| f.set(None));
+        let outcome = outcome.unwrap();
+
+        let copied: Vec<&Path> = outcome.copied.iter().map(|c| c.to.as_path()).collect();
+        assert_eq!(copied, [folder.path().join("JPEG/DSCF0001.JPG")]);
+        let failed: Vec<&Path> = outcome.failed.iter().map(|f| f.file.path.as_path()).collect();
+        assert_eq!(failed, [card.join("DCIM/100_FUJI/DSCF0001.RAF"), card.join("DCIM/100_FUJI/DSCF0002.JPG")]);
+        for f in &outcome.failed {
+            assert!(
+                matches!(&f.reason, FailReason::Library(CopyError::Library(e))
+                    if e.path == lib && e.source.raw_os_error() == Some(libc::EIO)),
+                "{:?}",
+                f.reason
+            );
+        }
+        assert!(!folder.path().join("RAW").exists(), "made a folder after the check failed");
+        assert!(temps_under(&lib).is_empty());
     }
 
     /// A library that cannot be found at copy time (unplugged) is refused
