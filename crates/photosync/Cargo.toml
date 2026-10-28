@@ -1,0 +1,7 @@
+[package]
+name = "photosync"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+photosync-core = { path = "../photosync-core" }

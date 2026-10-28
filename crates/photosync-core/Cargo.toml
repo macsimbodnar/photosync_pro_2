@@ -1,0 +1,6 @@
+[package]
+name = "photosync-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

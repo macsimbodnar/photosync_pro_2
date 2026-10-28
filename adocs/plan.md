@@ -17,16 +17,15 @@ not change the order.
 
 ## Open
 
-1. S001  workspace skeleton and test suite
-2. S002  scan source DCIM, classify by type
-3. S003  in-memory library scan, already-synced detection
-4. S004  copy engine: folder naming, temp copy, verify, rename
-5. S005  progress events, ETA, cancel
-6. S006  sync report
-7. S007  volume discovery (Mac, then Linux)
-8. S008  CLI commands
-9. S009  TUI
-10. S010  multi-source and one-by-one session
+1. S002  scan source DCIM, classify by type
+2. S003  in-memory library scan, already-synced detection
+3. S004  copy engine: folder naming, temp copy, verify, rename
+4. S005  progress events, ETA, cancel
+5. S006  sync report
+6. S007  volume discovery (Mac, then Linux)
+7. S008  CLI commands
+8. S009  TUI
+9. S010  multi-source and one-by-one session
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.
@@ -34,3 +33,5 @@ Linux verification.
 ## Done recently
 
 Last five; the full record is `plan_done/`.
+
+- S001  workspace skeleton and test suite
