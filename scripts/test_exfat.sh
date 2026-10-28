@@ -23,7 +23,8 @@ skip=(
     unreadable_root_is_an_error                                 # source_scan
     inv1_scan_with_failures_leaves_source_manifest_unchanged    # source_scan
     inv6_holds_per_source_over_every_kind_of_outcome            # report
-    unreadable_scan_entries_are_listed_and_only_folders_have_unknown_contents
+    unreadable_scan_entries_are_listed_and_only_folders_have_unknown_contents  # report
+    duplicate_of_an_original_that_failed_to_read_is_failed_not_skipped        # report
 )
 
 if [[ "$(uname)" != "Darwin" ]]; then

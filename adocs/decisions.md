@@ -39,6 +39,7 @@ Why: one line.
 - DEC-020 2026-10-28 — copy hardening details left open by S013
 - DEC-021 2026-10-28 — progress and cancel details left open by S005
 - DEC-022 2026-10-28 — sync report details left open by S006
+- DEC-023 2026-10-28 — report hardening details left open by S014
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -294,13 +295,16 @@ thread alike, and none touches the prime directive.
 
 ## DEC-022  2026-10-28  sync report details left open by S006
 Tags: report, api, failures
-Decision: agent's pick in S006, not yet confirmed by the user.
+Decision: agent's pick in S006, not yet confirmed by the user. Points (1),
+(5) and (9) amended in S014, prompted by the S006 fast check (DEC-023).
 (1) API: `Report::new(scans, plan, outcome)` takes the scans, plan and
 `CopyOutcome` by value, so each reason keeps its `io::Error` (not `Clone`)
 and the report can move to a GUI thread. Totals (`Tally`, files and bytes
-per bucket) are computed from the entries, never stored, per source, per
-type and overall. Rejected: a report that borrows (ties it to the inputs'
-lifetime).
+per bucket, plus `not_flushed` within failed) are computed from the
+entries, never stored, per source, per type and overall. `Report`'s fields
+are private, read through `sources()`, `library_failures()` and `temps()`,
+so its checks cannot be bypassed. Rejected: a report that borrows (ties it
+to the inputs' lifetime).
 (2) Nothing to copy (`sync_folder` gives `None`): the caller runs
 `remove_stale_temps` and passes `CopyOutcome::nothing_to_copy(temps)`.
 (3) A cancelled plan (`PlanError::Cancelled`): `Report::plan_cancelled(scans)`
@@ -309,9 +313,12 @@ temp cleanup, as nothing ran past planning.
 (4) A read error while planning becomes `FailReason::Read` in the report,
 like one while copying.
 (5) `Report::new` refuses inputs that break INV-6: a file the scans do not
-hold (`ReportError::NotInScans`), or a supported file in neither the plan
-nor the outcome (`ReportError::Unaccounted`). Rejected: trusting the caller
-(a mixed-up plan would give a silently wrong report).
+hold (`ReportError::NotInScans`), a supported file in neither the plan
+nor the outcome (`ReportError::Unaccounted`), a source given twice
+(`SourceTwice`), a file listed with another size or mtime than the scan
+(`Changed`), and a duplicate whose original is not reported (`NoOriginal`).
+Rejected: trusting the caller (a mixed-up plan would give a silently wrong
+report).
 (6) Scan failures are listed per source, outside the sum. "Contents unknown"
 marks a folder whose listing failed and an entry whose type could not be
 read (it may be a folder), from the new `SourceScan::failed_folders`. An
@@ -319,8 +326,30 @@ entry the listing types as a file is just that entry.
 (7) Per-type totals cover supported files only; ignored files have no type
 and are in the per-source and overall totals.
 (8) Library failures and the temp cleanup are carried in the report.
-(9) A source given twice fills the twin scans' slots in plan order, so its
-entries may land on the other twin; the count per source still holds. S010
-refuses a duplicate root.
+(9) A source given twice, in any spelling, is refused by `Report::new`
+(`ReportError::SourceTwice`), so no entry can land on the other twin.
 Why: each is the smallest choice that keeps INV-6 checkable and serves the
 CLI, TUI and GUI alike; none touches the prime directive.
+
+## DEC-023  2026-10-28  report hardening details left open by S014
+Tags: report, api, failures
+Decision: agent's pick in S014, not yet confirmed by the user.
+(1) Twin sources are found by the new `SourceScan::resolved_root`, which
+`scan_source` resolves while the card is there. `Report::new` does no I/O,
+so a card pulled after the copy cannot block its report. macOS folds case
+here; Linux keeps it (see the parked Linux exFAT note). Rejected:
+resolving roots in `Report::new` (fails once a card is gone).
+(2) A duplicate whose original failed or was cancelled is the new
+`FileOutcome::DuplicateOfFailed { of }` or `DuplicateOfCancelled { of }`;
+the original's own entry holds the cause. A duplicate of a not-flushed
+original is `DuplicateOfFailed` and not counted in `not_flushed`: only the
+original is in place.
+(3) A duplicate whose original is in no list of the plan or outcome is
+refused (`ReportError::NoOriginal`): nothing says whether it is safe.
+(4) The size and mtime check covers every plan and outcome entry that
+carries a file; a plan read failure has a path only. `plan.to_copy` is not
+read by `Report::new`: the outcome accounts for those files.
+(5) `Report::plan_cancelled` does not refuse a twin source: every entry is
+cancelled, so it claims nothing safe.
+Why: the report is what decides whether a card is safe to format, so each
+choice errs toward "not safe" and toward refusing over guessing.

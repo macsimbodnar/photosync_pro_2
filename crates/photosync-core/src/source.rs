@@ -60,6 +60,10 @@ pub struct SourceFile {
 #[derive(Debug)]
 pub struct SourceScan {
     pub root: PathBuf,
+    /// `root` with symlinks, `.` and `..` resolved, taken while the card was
+    /// there, so two spellings of one source compare equal even after it is
+    /// removed.
+    pub resolved_root: PathBuf,
     pub files: Vec<SourceFile>,
     /// Files and folders under `DCIM` that could not be read. A folder whose
     /// listing broke partway keeps the files it gave before the break in
@@ -114,11 +118,19 @@ pub fn scan_source(root: &Path) -> Result<SourceScan, ScanError> {
     let mut files = Vec::new();
     let mut failures = Failures::default();
     walk(&dcim, &mut files, &mut failures).map_err(|source| ScanError { path: dcim, source })?;
+    let resolved_root = fs::canonicalize(root)
+        .map_err(|source| ScanError { path: root.to_path_buf(), source })?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let Failures { mut errors, mut folders } = failures;
     errors.sort_by(|a, b| a.path.cmp(&b.path));
     folders.sort();
-    Ok(SourceScan { root: root.to_path_buf(), files, failures: errors, failed_folders: folders })
+    Ok(SourceScan {
+        root: root.to_path_buf(),
+        resolved_root,
+        files,
+        failures: errors,
+        failed_folders: folders,
+    })
 }
 
 #[derive(Default)]

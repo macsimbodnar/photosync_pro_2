@@ -37,9 +37,14 @@ stays listed as retired.
   report exactly once, with its reason. Per source: copied + skipped +
   failed + cancelled = the supported files the scan listed. Skipped holds
   "already on drive" and "duplicate in session", each with its own reason.
-  Failed holds read, write and verify errors and name collisions, whether
-  found while planning or copying. Cancelled holds every file a cancel left
-  uncopied; a cancelled plan reports all supported files as cancelled.
+  A duplicate in session is skipped only if its original is copied or
+  already on drive; one whose original failed or was cancelled takes the
+  original's bucket, with a reason naming the original. Failed holds read,
+  write and verify errors and name collisions, whether found while planning
+  or copying, and "not flushed": a copy in place whose folder flush failed.
+  Not flushed stays in failed and is also counted apart, so it can be shown
+  as "in place, flush not confirmed". Cancelled holds every file a cancel
+  left uncopied; a cancelled plan reports all supported files as cancelled.
   Ignored files are listed and counted apart, outside the sum. An entry the
   scan could not read is listed with its error, outside the sum; a failed
   folder is "contents unknown", and the files in it are counted nowhere.
@@ -166,6 +171,10 @@ picks. It is simple to use.
   duplicate in session), failed with a reason (name collisions included),
   cancelled, ignored types, and the entries the scan could not read. Totals
   per source and per type (INV-6).
+- The report is never built from inputs that would make it wrong: a source
+  given twice (in any spelling), or a plan or copy that is not of these
+  scans (a file not listed, listed with another size or mtime, left out, or
+  a duplicate whose original is not reported) is refused with the reason.
 
 ## Non-goals
 
