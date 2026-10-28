@@ -279,7 +279,10 @@ impl Report {
     /// drive; otherwise it takes the original's bucket. A planned file the
     /// copy read from a twin instead (`CopyOutcome::fallbacks`) is a
     /// duplicate of that twin, and so are its other twins; the plan must
-    /// list each twin the outcome names.
+    /// list each twin the outcome names. One whose twin's copy is in place
+    /// unflushed (`CopyOutcome::unflushed_fallbacks`) fails with its read
+    /// error, the twin as not flushed, the other twins as its failed
+    /// duplicates.
     pub fn new(
         scans: Vec<SourceScan>,
         plan: SyncPlan,
@@ -321,16 +324,28 @@ impl Report {
         // for. The plan must list each as a twin of that file.
         let mut read_from = HashMap::new();
         let mut stood_in = HashSet::new();
-        for f in &outcome.fallbacks {
-            let of = &f.original.path;
+        let mut check_twins = |of: &PathBuf, files: Vec<&SourceFile>| {
             let twins = plan.to_copy.iter().find(|p| p.file.path == *of).map_or(&[][..], |p| p.twins());
-            for file in f.tried.iter().map(|t| &t.file).chain([&f.copied.file]) {
+            for file in files {
                 if !twins.iter().any(|t| t.path == file.path) {
                     return Err(ReportError::NotATwin { file: file.path.clone(), of: of.clone() });
                 }
                 stood_in.insert((file.path.clone(), of.clone()));
             }
+            Ok(())
+        };
+        for f in &outcome.fallbacks {
+            let of = &f.original.path;
+            check_twins(of, f.tried.iter().map(|t| &t.file).chain([&f.copied.file]).collect())?;
             read_from.insert(of.clone(), f.copied.file.path.clone());
+        }
+        // A twin's copy in place unflushed: the file's other duplicates
+        // point to it, failed, as nothing confirms it is on the drive.
+        let mut failed_over = HashMap::new();
+        for f in &outcome.unflushed_fallbacks {
+            let of = &f.original.path;
+            check_twins(of, f.tried.iter().map(|t| &t.file).chain([&f.twin.file]).collect())?;
+            failed_over.insert(of.clone(), f.twin.file.path.clone());
         }
 
         let mut slots = Slots::new(&scans);
@@ -349,6 +364,10 @@ impl Report {
             }
             if let Some(twin) = read_from.get(&d.of) {
                 slots.put(d.file, FileOutcome::DuplicateInSession { of: twin.clone() })?;
+                continue;
+            }
+            if let Some(twin) = failed_over.get(&d.of) {
+                slots.put(d.file, FileOutcome::DuplicateOfFailed { of: twin.clone() })?;
                 continue;
             }
             let entry = match originals.get(&d.of) {
@@ -383,6 +402,13 @@ impl Report {
                 slots.put(t.file, entry)?;
             }
             slots.put(f.copied.file, FileOutcome::Copied { to: f.copied.to })?;
+        }
+        for f in outcome.unflushed_fallbacks {
+            slots.put(f.original, FileOutcome::Failed(FailReason::Read(f.error)))?;
+            for t in f.tried {
+                slots.put(t.file, FileOutcome::Failed(t.reason))?;
+            }
+            slots.put(f.twin.file, FileOutcome::Failed(f.twin.reason))?;
         }
         let sources = slots.finish(scans)?;
         Ok(Report { sources, library_failures: plan.library_failures, temps: outcome.temps })

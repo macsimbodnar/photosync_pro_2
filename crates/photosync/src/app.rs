@@ -1370,6 +1370,80 @@ mod tests {
         assert_eq!(app.syncs(), 2);
     }
 
+    /// S023: in the TUI, the result of a session of several syncs, one of
+    /// which copied a file from its twin, names the card that could not be
+    /// read, and the report keeps that sync's own result. Real syncs, so on
+    /// the drive image.
+    #[test]
+    fn the_result_box_names_the_card_a_file_was_copied_from_its_twin_for() {
+        use crate::common::{LoseOnCopy, OnDrive, test_drive};
+
+        let Some(drive) =
+            test_drive("the_result_box_names_the_card_a_file_was_copied_from_its_twin_for")
+        else {
+            return;
+        };
+        // Given to the app as its drive, so the default library is in it.
+        let ours = OnDrive::new(&drive, "S023-app");
+        std::fs::create_dir(ours.0.join("Photos")).unwrap();
+        let dir = TempDir::new();
+        let (a, b, c) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("c"));
+        let lost = write_file(&a, "DCIM/100_FUJI/DSCF0001.RAF", b"twin", at(1_700_000_000));
+        write_file(&b, "DCIM/100_FUJI/DSCF0001.RAF", b"twin", at(1_700_000_000));
+        write_file(
+            &c,
+            "DCIM/100_FUJI/DSCF0002.RAF",
+            b"other",
+            at(1_700_000_000),
+        );
+        let s = |p: &PathBuf| p.display().to_string();
+        let (sa, sb, sc, sd) = (s(&a), s(&b), s(&c), s(&ours.0));
+
+        let mut app = app(&[&sa, &sb, &sc], &[&sd]);
+        keys(&mut app, &[Key::Char(' '), Key::Down, Key::Char(' ')]);
+        keys(&mut app, &[Key::Enter, Key::Enter, Key::Enter, Key::Enter]);
+        let first = start(&mut app);
+        assert_eq!(first.sources, [a.clone(), b.clone()]);
+        run_job_with(&mut app, first, move |session, sources, cancel, watch| {
+            session.sync(
+                sources,
+                cancel,
+                &mut LoseOnCopy {
+                    path: lost,
+                    inner: watch,
+                },
+            );
+        });
+        keys(&mut app, &[Key::Char('n')]);
+        app.update(Msg::Volumes(found(&[&sc], &[&sd])));
+        keys(&mut app, &[Key::Enter]);
+        let second = start(&mut app);
+        run_job(&mut app, second);
+
+        assert_eq!(app.syncs(), 2);
+        assert_eq!(app.exit().code, EXIT_OK);
+        let warning = format!(
+            "1 could not be read on {sa} and was copied from another card: check that card"
+        );
+        match app.outcome() {
+            Some(Outcome::Report {
+                lines,
+                result,
+                complete,
+            }) => {
+                assert!(
+                    result.ends_with(&format!(" over 2 syncs. {warning}.")),
+                    "{result}"
+                );
+                let own = "could not be read on its card and was copied from another card: \
+                           check that card.";
+                assert!(lines.iter().any(|l| l.ends_with(own)), "{lines:#?}");
+                assert!(*complete, "the photos are on the drive");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// S020: quitting during a later sync names every earlier sync that was
     /// not complete, as well as the one that did not finish.
     #[test]

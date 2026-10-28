@@ -273,22 +273,64 @@ fn run_name(index: usize, run: &Run) -> String {
     format!("sync {} ({})", index + 1, cards(run))
 }
 
-/// What a run left undone, in a few words, or "complete".
+/// What a run left undone, in a few words, or "complete"; either way
+/// naming each card a file could not be read on and was copied from its
+/// twin instead (S023).
 fn run_state(run: &Run) -> String {
     match &run.end {
-        RunEnd::Report(report) if report.is_complete() => "complete".to_string(),
         RunEnd::Report(report) => {
             let totals = report.totals();
-            let unreadable: usize = report.sources().iter().map(|s| s.unreadable.len()).sum();
-            format!(
-                "{} failed, {} cancelled, {} unreadable",
-                totals.failed.files, totals.cancelled.files, unreadable
-            )
+            let mut state = if report.is_complete() {
+                "complete".to_string()
+            } else {
+                let unreadable: usize = report.sources().iter().map(|s| s.unreadable.len()).sum();
+                format!(
+                    "{} failed, {} cancelled, {} unreadable",
+                    totals.failed.files, totals.cancelled.files, unreadable
+                )
+            };
+            if let Some(warning) = unread_warning(totals.unread.files, &unread_cards([report])) {
+                state.push_str(", but ");
+                state.push_str(&warning);
+            }
+            state
         }
         RunEnd::Refused(SyncError::Report(_)) => "copied, but its report does not add up".into(),
         RunEnd::Refused(_) => "refused, nothing copied".to_string(),
         RunEnd::Crashed(what) => format!("stopped with an internal error ({what})"),
     }
+}
+
+/// The cards of `reports` with a file that could not be read and was
+/// copied from its twin, in order, each once.
+fn unread_cards<'r>(reports: impl IntoIterator<Item = &'r Report>) -> Vec<&'r Path> {
+    let mut cards: Vec<&Path> = Vec::new();
+    let sources = reports.into_iter().flat_map(Report::sources);
+    for source in sources.filter(|s| s.totals().unread.files > 0) {
+        if !cards.contains(&source.root.as_path()) {
+            cards.push(&source.root);
+        }
+    }
+    cards
+}
+
+/// "1 could not be read on /Volumes/A and was copied from another card:
+/// check that card", or `None` when every file was read. A complete sync
+/// still says it, as it is the only word that a card had trouble.
+fn unread_warning(files: u64, cards: &[&Path]) -> Option<String> {
+    if files == 0 {
+        return None;
+    }
+    let named: Vec<String> = cards.iter().map(|c| c.display().to_string()).collect();
+    let (was, check) = match (files, cards.len()) {
+        (1, _) => ("was", "that card"),
+        (_, 1) => ("were", "that card"),
+        _ => ("were", "those cards"),
+    };
+    Some(format!(
+        "{files} could not be read on {} and {was} copied from another card: check {check}",
+        named.join(", ")
+    ))
 }
 
 /// Each run that was not complete, named, with what it left undone; `None`
@@ -314,17 +356,15 @@ pub fn session_result(session: &Session) -> String {
         return result_line(&report.totals(), report.sources());
     }
     let syncs = session.runs().len() as u64;
-    match not_complete(session) {
-        None => {
-            let totals = session.totals();
-            format!(
-                "Result: all {} on the drive ({} copied, {} already there), over {}.",
-                plural(totals.supported().files, MEDIA.0, MEDIA.1),
-                totals.copied.files,
-                totals.skipped.files,
-                plural(syncs, "sync", "syncs")
-            )
-        }
+    let totals = session.totals();
+    let mut line = match not_complete(session) {
+        None => format!(
+            "Result: all {} on the drive ({} copied, {} already there), over {}.",
+            plural(totals.supported().files, MEDIA.0, MEDIA.1),
+            totals.copied.files,
+            totals.skipped.files,
+            plural(syncs, "sync", "syncs")
+        ),
         Some(each) => format!(
             "Result: NOT COMPLETE: {} of {} not complete: {each}. Do not format the cards \
              of those syncs. Fix the cause and sync them again: files already on the \
@@ -332,7 +372,17 @@ pub fn session_result(session: &Session) -> String {
             session.not_complete().count(),
             plural(syncs, "sync", "syncs")
         ),
+    };
+    let reports = session.runs().iter().filter_map(|run| match &run.end {
+        RunEnd::Report(report) => Some(report),
+        _ => None,
+    });
+    if let Some(warning) = unread_warning(totals.unread.files, &unread_cards(reports)) {
+        line.push(' ');
+        line.push_str(&warning);
+        line.push('.');
     }
+    line
 }
 
 /// The sentence for a sync that stopped with no result.
@@ -1042,6 +1092,94 @@ mod tests {
             result,
             "Result: all 1 photo or video on the drive (0 copied, 1 already there). \
              1 could not be read on its card and was copied from another card: check that card."
+        );
+    }
+
+    /// S023: in a session of several syncs, a sync whose only problem is
+    /// a file copied from its twin is not plain "complete": its state and
+    /// the session's result name the card that could not be read, whether
+    /// the session is complete or not. Real syncs, so on the drive image.
+    #[test]
+    fn a_session_names_the_card_a_file_was_copied_from_its_twin_for() {
+        use crate::common::{LoseOnCopy, OnDrive, TempDir, at, test_drive, write_file};
+        use photosync_core::{Cancel, Session};
+
+        struct Quiet;
+        impl Watch for Quiet {}
+
+        let Some(drive) =
+            test_drive("a_session_names_the_card_a_file_was_copied_from_its_twin_for")
+        else {
+            return;
+        };
+        let library = OnDrive::new(&drive, "S023-cli");
+        let dir = TempDir::new();
+        let (a, b, c) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("c"));
+        let lost = write_file(&a, "DCIM/100_FUJI/DSCF0001.RAF", b"twin", at(1_700_000_000));
+        write_file(&b, "DCIM/100_FUJI/DSCF0001.RAF", b"twin", at(1_700_000_000));
+        write_file(
+            &c,
+            "DCIM/100_FUJI/DSCF0002.RAF",
+            b"other",
+            at(1_700_000_000),
+        );
+        let mut session = Session::new(&library.0, None).unwrap();
+
+        let mut quiet = Quiet;
+        let mut lose = LoseOnCopy {
+            path: lost,
+            inner: &mut quiet,
+        };
+        session.sync(&[a.clone(), b.clone()], &Cancel::new(), &mut lose);
+        session.sync(std::slice::from_ref(&c), &Cancel::new(), &mut Quiet);
+
+        let warning = format!(
+            "1 could not be read on {} and was copied from another card: check that card",
+            a.display()
+        );
+        let summary = session_summary(&session);
+        let state = format!(
+            "  sync 1 ({}, {}): complete, but {warning}\n",
+            a.display(),
+            b.display()
+        );
+        assert!(summary.contains(&state), "{summary}");
+        assert!(
+            summary.contains(&format!("  sync 2 ({}): complete\n", c.display())),
+            "{summary}"
+        );
+        let result = session_result(&session);
+        assert!(result.starts_with("Result: all 3 "), "{result}");
+        assert!(
+            result.ends_with(&format!(" over 2 syncs. {warning}.")),
+            "{result}"
+        );
+
+        session.sync(&[dir.0.join("gone")], &Cancel::new(), &mut Quiet);
+        let result = session_result(&session);
+        assert!(
+            result.starts_with("Result: NOT COMPLETE: 1 of 3 syncs"),
+            "{result}"
+        );
+        assert!(result.ends_with(&format!(" {warning}.")), "{result}");
+    }
+
+    #[test]
+    fn the_unread_warning_names_each_card_and_counts_the_files() {
+        let (a, b) = (Path::new("/V/A"), Path::new("/V/B"));
+        assert_eq!(unread_warning(0, &[]), None);
+        assert_eq!(
+            unread_warning(1, &[a]).unwrap(),
+            "1 could not be read on /V/A and was copied from another card: check that card"
+        );
+        assert_eq!(
+            unread_warning(2, &[a]).unwrap(),
+            "2 could not be read on /V/A and were copied from another card: check that card"
+        );
+        assert_eq!(
+            unread_warning(2, &[a, b]).unwrap(),
+            "2 could not be read on /V/A, /V/B and were copied from another card: check those \
+             cards"
         );
     }
 

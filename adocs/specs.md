@@ -32,8 +32,8 @@ stays listed as retired.
   that planning hashed must also read as that hash when copied: one that
   changed since fails, and so do its duplicates. One that cannot be read
   is copied from its first twin (same name, size and planning hash, on
-  another source) that reads as that hash; a twin that cannot be read or
-  reads otherwise is passed for the next. A failure on the drive's side
+  another source, never the same card) that reads as that hash; a twin
+  that cannot be read or reads otherwise is passed for the next. A failure on the drive's side
   is never retried on a twin (DEC-036).
 - INV-4 Idempotent. Syncing the same source to the same destination twice
   copies zero files the second time, whatever target folder is picked.
@@ -55,7 +55,9 @@ stays listed as retired.
   write and verify errors and name collisions, whether found while planning
   or copying, and "not flushed": a copy in place whose folder flush failed.
   Not flushed stays in failed and is also counted apart, so it can be shown
-  as "in place, flush not confirmed". Cancelled holds every file a cancel
+  as "in place, flush not confirmed". A twin's copy in place unflushed is
+  that too: the file it stood in for fails with its own read error, and
+  its other twins are failed duplicates of the twin's copy. Cancelled holds every file a cancel
   left uncopied; a cancelled plan reports all supported files as cancelled.
   Ignored files are listed and counted apart, outside the sum. An entry the
   scan could not read is listed with its error, outside the sum; a failed
@@ -110,6 +112,9 @@ picks. It is simple to use.
     and one while the cards are looked for runs no further sync. All syncs are one session; after several, a
     summary ends the report, and the exit code and the result are the
     session's worst, naming each sync that was not complete (DEC-034).
+    A sync with a file copied from its twin is never plain "complete":
+    its state and the session's result name each card that could not be
+    read (DEC-037).
     It refuses to run as root (euid 0): root can write to system volumes.
   - TUI: a terminal interface, the first interactive front-end. `photosync`
     with no command opens it when stdin and stdout are a terminal; otherwise
@@ -123,7 +128,8 @@ picks. It is simple to use.
     totals of all, naming the library and the folder. The exit code and
     the message are the session's worst, naming each sync that was not
     complete, so neither going back nor a later sync ever hides an earlier
-    one that was not complete. A name that cannot be a folder name is
+    one that was not complete. The result names each card a file could
+    not be read on and was copied from its twin, as the CLI's does. A name that cannot be a folder name is
     refused before the session starts and can be fixed; after that, the
     library and the name stay. A sync with no source picked does not
     start. A panic in the sync's thread leaves the screen as it is, and
@@ -241,7 +247,9 @@ picks. It is simple to use.
 
 - At the end, shows what was done: copied, skipped (already on drive, or
   duplicate in session, with the read error of a file copied from its
-  twin), failed with a reason (name collisions included),
+  twin, and the card it could not be read on named in the result),
+  failed with a reason (name collisions and copies in place not flushed
+  included),
   cancelled, ignored types, and the entries the scan could not read. Totals
   per source and per type (INV-6). The CLI's report names the library and
   the session folder. After several syncs in a session, the report ends

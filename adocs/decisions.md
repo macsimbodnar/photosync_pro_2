@@ -53,6 +53,7 @@ Why: one line.
 - DEC-034 2026-10-28 — one card after another in the CLI and TUI (S020)
 - DEC-035 2026-10-28 — S022: seam for a refused report, prompt poll, cancel during lookup
 - DEC-036 2026-10-28 — twin fallback on a read error (S021, F07)
+- DEC-037 2026-10-28 — twin-fallback reporting fixes (S023)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -797,8 +798,10 @@ twin that cannot be read, or reads otherwise (`SourceChanged`), is passed
 for the next. A drive-side failure (write, flush, collision, INV-10
 re-check) is not retried: of the planned file, nor after a twin's, which
 ends the tries; the file then fails with its own read error and the
-twin's drive error is not reported (a copy left in place unflushed is
-found by the next sync, DEC-017 (4)). A planned file that read otherwise
+twin's drive error is not reported, except a twin's copy left in place
+unflushed, which is (amended in S023, DEC-037 (2)). Twins are only on
+another source: a same-hash file on the planned file's own card is a
+plain duplicate (amended in S023, DEC-037 (1)). A planned file that read otherwise
 than planned does not fall back: it fails and so do its duplicates, as
 INV-3 and the kept test `a_file_changed_between_planning_and_copy_fails`
 say. Rejected: falling back on `SourceChanged` too (the S021 brief
@@ -818,7 +821,10 @@ front-end's table).
 (3) A sync whose only problem is `DuplicateUnread` is complete, exit 0:
 the drive holds the very bytes planning read from that file. The CLI and
 TUI show its line ("read error ... copied from its twin ..."), a line
-under the totals, and "check that card" in the result.
+under the totals, and "check that card" in the result. After several
+syncs, its state in the summary and the session's result name the card
+too (amended in S023, DEC-037 (3)).
+Amended in S023, prompted by the S021 fast check: (1), (3).
 (4) Progress: a fallback stays one file of the planned file's card; no
 event names the twin; the twin's bytes count only past what the failed
 read counted, so total never changes and done never goes back.
@@ -829,3 +835,40 @@ Rejected: moving the file to the twin's card mid-copy (changes totals).
 `CopyOutcome::nothing_to_copy`, no assertion changed.
 Why: backup mode must use the good card, and a card with a read error
 must never be hidden, nor a changed file be called safe.
+
+## DEC-037  2026-10-28  twin-fallback reporting fixes (S023)
+Tags: copy, report, plan, cli, tui, test
+Decision: agent's pick in S023, not yet confirmed by the user. Prompted
+by the S021 fast check.
+(1) Planning adds a same-hash file as a twin only if it is on another
+source than the planned file (INV-3). On the same card it stays a
+duplicate in session of the planned file: if that one cannot be read,
+it is `DuplicateOfFailed`, never read in its place (the card's read
+error would likely hit it too). With a twin on another card copied, it
+is `DuplicateInSession` of that twin.
+(2) A twin's copy in place but not flushed (`FailReason::NotFlushed`)
+ends the tries, as any drive-side failure, and is reported through the
+new `CopyOutcome::unflushed_fallbacks` (`UnflushedFallback { original,
+error, tried, twin }`): the planned file `Failed(Read)` with its own
+error (nothing confirms the photo is on the drive), each tried twin
+`Failed` with its reason (a read error too: not `DuplicateUnread`, as
+nothing is confirmed), the twin `Failed(NotFlushed)` (in `not_flushed`,
+under the twin's card), untried twins `DuplicateOfFailed` of the twin.
+`Report::new` checks these twins against the plan as for `fallbacks`.
+Rejected: a field on `Fallback` (its `copied` would then lie) or an
+enum in it (breaks the struct literal in tests/report.rs).
+(3) Wording: `run_state` appends ", but N could not be read on <cards>
+and was/were copied from another card: check that card/those cards" to
+"complete" or to the failed/cancelled counts; `session_result` appends
+the same sentence over all syncs, complete or NOT COMPLETE, naming each
+card once. A not-complete sync with an unread file thus names it twice
+(in its state and at the end). The one-sync `result_line` is unchanged.
+The TUI box stays green (exit 0, DEC-036 (3)).
+(4) The multi-sync tests need real syncs, so sources on another device
+than the library: they run on the exFAT drive image of
+`scripts/test_exfat.sh` (`PHOTOSYNC_TEST_LIBRARY`) and skip, saying so,
+under plain `cargo test`. The read error is made by removing the planned
+file once copying starts (`common::LoseOnCopy`): chmod does nothing on
+exFAT.
+Why: the report is what the user trusts before formatting a card; it
+must say what is on the drive and which card had trouble.

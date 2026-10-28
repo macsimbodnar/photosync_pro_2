@@ -54,7 +54,10 @@ stderr: swap the card and press Enter (it copies the cards it finds
 mounted), or type a card's path. `q`, Ctrl-D or Ctrl-C finishes. Without
 `--source` it asks for the first card too. All cards go into one session
 and one folder; after several, a summary names each sync that was not
-complete, and the exit code is the worst of them. It asks only when
+complete, and the exit code is the worst of them. A sync that copied a
+photo from the other card is "complete, but 1 could not be read on
+<card> ...: check that card", and the session's result names that card
+too. It asks only when
 stdin is a terminal: with stdin redirected (`</dev/null`, a pipe) it
 syncs the `--source` cards and ends, so a script never waits; with no
 `--source` there it prints "No card was synced." and exits 2.
@@ -66,7 +69,10 @@ several times; the cards are copied one after another into one sync folder,
 (backup slots) is copied once; the other card's copy is a "duplicate in
 session". If one card cannot be read, the photo is copied from the other,
 checked against what was read before: the report names the card it came
-from and shows the read error ("check that card"). The library folder must exist. It is never on a card, nor on the
+from and shows the read error ("check that card"). Only another card
+stands in: the same photo twice on one card is a duplicate of the first,
+and fails with it. A copy from the other card that is in place but whose
+folder flush failed is "in place, flush not confirmed". The library folder must exist. It is never on a card, nor on the
 same drive as a source. Photos already anywhere in the library are
 skipped. A photo that changed on the card after it was compared with the
 library fails, and so does its copy on the other card. A `--name` that
@@ -162,7 +168,11 @@ and checks the files and the report text; the binary's unit test
 cancelled and a full sync there, then the same card again as the next
 card of the session, with scripted keys on ratatui's `TestBackend`.
 `tests/exfat_session.rs` runs `sync --one-by-one` over five cards in one
-session, one of them failing, typed at its prompt on a pseudo-terminal. Plain `cargo test` skips these
+session, one of them failing, typed at its prompt on a pseudo-terminal.
+The binary's unit tests `text::tests::a_session_names_the_card_a_file_was_copied_from_its_twin_for`
+and `app::tests::the_result_box_names_the_card_a_file_was_copied_from_its_twin_for`
+run a session whose first sync copies a photo from its twin (the planned
+file is removed once copying starts), into a folder on that drive. Plain `cargo test` skips these
 tests and says so; it covers the binary's help, usage errors and refusals
 on temp dirs. The tests reach `photosync sources` and `drives` through a
 hidden `--search-root` option.

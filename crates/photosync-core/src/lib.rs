@@ -22,7 +22,7 @@ extern crate self as photosync_core;
 
 pub use copy::{
     Copied, CopyError, CopyOutcome, FailReason, Failed, Fallback, FolderError, SyncFolder,
-    TempCleanup, copy_plan, remove_stale_temps, sync_folder,
+    TempCleanup, UnflushedFallback, copy_plan, remove_stale_temps, sync_folder,
 };
 pub use plan::{Duplicate, PlanError, Planned, Skipped, SyncPlan, plan_sync};
 pub use progress::{Cancel, Counts, Event, EventKind, Monitor, Phase, Progress, SourceProgress, eta};

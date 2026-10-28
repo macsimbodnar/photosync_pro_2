@@ -80,6 +80,61 @@ pub fn manifest(root: &Path) -> BTreeMap<PathBuf, (SystemTime, Option<Vec<u8>>)>
     out
 }
 
+/// The drive image of `scripts/test_exfat.sh` (`PHOTOSYNC_TEST_LIBRARY`):
+/// another device than the temp dir, so a sync of temp folders into it
+/// passes INV-10. `None`, said on stderr, without it.
+pub fn test_drive(test: &str) -> Option<PathBuf> {
+    let Some(drive) = std::env::var_os("PHOTOSYNC_TEST_LIBRARY") else {
+        eprintln!(
+            "SKIPPED {test}: PHOTOSYNC_TEST_LIBRARY is not set (scripts/test_exfat.sh sets it)"
+        );
+        return None;
+    };
+    Some(fs::canonicalize(drive).unwrap())
+}
+
+/// A fresh library folder on the test drive, removed on drop, failing or
+/// not: the drive image is shared by the tests.
+pub struct OnDrive(pub PathBuf);
+
+impl OnDrive {
+    pub fn new(drive: &Path, name: &str) -> OnDrive {
+        let path = drive.join(format!("{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path); // left over from a killed run
+        fs::create_dir(&path).unwrap();
+        OnDrive(path)
+    }
+}
+
+impl Drop for OnDrive {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Removes `path` once copying starts, after planning read it, so its
+/// copy has a read error: chmod does nothing on exFAT, removing does.
+/// Passes every call on to `inner`.
+pub struct LoseOnCopy<'w> {
+    pub path: PathBuf,
+    pub inner: &'w mut dyn photosync_core::Watch,
+}
+
+impl photosync_core::Watch for LoseOnCopy<'_> {
+    fn scanned(&mut self, scan: &photosync_core::SourceScan) {
+        self.inner.scanned(scan);
+    }
+
+    fn event(&mut self, event: photosync_core::Event) {
+        if event.progress.phase == photosync_core::Phase::Copying
+            && event.kind == photosync_core::EventKind::Started
+        {
+            fs::remove_file(&self.path).unwrap();
+        }
+        self.inner.event(event);
+    }
+}
+
 /// What one run of the binary gave.
 pub struct Run {
     pub code: i32,

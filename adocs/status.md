@@ -4,13 +4,18 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-28, by Claude (S021 fast check)
+Updated: 2026-10-28, by Claude agent (S023)
 
-- Last done: S021  twin fallback on a read error, F07 (DEC-036)
+- Last done: S023  twin-fallback reporting fixes (DEC-037, DEC-036 amended)
 - In progress: none
-- Next: S023  twin-fallback reporting fixes (S021 fast check)
+- Next: S019  copy several cards at once
 - Blocked: S017 waits for the user's hardware (DEC-029)
 - Parked:
+  - S023's choices are the agent's pick, not yet confirmed by the user
+    (DEC-037): a same-card same-hash file is no twin; a twin's copy in
+    place unflushed fails the file with its read error and the twin as
+    not flushed; the warning wording; its multi-sync tests run only on
+    the exFAT drive image (plain `cargo test` skips them).
   - S021's fallback choices are the agent's pick, not yet confirmed by
     the user (DEC-036): read errors only fall back (not a changed file),
     a file copied from its twin is skipped and the sync complete (exit 0,
