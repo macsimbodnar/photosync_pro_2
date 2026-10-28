@@ -150,6 +150,8 @@ picks. It is simple to use.
 - Shows files and bytes done out of the total, per source and overall.
 - Shows an estimate of the time remaining.
 - The user can cancel. Cancelling is the same as an interruption (INV-7).
+- Planning, which hashes the already-synced candidates, shows progress too
+  and can be cancelled. A cancelled plan has written nothing.
 
 ### Report
 

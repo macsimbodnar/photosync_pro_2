@@ -9,8 +9,9 @@ use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use crate::hash::{Hash, hash_file};
+use crate::hash::{Hash, hash_file_with};
 use crate::library::scan_library;
+use crate::progress::{Monitor, Phase, Tracker};
 use crate::source::{ScanError, SourceFile, SourceScan};
 
 /// What a sync of `sources` into a library would do. Every supported source
@@ -21,6 +22,9 @@ pub struct SyncPlan {
     /// The library the plan is for, as given to `plan_sync`, which checked
     /// it against the sources (INV-10).
     pub library: PathBuf,
+    /// The roots of the planned sources, in the order given. Progress is
+    /// reported per source in this order.
+    pub sources: Vec<PathBuf>,
     /// New to the library, in source order, then path order.
     pub to_copy: Vec<SourceFile>,
     /// Already synced: same name, size and hash as a library file.
@@ -62,6 +66,8 @@ pub enum PlanError {
     Library(ScanError),
     /// A source root cannot be resolved, e.g. the card was removed.
     Source(ScanError),
+    /// The monitor's cancel was set. Nothing was written.
+    Cancelled,
 }
 
 impl fmt::Display for PlanError {
@@ -83,6 +89,7 @@ impl fmt::Display for PlanError {
                 source_root.display()
             ),
             PlanError::Library(e) | PlanError::Source(e) => e.fmt(f),
+            PlanError::Cancelled => write!(f, "planning cancelled"),
         }
     }
 }
@@ -103,23 +110,47 @@ impl Error for PlanError {
 /// Only name + size candidates are hashed: files with a candidate in the
 /// library, or a same name and size file elsewhere in the session. A file
 /// unique by name and size is planned without being read.
-pub fn plan_sync(library: &Path, sources: &[SourceScan]) -> Result<SyncPlan, PlanError> {
+///
+/// Progress counts the source files to hash (`Phase::Planning`). Library
+/// candidates are hashed too, uncounted, while their source file is
+/// current. A cancel returns `PlanError::Cancelled`; planning never writes,
+/// so nothing is left behind.
+pub fn plan_sync(
+    library: &Path,
+    sources: &[SourceScan],
+    monitor: &mut Monitor,
+) -> Result<SyncPlan, PlanError> {
     check_library(library, sources)?;
     let mut index = scan_library(library).map_err(PlanError::Library)?;
+    let library_failures = std::mem::take(&mut index.failures);
 
-    let supported: Vec<&SourceFile> = sources.iter().flat_map(SourceScan::supported).collect();
+    let supported: Vec<(usize, &SourceFile)> = sources
+        .iter()
+        .enumerate()
+        .flat_map(|(i, scan)| scan.supported().map(move |f| (i, f)))
+        .collect();
     let mut in_session: HashMap<(OsString, u64), usize> = HashMap::new();
-    for file in &supported {
+    for (_, file) in &supported {
         *in_session.entry(key(file)).or_default() += 1;
     }
+    let to_hash = |file: &SourceFile| {
+        let key = key(file);
+        !index.candidates(&key.0, key.1).is_empty() || in_session[&key] > 1
+    };
+
+    let roots: Vec<PathBuf> = sources.iter().map(|s| s.root.clone()).collect();
+    let hashed = supported.iter().filter(|(_, f)| to_hash(f)).map(|(i, f)| (Some(*i), f.size));
+    let mut tracker = Tracker::start(monitor, Phase::Planning, &roots, hashed);
+    let cancel = tracker.cancel();
 
     let mut plan = SyncPlan {
         library: library.to_path_buf(),
+        sources: roots.clone(),
         to_copy: Vec::new(),
         skipped: Vec::new(),
         duplicates: Vec::new(),
         failures: Vec::new(),
-        library_failures: std::mem::take(&mut index.failures),
+        library_failures,
     };
     // None: unreadable, already in library_failures. Cached because several
     // source files can share one candidate.
@@ -127,43 +158,72 @@ pub fn plan_sync(library: &Path, sources: &[SourceScan]) -> Result<SyncPlan, Pla
     // Per name and size, the hashes planned so far, with the planned path.
     let mut planned: HashMap<(OsString, u64), Vec<(Hash, PathBuf)>> = HashMap::new();
 
-    for file in supported {
-        let key = key(file);
-        let candidates = index.candidates(&key.0, key.1);
-        if candidates.is_empty() && in_session[&key] == 1 {
+    for (source, file) in supported {
+        if cancel.is_cancelled() {
+            tracker.finish(true);
+            return Err(PlanError::Cancelled);
+        }
+        if !to_hash(file) {
             plan.to_copy.push(file.clone());
             continue;
         }
-        let hash = match hash_file(&file.path) {
-            Ok(hash) => hash,
+        let key = key(file);
+        let candidates = index.candidates(&key.0, key.1);
+        tracker.file_started(&file.path, Some(source), file.size);
+        let hash = match hash_file_with(&file.path, &cancel, |n| tracker.bytes(n)) {
+            Ok(Some(hash)) => hash,
+            Ok(None) => {
+                tracker.finish(true);
+                return Err(PlanError::Cancelled);
+            }
             Err(source) => {
                 plan.failures.push(ScanError { path: file.path.clone(), source });
+                tracker.file_done(&file.path);
                 continue;
             }
         };
         let seen = planned.entry(key).or_default();
         if let Some((_, of)) = seen.iter().find(|(h, _)| *h == hash) {
             plan.duplicates.push(Duplicate { file: file.clone(), of: of.clone() });
+            tracker.file_done(&file.path);
             continue;
         }
         seen.push((hash, file.path.clone()));
-        let in_library = candidates.iter().find(|c| {
-            let cached = library_hashes.entry((*c).clone()).or_insert_with(|| {
-                hash_file(c)
-                    .map_err(|source| {
-                        plan.library_failures.push(ScanError { path: (*c).clone(), source })
-                    })
-                    .ok()
-            });
-            *cached == Some(hash)
-        });
+        let mut in_library = None;
+        for candidate in candidates {
+            let cached = match library_hashes.get(candidate) {
+                Some(cached) => *cached,
+                None => {
+                    let cached = match hash_file_with(candidate, &cancel, |_| {}) {
+                        Ok(Some(hash)) => Some(hash),
+                        Ok(None) => {
+                            tracker.finish(true);
+                            return Err(PlanError::Cancelled);
+                        }
+                        Err(source) => {
+                            plan.library_failures
+                                .push(ScanError { path: candidate.clone(), source });
+                            None
+                        }
+                    };
+                    library_hashes.insert(candidate.clone(), cached);
+                    cached
+                }
+            };
+            if cached == Some(hash) {
+                in_library = Some(candidate);
+                break;
+            }
+        }
         match in_library {
             Some(library_file) => plan
                 .skipped
                 .push(Skipped { file: file.clone(), library_file: library_file.clone() }),
             None => plan.to_copy.push(file.clone()),
         }
+        tracker.file_done(&file.path);
     }
+    tracker.finish(false);
     Ok(plan)
 }
 

@@ -37,6 +37,7 @@ Why: one line.
 - DEC-018 2026-10-28 — exFAT: locked check + rename when no-replace rename is unsupported
 - DEC-019 2026-10-28 — exFAT fallback details left open by DEC-018
 - DEC-020 2026-10-28 — copy hardening details left open by S013
+- DEC-021 2026-10-28 — progress and cancel details left open by S005
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -260,3 +261,32 @@ Why: each is the smallest choice that keeps the prime directive.
 Known limit (S013 fast check): the INV-3 flush test proves that each flush
 call is present, but not that it really flushes. Replacing one with `Ok(())`
 stays green, and no hook can observe an fsync.
+
+## DEC-021  2026-10-28  progress and cancel details left open by S005
+Tags: progress, cancel, api
+Decision: agent's pick in S005, not yet confirmed by the user.
+(1) API: `plan_sync` and `copy_plan` take a `&mut Monitor`, which holds a
+`Send` observer `FnMut(Event)`, a `Cancel` (a shared `Arc<AtomicBool>`) and
+an injectable clock. Each event carries a full `Progress` snapshot (overall
+and per source, elapsed, ETA), so front-ends keep no counts. Rejected: a
+trait observer (a closure is enough, and forwards to a channel in one line).
+(2) Planning progress counts only the source files to hash. Library
+candidates are hashed while their source file is current, cancellable but
+uncounted: which ones get hashed is known only as it runs. Each is the same
+name and size as its source file, so the ETA stays about right.
+(3) A file that fails counts as done with its whole size, so done meets
+total at the end. Bytes count up to the scanned size.
+(4) One `Bytes` event per 1 MiB chunk; the core does not throttle, the
+front-end may.
+(5) Cancel is checked between files and before each chunk read, never
+between verify and rename: a file past its last read finishes. A file cut
+short loses its temp file; it and every later file go to the new
+`CopyOutcome::cancelled`, not to `failed`. A cancelled plan returns
+`PlanError::Cancelled`. `copy_plan` still removes stale temps when cancelled
+at once.
+(6) ETA is `elapsed * (total - done) / done` over bytes, per phase, `None`
+until a byte is done.
+(7) Copy progress finds a file's source by the deepest root holding it,
+from the new `SyncPlan::sources`.
+Why: each is the smallest choice that serves the CLI, TUI and a GUI worker
+thread alike, and none touches the prime directive.

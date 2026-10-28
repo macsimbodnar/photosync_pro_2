@@ -5,6 +5,7 @@ mod copy;
 mod hash;
 mod library;
 mod plan;
+mod progress;
 mod source;
 
 pub use copy::{
@@ -12,6 +13,7 @@ pub use copy::{
     copy_plan, remove_stale_temps, sync_folder,
 };
 pub use plan::{Duplicate, PlanError, Skipped, SyncPlan, plan_sync};
+pub use progress::{Cancel, Counts, Event, EventKind, Monitor, Phase, Progress, SourceProgress, eta};
 pub use source::{MediaType, ScanError, SourceFile, SourceScan, scan_source};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

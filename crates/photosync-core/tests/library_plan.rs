@@ -4,7 +4,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use photosync_core::{Duplicate, PlanError, Skipped, SourceScan, SyncPlan, plan_sync, scan_source};
+use photosync_core::{
+    Duplicate, Monitor, PlanError, Skipped, SourceScan, SyncPlan, plan_sync, scan_source,
+};
 
 mod common;
 use common::{TempDir, at, manifest, write_file};
@@ -46,7 +48,7 @@ fn same_name_size_and_hash_anywhere_in_library_is_skipped() {
     put(&lib, &[("2025-01-01 - Old/RAW/DSCF0001.RAF", b"raw one")]);
     let sources = [scan(&card)];
 
-    let plan = plan_sync(&lib, &sources).unwrap();
+    let plan = plan_sync(&lib, &sources, &mut Monitor::default()).unwrap();
 
     assert_eq!(
         plan.skipped,
@@ -68,7 +70,7 @@ fn same_name_and_size_with_different_content_is_not_skipped() {
     put(&lib, &[("2025-01-01/RAW/DSCF0001.RAF", b"old shot")]);
     let sources = [scan(&card)];
 
-    let plan = plan_sync(&lib, &sources).unwrap();
+    let plan = plan_sync(&lib, &sources, &mut Monitor::default()).unwrap();
 
     assert!(plan.skipped.is_empty());
     assert_eq!(paths(&plan.to_copy), [card.join("DCIM/100_FUJI/DSCF0001.RAF")]);
@@ -85,7 +87,7 @@ fn large_file_differing_in_last_byte_is_not_skipped() {
     *bytes.last_mut().unwrap() ^= 1;
     put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", &bytes)]);
 
-    let plan = plan_sync(&lib, &[scan(&card)]).unwrap();
+    let plan = plan_sync(&lib, &[scan(&card)], &mut Monitor::default()).unwrap();
 
     assert!(plan.skipped.is_empty());
     assert_eq!(plan.to_copy.len(), 1);
@@ -98,7 +100,7 @@ fn same_content_under_another_name_is_not_skipped() {
     put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
     put(&lib, &[("2025-01-01/RAW/DSCF9999.RAF", b"raw")]);
 
-    let plan = plan_sync(&lib, &[scan(&card)]).unwrap();
+    let plan = plan_sync(&lib, &[scan(&card)], &mut Monitor::default()).unwrap();
 
     assert!(plan.skipped.is_empty());
     assert_eq!(plan.to_copy.len(), 1);
@@ -115,7 +117,7 @@ fn file_on_two_sources_is_planned_once() {
     fs::create_dir(&lib).unwrap();
     let sources = [scan(&a), scan(&b)];
 
-    let plan = plan_sync(&lib, &sources).unwrap();
+    let plan = plan_sync(&lib, &sources, &mut Monitor::default()).unwrap();
 
     assert_eq!(
         paths(&plan.to_copy),
@@ -141,7 +143,7 @@ fn file_on_two_sources_already_in_library_is_skipped_once() {
     put(&lib, &[("2025-01-01/RAW/DSCF0001.RAF", b"same")]);
     let sources = [scan(&a), scan(&b)];
 
-    let plan = plan_sync(&lib, &sources).unwrap();
+    let plan = plan_sync(&lib, &sources, &mut Monitor::default()).unwrap();
 
     assert!(plan.to_copy.is_empty());
     assert_eq!(plan.skipped.len(), 1);
@@ -158,7 +160,7 @@ fn photosync_temp_file_does_not_count_as_synced() {
     put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
     put(&lib, &[("2026-10-28/RAW/.photosync-tmp-DSCF0001.RAF", b"raw")]);
 
-    let plan = plan_sync(&lib, &[scan(&card)]).unwrap();
+    let plan = plan_sync(&lib, &[scan(&card)], &mut Monitor::default()).unwrap();
 
     assert!(plan.skipped.is_empty());
     assert_eq!(plan.to_copy.len(), 1);
@@ -186,14 +188,14 @@ fn inv9_planning_writes_nothing() {
     // under it, even one deleted again, changes a folder mtime or a path.
     let before = manifest(&dir.0);
 
-    let plan = plan_sync(&lib, &sources).unwrap();
+    let plan = plan_sync(&lib, &sources, &mut Monitor::default()).unwrap();
 
     assert_eq!((plan.skipped.len(), plan.duplicates.len(), plan.to_copy.len()), (1, 1, 3));
     assert_eq!(manifest(&dir.0), before);
 }
 
 fn refused(library: &Path, sources: &[SourceScan]) -> PlanError {
-    plan_sync(library, sources).unwrap_err()
+    plan_sync(library, sources, &mut Monitor::default()).unwrap_err()
 }
 
 #[test]
@@ -292,7 +294,7 @@ fn only_name_and_size_candidates_are_hashed() {
     let _src = Mode::set(&card.join("DCIM/100_FUJI/DSCF0001.RAF"), 0o000);
     let _lib = Mode::set(&lib.join("2025-01-01/RAW/DSCF0999.RAF"), 0o000);
 
-    let plan = plan_sync(&lib, &[scan(&card)]).unwrap();
+    let plan = plan_sync(&lib, &[scan(&card)], &mut Monitor::default()).unwrap();
 
     assert_eq!(paths(&plan.to_copy), [card.join("DCIM/100_FUJI/DSCF0001.RAF")]);
     assert!(plan.failures.is_empty() && plan.library_failures.is_empty());
@@ -309,7 +311,7 @@ fn unreadable_source_file_fails_that_file_only() {
     let _mode = Mode::set(&locked, 0o000);
     let sources = [scan(&card)];
 
-    let plan = plan_sync(&lib, &sources).unwrap();
+    let plan = plan_sync(&lib, &sources, &mut Monitor::default()).unwrap();
 
     assert_eq!(plan.failures.len(), 1);
     assert_eq!(plan.failures[0].path, locked);
@@ -329,7 +331,7 @@ fn unreadable_library_file_is_a_library_failure_and_the_file_is_planned() {
     let locked = lib.join("2025-01-01/RAW/DSCF0001.RAF");
     let _mode = Mode::set(&locked, 0o000);
 
-    let plan = plan_sync(&lib, &[scan(&card)]).unwrap();
+    let plan = plan_sync(&lib, &[scan(&card)], &mut Monitor::default()).unwrap();
 
     assert_eq!(plan.library_failures.len(), 1);
     assert_eq!(plan.library_failures[0].path, locked);
@@ -347,7 +349,7 @@ fn unreadable_library_folder_is_a_library_failure() {
     let locked = lib.join("2025-01-01");
     let _mode = Mode::set(&locked, 0o000);
 
-    let plan = plan_sync(&lib, &[scan(&card)]).unwrap();
+    let plan = plan_sync(&lib, &[scan(&card)], &mut Monitor::default()).unwrap();
 
     assert_eq!(plan.library_failures.len(), 1);
     assert_eq!(plan.library_failures[0].path, locked);
@@ -374,7 +376,7 @@ fn trashed_and_hidden_library_files_do_not_count_as_synced() {
     ]);
     let sources = [scan(&card)];
 
-    let plan = plan_sync(&lib, &sources).unwrap();
+    let plan = plan_sync(&lib, &sources, &mut Monitor::default()).unwrap();
 
     assert!(plan.skipped.is_empty(), "skipped: {:?}", plan.skipped);
     assert_eq!(plan.to_copy.len(), 4);

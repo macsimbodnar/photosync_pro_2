@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use photosync_core::{
-    CopyError, CopyOutcome, FailReason, FolderError, SyncFolder, SyncPlan, copy_plan,
+    CopyError, CopyOutcome, FailReason, FolderError, Monitor, SyncFolder, SyncPlan, copy_plan,
     plan_sync, remove_stale_temps, scan_source, sync_folder,
 };
 
@@ -25,7 +25,7 @@ fn put(root: &Path, files: &[(&str, &[u8])]) {
 }
 
 fn plan(card: &Path, lib: &Path) -> SyncPlan {
-    plan_sync(lib, &[scan_source(card).unwrap()]).unwrap()
+    plan_sync(lib, &[scan_source(card).unwrap()], &mut Monitor::default()).unwrap()
 }
 
 fn folder(plan: &SyncPlan, name: Option<&str>) -> SyncFolder {
@@ -36,10 +36,11 @@ fn folder(plan: &SyncPlan, name: Option<&str>) -> SyncFolder {
 fn sync(card: &Path, lib: &Path, name: Option<&str>) -> (SyncPlan, CopyOutcome) {
     let plan = plan(card, lib);
     let outcome = match sync_folder(&plan, name).unwrap() {
-        Some(folder) => copy_plan(&plan, &folder).unwrap(),
+        Some(folder) => copy_plan(&plan, &folder, &mut Monitor::default()).unwrap(),
         None => CopyOutcome {
             copied: Vec::new(),
             failed: Vec::new(),
+            cancelled: Vec::new(),
             temps: remove_stale_temps(lib),
         },
     };
@@ -74,7 +75,7 @@ fn folder_is_the_earliest_new_file_date_with_the_name() {
     // Fixing the folder writes nothing.
     assert!(!lib.join(&date).exists() && !lib.join(format!("{date} - Tirana")).exists());
 
-    let outcome = copy_plan(&plan, &folder(&plan, Some("Tirana"))).unwrap();
+    let outcome = copy_plan(&plan, &folder(&plan, Some("Tirana")), &mut Monitor::default()).unwrap();
     let session = lib.join(format!("{date} - Tirana/RAW"));
     assert_eq!(copied_to(&outcome), [session.join("DSCF0002.RAF"), session.join("DSCF0003.RAF")]);
     assert_eq!(fs::read(session.join("DSCF0003.RAF")).unwrap(), b"earliest new");
@@ -375,7 +376,7 @@ fn folder_from_another_library_is_refused() {
     fs::create_dir_all(&other).unwrap();
     let for_other = folder(&plan(&card, &other), None);
 
-    let err = copy_plan(&plan(&card, &lib), &for_other).unwrap_err();
+    let err = copy_plan(&plan(&card, &lib), &for_other, &mut Monitor::default()).unwrap_err();
 
     assert!(matches!(err, CopyError::LibraryMismatch { .. }));
     assert_eq!(manifest(&other), Default::default());

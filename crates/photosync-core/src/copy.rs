@@ -12,16 +12,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::hash::hash_file;
+use crate::hash::{CHUNK, hash_file};
 use crate::plan::SyncPlan;
+use crate::progress::{Cancel, Monitor, Phase, Tracker, source_of};
 use crate::source::{ScanError, SourceFile};
 
 /// Every temp file photosync writes starts with this. The library scan skips
 /// it, and the next sync deletes it.
 const TEMP_PREFIX: &str = ".photosync-tmp-";
-
-/// Large enough to keep a card reader streaming, small enough to hold.
-const CHUNK: usize = 1 << 20;
 
 /// The session's `<date>[ - <name>]` folder in the library, fixed once from
 /// the session's first plan (DEC-009). Nothing is created until a file is
@@ -164,6 +162,10 @@ pub struct CopyOutcome {
     pub copied: Vec<Copied>,
     /// Not copied, with the reason. Nothing is left under a final name.
     pub failed: Vec<Failed>,
+    /// Not copied because of a cancel, in plan order: the file cut short
+    /// (its temp file removed) and every file after it. Nothing is left
+    /// under a final name (INV-7).
+    pub cancelled: Vec<SourceFile>,
     /// Stale temp files removed at the start, and temp files that could not
     /// be removed.
     pub temps: TempCleanup,
@@ -274,25 +276,63 @@ pub struct TempCleanup {
 /// Copies every file in `plan.to_copy` into `folder`, one at a time. Stale
 /// temp files in the library are removed first. A failure fails that file
 /// only; the outcome lists each file once.
-pub fn copy_plan(plan: &SyncPlan, folder: &SyncFolder) -> Result<CopyOutcome, CopyError> {
+///
+/// Progress counts the files in `plan.to_copy` (`Phase::Copying`). A cancel
+/// is checked between files and before each chunk read: a file cut short
+/// loses its temp file, and it and the rest go to `cancelled`. A file past
+/// its last read finishes.
+pub fn copy_plan(
+    plan: &SyncPlan,
+    folder: &SyncFolder,
+    monitor: &mut Monitor,
+) -> Result<CopyOutcome, CopyError> {
     if plan.library != folder.library {
         return Err(CopyError::LibraryMismatch {
             plan: plan.library.clone(),
             folder: folder.library.clone(),
         });
     }
-    let mut outcome =
-        CopyOutcome { copied: Vec::new(), failed: Vec::new(), temps: remove_stale_temps(&folder.library) };
+    let mut outcome = CopyOutcome {
+        copied: Vec::new(),
+        failed: Vec::new(),
+        cancelled: Vec::new(),
+        temps: remove_stale_temps(&folder.library),
+    };
+    let source = |file: &SourceFile| source_of(&plan.sources, &file.path);
+    let files = plan.to_copy.iter().map(|f| (source(f), f.size));
+    let mut tracker = Tracker::start(monitor, Phase::Copying, &plan.sources, files);
+    let cancel = tracker.cancel();
     let mut ready = Vec::new();
-    // One file at a time: progress events and a cancel check (S005) go
-    // between files and between chunks in `fill_and_verify`.
-    for file in &plan.to_copy {
-        match copy_file(file, folder, &mut ready, &mut outcome.temps) {
-            Ok(to) => outcome.copied.push(Copied { file: file.clone(), to }),
-            Err(reason) => outcome.failed.push(Failed { file: file.clone(), reason }),
+    for (i, file) in plan.to_copy.iter().enumerate() {
+        if cancel.is_cancelled() {
+            outcome.cancelled.extend_from_slice(&plan.to_copy[i..]);
+            break;
         }
+        tracker.file_started(&file.path, source(file), file.size);
+        match copy_file(file, folder, &mut ready, &mut outcome.temps, &cancel, &mut tracker) {
+            Ok(to) => outcome.copied.push(Copied { file: file.clone(), to }),
+            Err(Stop::Failed(reason)) => outcome.failed.push(Failed { file: file.clone(), reason }),
+            Err(Stop::Cancelled) => {
+                outcome.cancelled.extend_from_slice(&plan.to_copy[i..]);
+                break;
+            }
+        }
+        tracker.file_done(&file.path);
     }
+    tracker.finish(!outcome.cancelled.is_empty());
     Ok(outcome)
+}
+
+/// Why one file's copy stopped short.
+enum Stop {
+    Failed(FailReason),
+    Cancelled,
+}
+
+impl From<FailReason> for Stop {
+    fn from(reason: FailReason) -> Stop {
+        Stop::Failed(reason)
+    }
 }
 
 /// Deletes every `.photosync-tmp-*` file under `library`: what an
@@ -350,9 +390,11 @@ fn copy_file(
     folder: &SyncFolder,
     ready: &mut Vec<PathBuf>,
     temps: &mut TempCleanup,
-) -> Result<PathBuf, FailReason> {
+    cancel: &Cancel,
+    tracker: &mut Tracker,
+) -> Result<PathBuf, Stop> {
     let (Some(media), Some(name)) = (file.media_type, file.path.file_name()) else {
-        return Err(FailReason::Unsupported);
+        return Err(FailReason::Unsupported.into());
     };
     let dir = folder.path.join(media.dir_name());
     if !ready.contains(&dir) {
@@ -362,9 +404,9 @@ fn copy_file(
     let target = dir.join(name);
     // Saves reading the card; the rename below is what actually guards.
     match fs::symlink_metadata(&target) {
-        Ok(_) => return Err(FailReason::NameCollision { existing: target }),
+        Ok(_) => return Err(FailReason::NameCollision { existing: target }.into()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(FailReason::Write { path: target, error: e }),
+        Err(e) => return Err(FailReason::Write { path: target, error: e }.into()),
     }
 
     let temp = dir.join(temp_name(name));
@@ -373,13 +415,13 @@ fn copy_file(
         .create_new(true)
         .open(&temp)
         .map_err(write_error(&temp))?;
-    // From here the temp file is ours: every failure removes it.
-    let placed = fill_and_verify(file, out, &temp, &dir).and_then(|()| {
+    // From here the temp file is ours: every failure and a cancel remove it.
+    let placed = fill_and_verify(file, out, &temp, &dir, cancel, tracker).and_then(|()| {
         rename_noreplace(&temp, &target).map_err(|error| {
             if error.kind() == io::ErrorKind::AlreadyExists {
-                FailReason::NameCollision { existing: target.clone() }
+                FailReason::NameCollision { existing: target.clone() }.into()
             } else {
-                FailReason::Write { path: target.clone(), error }
+                FailReason::Write { path: target.clone(), error }.into()
             }
         })
     });
@@ -394,7 +436,7 @@ fn copy_file(
     // the file does not count as copied yet (INV-3).
     match synced(Stage::RenameSynced, &target, sync_dir(&dir)) {
         Ok(()) => Ok(target),
-        Err(error) => Err(FailReason::NotFlushed { to: target, error }),
+        Err(error) => Err(FailReason::NotFlushed { to: target, error }.into()),
     }
 }
 
@@ -434,28 +476,39 @@ fn temp_name(name: &OsStr) -> OsString {
 
 /// Streams the source into `out` while hashing what was read, flushes file
 /// and folder, then checks the copy's hash against it (INV-3). The card is
-/// read once.
-fn fill_and_verify(file: &SourceFile, mut out: File, temp: &Path, dir: &Path) -> Result<(), FailReason> {
+/// read once. `cancel` is checked before each read.
+fn fill_and_verify(
+    file: &SourceFile,
+    mut out: File,
+    temp: &Path,
+    dir: &Path,
+    cancel: &Cancel,
+    tracker: &mut Tracker,
+) -> Result<(), Stop> {
     let mut src = File::open(&file.path).map_err(FailReason::Read)?;
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0; CHUNK];
     loop {
+        if cancel.is_cancelled() {
+            return Err(Stop::Cancelled);
+        }
         let n = match injected(Fault::Read).and_then(|()| src.read(&mut buf)) {
             Ok(0) => break,
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(FailReason::Read(e)),
+            Err(e) => return Err(FailReason::Read(e).into()),
         };
         hasher.update(&buf[..n]);
         out.write_all(&buf[..n]).map_err(write_error(temp))?;
         at_stage(Stage::Written, temp);
+        tracker.bytes(n as u64);
     }
     synced(Stage::FileSynced, temp, out.sync_all()).map_err(write_error(temp))?;
     drop(out);
     synced(Stage::DirSynced, temp, sync_dir(dir)).map_err(write_error(dir))?;
     // The read may come from the OS cache (DEC-012).
     if hash_file(temp).map_err(write_error(temp))? != hasher.finalize() {
-        return Err(FailReason::Mismatch);
+        return Err(FailReason::Mismatch.into());
     }
     at_stage(Stage::Verified, temp);
     Ok(())
@@ -675,9 +728,9 @@ mod tests {
 
     /// Plans and copies `card` into `lib` as a sync named "Trip".
     fn sync(card: &Path, lib: &Path) -> (SyncPlan, CopyOutcome) {
-        let plan = plan_sync(lib, &[scan_source(card).unwrap()]).unwrap();
+        let plan = plan_sync(lib, &[scan_source(card).unwrap()], &mut Monitor::default()).unwrap();
         let folder = sync_folder(&plan, Some("Trip")).unwrap().unwrap();
-        let outcome = copy_plan(&plan, &folder).unwrap();
+        let outcome = copy_plan(&plan, &folder, &mut Monitor::default()).unwrap();
         (plan, outcome)
     }
 
@@ -751,6 +804,59 @@ mod tests {
             assert_eq!(rerun.temps.removed.len(), usize::from(!renamed), "{kill_at:?}");
             assert_eq!(fs::read(raw.join("DSCF0002.RAF")).unwrap(), two, "{kill_at:?}");
             assert!(temps_under(&lib).is_empty(), "{kill_at:?}");
+        }
+    }
+
+    /// A cancel set at any point of the second file's copy: that file is
+    /// either complete under its final name (past its last read, so it
+    /// finishes) or absent with no temp left, and nothing after it starts.
+    #[test]
+    fn inv7_cancel_at_any_stage_leaves_no_partial_final_file_and_no_temp() {
+        let stages = [
+            Stage::Written,
+            Stage::FileSynced,
+            Stage::DirSynced,
+            Stage::Verified,
+            Stage::Renamed,
+            Stage::RenameSynced,
+        ];
+        for cancel_at in stages {
+            let dir = TempDir::new();
+            let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+            fs::create_dir_all(&lib).unwrap();
+            let (one, two) = card_with_two_files(&card);
+            write_file(&card, "DCIM/100_FUJI/DSCF0003.RAF", b"third raw", at(1_700_000_200));
+            let plan = plan_sync(&lib, &[scan_source(&card).unwrap()], &mut Monitor::default()).unwrap();
+            let folder = sync_folder(&plan, Some("Trip")).unwrap().unwrap();
+
+            let cancel = Cancel::new();
+            let flag = cancel.clone();
+            set_hook(move |stage, path| {
+                if stage == cancel_at && path.to_string_lossy().contains("DSCF0002") {
+                    flag.cancel();
+                }
+            });
+            let outcome = copy_plan(&plan, &folder, &mut Monitor::new(cancel, |_| {}));
+            clear_hook();
+            let outcome = outcome.unwrap();
+
+            let raw = folder.path().join("RAW");
+            assert_eq!(fs::read(raw.join("DSCF0001.RAF")).unwrap(), one, "{cancel_at:?}");
+            assert!(temps_under(&lib).is_empty(), "{cancel_at:?}: temp left");
+            assert!(outcome.failed.is_empty(), "{cancel_at:?}: {:?}", outcome.failed);
+            assert!(!raw.join("DSCF0003.RAF").exists(), "{cancel_at:?}: went past the cancel");
+            let cancelled: Vec<&Path> = outcome.cancelled.iter().map(|f| f.path.as_path()).collect();
+            let three = card.join("DCIM/100_FUJI/DSCF0003.RAF");
+            if cancel_at == Stage::Written {
+                // Cut short after its first chunk: the partial temp is gone.
+                assert!(!raw.join("DSCF0002.RAF").exists(), "{cancel_at:?}");
+                assert_eq!(outcome.copied.len(), 1, "{cancel_at:?}");
+                assert_eq!(cancelled, [card.join("DCIM/100_FUJI/DSCF0002.RAF"), three]);
+            } else {
+                assert_eq!(fs::read(raw.join("DSCF0002.RAF")).unwrap(), two, "{cancel_at:?}");
+                assert_eq!(outcome.copied.len(), 2, "{cancel_at:?}");
+                assert_eq!(cancelled, [three.as_path()], "{cancel_at:?}");
+            }
         }
     }
 

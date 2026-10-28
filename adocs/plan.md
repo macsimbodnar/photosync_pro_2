@@ -17,12 +17,11 @@ not change the order.
 
 ## Open
 
-1. S005  progress events, ETA, cancel
-2. S006  sync report
-3. S007  volume discovery (Mac, then Linux)
-4. S008  CLI commands
-5. S009  TUI
-6. S010  multi-source and one-by-one session
+1. S006  sync report
+2. S007  volume discovery (Mac, then Linux)
+3. S008  CLI commands
+4. S009  TUI
+5. S010  multi-source and one-by-one session
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.
@@ -31,8 +30,8 @@ Linux verification.
 
 Last five; the full record is `plan_done/`.
 
+- S005  progress events, ETA, cancel
 - S013  copy engine hardening (S004 fast check)
 - S012  exFAT: locked check + rename fallback
 - S004  copy engine: folder naming, temp copy, verify, rename
 - S003  in-memory library scan, already-synced detection
-- S011  scan: per-file errors instead of whole-source failure
