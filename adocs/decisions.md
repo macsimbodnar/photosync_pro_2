@@ -29,6 +29,7 @@ Why: one line.
 - DEC-010 2026-10-28 — already-synced scan covers the library folder only
 - DEC-011 2026-10-28 — iced: approved dependency, tentative GUI choice
 - DEC-012 2026-10-28 — copy verification may read from the OS cache
+- DEC-013 2026-10-28 — name collision fails the file; never rename
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -132,3 +133,14 @@ still come from the OS page cache. Bypassing the cache is not portable, so
 this is a known limit, not a defect. For audit 2026-10-28_adversarial-F06.
 Why: fsync covers the real unplug risk; a cache bypass costs portability for
 little gain.
+
+## DEC-013  2026-10-28  name collision fails the file; never rename
+Tags: layout, dedup
+Decision: user chose that a different file with the same name already in
+the target folder is not copied; it is reported as failed "name
+collision". Rejected: an `_N` suffix (breaks dedup by name, audit
+2026-10-28_adversarial-F01, and changes camera names), and dedup by content
+only (on uncompressed RAF, hashes the whole library every sync). For
+F01, planned in S004.
+Why: camera names stay untouched, and dedup by name + size + hash stays
+correct.

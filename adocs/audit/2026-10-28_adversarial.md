@@ -14,7 +14,7 @@ toolchain is at `~/.cargo/bin` and is not on the default PATH.
 
 ## 2026-10-28_adversarial-F01  High  Dedup by camera name breaks INV-4 for every file renamed on collision
 
-Status: open
+Status: planned
 
 **Evidence**: `adocs/specs.md` Layout: "If the target folder already holds a
 different file with the same name (the counter wraps at `DSCF9999`), the new

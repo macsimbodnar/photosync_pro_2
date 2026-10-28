@@ -107,17 +107,18 @@ picks. It is simple to use.
   read as local time.
 - `<name>` is the optional name the user gives the sync, e.g. "Tirana":
   `2026-10-28 - Tirana/RAW/DSCF1234.RAF`. With no name: `2026-10-28/RAW/...`.
-- If that folder already exists, new files are added to it (with collision
-  suffixes as below).
+- If that folder already exists, new files are added to it (name collisions
+  as below).
 - `<TYPE>` and the extensions that map to it (case-insensitive):
   - `RAW`: `.RAF`
   - `JPEG`: `.JPG`, `.JPEG`
   - `HEIF`: `.HIF`, `.HEIF`
   - `VIDEO`: `.MOV`, `.MP4`
 - Other files on the card are ignored and counted in the report.
-- File names are the camera's own. If the target folder already holds a
-  different file with the same name (the counter wraps at `DSCF9999`), the
-  new file gets a suffix, `DSCF1234_1.RAF`, and the report says so.
+- File names are the camera's own and are never changed. If the target
+  folder already holds a different file with the same name (counter wrap or
+  reset), the new file is not copied. It is reported as failed with reason
+  "name collision". The user can re-sync it under another name (DEC-013).
 
 ### Already-synced detection
 
@@ -139,7 +140,7 @@ picks. It is simple to use.
 ### Report
 
 - At the end, shows what was done: copied, skipped (already on drive),
-  renamed on collision, ignored types, and failed with a reason. Totals per
+  ignored types, and failed with a reason (name collisions included). Totals per
   source and per type.
 
 ## Non-goals
