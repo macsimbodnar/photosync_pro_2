@@ -5,5 +5,5 @@ touches:    photosync-core
 excludes:   formatting for display
 closes:
 paused_by:
-author:
-done:
+author:     Claude agent (2026-10-28)
+done:       2026-10-28, Claude agent. New `Report` (src/report.rs): `Report::new(scans, plan, outcome)`, `Report::plan_cancelled(scans)`, `CopyOutcome::nothing_to_copy(temps)`, totals per source/type/overall; `SourceScan::failed_folders` added for "contents unknown". INV-6 and Report wording amended in specs; choices in DEC-022. Proven by tests/report.rs (inv6_holds_per_source_over_every_kind_of_outcome, inv6_holds_with_collisions_duplicates_ignored_and_cancelled, unreadable_scan_entries_are_listed_and_only_folders_have_unknown_contents, cancelled_plan_reports_every_supported_file_as_cancelled, nothing_to_copy_still_reports_every_file_and_the_temp_cleanup, report_refuses_a_plan_or_outcome_that_does_not_match_the_scans) and tests/progress.rs plan_cancelled_before_it_starts_sends_no_file_or_bytes_events. cargo test --workspace green, clippy clean, scripts/test_exfat.sh exit 0 with no image left mounted (the two Mode-based report tests added to its skip list).

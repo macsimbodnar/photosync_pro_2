@@ -38,6 +38,7 @@ Why: one line.
 - DEC-019 2026-10-28 — exFAT fallback details left open by DEC-018
 - DEC-020 2026-10-28 — copy hardening details left open by S013
 - DEC-021 2026-10-28 — progress and cancel details left open by S005
+- DEC-022 2026-10-28 — sync report details left open by S006
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -290,3 +291,36 @@ until a byte is done.
 from the new `SyncPlan::sources`.
 Why: each is the smallest choice that serves the CLI, TUI and a GUI worker
 thread alike, and none touches the prime directive.
+
+## DEC-022  2026-10-28  sync report details left open by S006
+Tags: report, api, failures
+Decision: agent's pick in S006, not yet confirmed by the user.
+(1) API: `Report::new(scans, plan, outcome)` takes the scans, plan and
+`CopyOutcome` by value, so each reason keeps its `io::Error` (not `Clone`)
+and the report can move to a GUI thread. Totals (`Tally`, files and bytes
+per bucket) are computed from the entries, never stored, per source, per
+type and overall. Rejected: a report that borrows (ties it to the inputs'
+lifetime).
+(2) Nothing to copy (`sync_folder` gives `None`): the caller runs
+`remove_stale_temps` and passes `CopyOutcome::nothing_to_copy(temps)`.
+(3) A cancelled plan (`PlanError::Cancelled`): `Report::plan_cancelled(scans)`
+reports every supported file as cancelled, with no library failures or
+temp cleanup, as nothing ran past planning.
+(4) A read error while planning becomes `FailReason::Read` in the report,
+like one while copying.
+(5) `Report::new` refuses inputs that break INV-6: a file the scans do not
+hold (`ReportError::NotInScans`), or a supported file in neither the plan
+nor the outcome (`ReportError::Unaccounted`). Rejected: trusting the caller
+(a mixed-up plan would give a silently wrong report).
+(6) Scan failures are listed per source, outside the sum. "Contents unknown"
+marks a folder whose listing failed and an entry whose type could not be
+read (it may be a folder), from the new `SourceScan::failed_folders`. An
+entry the listing types as a file is just that entry.
+(7) Per-type totals cover supported files only; ignored files have no type
+and are in the per-source and overall totals.
+(8) Library failures and the temp cleanup are carried in the report.
+(9) A source given twice fills the twin scans' slots in plan order, so its
+entries may land on the other twin; the count per source still holds. S010
+refuses a duplicate root.
+Why: each is the smallest choice that keeps INV-6 checkable and serves the
+CLI, TUI and GUI alike; none touches the prime directive.

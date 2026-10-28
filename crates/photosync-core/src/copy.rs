@@ -155,7 +155,8 @@ fn local_date(_: SystemTime) -> io::Result<String> {
 }
 
 /// What `copy_plan` did. With the plan's `skipped`, `duplicates` and
-/// `failures`, every supported source file is in exactly one list (INV-6).
+/// `failures`, every supported source file is in exactly one list (INV-6);
+/// `Report::new` joins them.
 #[derive(Debug)]
 pub struct CopyOutcome {
     /// Verified and in place under its final name, in plan order.
@@ -169,6 +170,15 @@ pub struct CopyOutcome {
     /// Stale temp files removed at the start, and temp files that could not
     /// be removed.
     pub temps: TempCleanup,
+}
+
+impl CopyOutcome {
+    /// The outcome of a plan with nothing to copy, where `copy_plan` cannot
+    /// run (no folder): only the stale temp cleanup, from
+    /// `remove_stale_temps`, which the caller runs instead.
+    pub fn nothing_to_copy(temps: TempCleanup) -> CopyOutcome {
+        CopyOutcome { copied: Vec::new(), failed: Vec::new(), cancelled: Vec::new(), temps }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

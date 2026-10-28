@@ -403,3 +403,19 @@ fn monitor_events_and_cancel_can_cross_threads() {
     assert_eq!(outcome.copied.len(), 1);
     assert!(!cancel.is_cancelled());
 }
+
+#[test]
+fn plan_cancelled_before_it_starts_sends_no_file_or_bytes_events() {
+    let dir = TempDir::new();
+    let (_, lib, scans) = backup_cards(&dir.0);
+    let cancel = Cancel::new();
+    cancel.cancel();
+    let (mut monitor, events) = recorder(&cancel, |_, _| {});
+
+    let result = plan_sync(&lib, &scans, &mut monitor);
+    drop(monitor);
+
+    assert!(matches!(result, Err(PlanError::Cancelled)), "{result:?}");
+    let kinds: Vec<EventKind> = events.lock().unwrap().iter().map(|e| e.kind.clone()).collect();
+    assert_eq!(kinds, [EventKind::Started, EventKind::Cancelled]);
+}

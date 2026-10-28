@@ -233,7 +233,7 @@ impl<'m, 'a> Tracker<'m, 'a> {
     }
 }
 
-fn add(counts: &mut Counts, files: u64, bytes: u64) {
+pub(crate) fn add(counts: &mut Counts, files: u64, bytes: u64) {
     counts.files += files;
     counts.bytes = counts.bytes.saturating_add(bytes);
 }

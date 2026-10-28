@@ -6,6 +6,7 @@ mod hash;
 mod library;
 mod plan;
 mod progress;
+mod report;
 mod source;
 
 pub use copy::{
@@ -14,6 +15,9 @@ pub use copy::{
 };
 pub use plan::{Duplicate, PlanError, Skipped, SyncPlan, plan_sync};
 pub use progress::{Cancel, Counts, Event, EventKind, Monitor, Phase, Progress, SourceProgress, eta};
+pub use report::{
+    Bucket, FileOutcome, FileReport, Report, ReportError, SourceReport, Tally, Unreadable,
+};
 pub use source::{MediaType, ScanError, SourceFile, SourceScan, scan_source};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

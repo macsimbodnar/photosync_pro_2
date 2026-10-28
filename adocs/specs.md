@@ -33,9 +33,16 @@ stays listed as retired.
   copies zero files the second time, whatever target folder is picked.
 - INV-5 Type separation. Every RAW file lands in a RAW folder and every JPEG
   in a JPEG folder; neither ever lands in the other.
-- INV-6 Complete report. Every supported source file appears in the report
-  exactly once, as copied, skipped (already on drive) or failed (with a
-  reason). copied + skipped + failed = supported files found.
+- INV-6 Complete report. Every file a source scan lists appears in the
+  report exactly once, with its reason. Per source: copied + skipped +
+  failed + cancelled = the supported files the scan listed. Skipped holds
+  "already on drive" and "duplicate in session", each with its own reason.
+  Failed holds read, write and verify errors and name collisions, whether
+  found while planning or copying. Cancelled holds every file a cancel left
+  uncopied; a cancelled plan reports all supported files as cancelled.
+  Ignored files are listed and counted apart, outside the sum. An entry the
+  scan could not read is listed with its error, outside the sum; a failed
+  folder is "contents unknown", and the files in it are counted nowhere.
 - INV-7 Interruption is safe. Killing the app or unplugging a device during a
   sync leaves no partial file under a final name. Re-running the sync
   finishes the job.
@@ -155,9 +162,10 @@ picks. It is simple to use.
 
 ### Report
 
-- At the end, shows what was done: copied, skipped (already on drive),
-  ignored types, and failed with a reason (name collisions included). Totals per
-  source and per type.
+- At the end, shows what was done: copied, skipped (already on drive, or
+  duplicate in session), failed with a reason (name collisions included),
+  cancelled, ignored types, and the entries the scan could not read. Totals
+  per source and per type (INV-6).
 
 ## Non-goals
 

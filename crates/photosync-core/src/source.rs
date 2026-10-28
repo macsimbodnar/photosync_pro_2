@@ -67,6 +67,10 @@ pub struct SourceScan {
     /// Only metadata is read here: a file whose data is unreadable shows up
     /// later, when it is hashed or copied.
     pub failures: Vec<ScanError>,
+    /// The paths in `failures` whose contents are unknown, sorted: a folder
+    /// whose listing failed, or an entry whose type could not be read, as it
+    /// may be a folder. What such a folder holds is in neither list.
+    pub failed_folders: Vec<PathBuf>,
 }
 
 impl SourceScan {
@@ -108,16 +112,33 @@ impl Error for ScanError {
 pub fn scan_source(root: &Path) -> Result<SourceScan, ScanError> {
     let dcim = root.join("DCIM");
     let mut files = Vec::new();
-    let mut failures = Vec::new();
+    let mut failures = Failures::default();
     walk(&dcim, &mut files, &mut failures).map_err(|source| ScanError { path: dcim, source })?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    failures.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(SourceScan { root: root.to_path_buf(), files, failures })
+    let Failures { mut errors, mut folders } = failures;
+    errors.sort_by(|a, b| a.path.cmp(&b.path));
+    folders.sort();
+    Ok(SourceScan { root: root.to_path_buf(), files, failures: errors, failed_folders: folders })
+}
+
+#[derive(Default)]
+struct Failures {
+    errors: Vec<ScanError>,
+    folders: Vec<PathBuf>,
+}
+
+impl Failures {
+    fn push(&mut self, path: PathBuf, source: io::Error, folder: bool) {
+        if folder {
+            self.folders.push(path.clone());
+        }
+        self.errors.push(ScanError { path, source });
+    }
 }
 
 /// Walks `dir`. An `Err` means `dir`'s own listing failed; the caller
 /// decides whether that fails the scan or is one more failure.
-fn walk(dir: &Path, files: &mut Vec<SourceFile>, failures: &mut Vec<ScanError>) -> io::Result<()> {
+fn walk(dir: &Path, files: &mut Vec<SourceFile>, failures: &mut Failures) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         // A broken listing cannot be trusted to go on; what it gave so far stays.
         let entry = entry?;
@@ -125,7 +146,10 @@ fn walk(dir: &Path, files: &mut Vec<SourceFile>, failures: &mut Vec<ScanError>) 
         let meta = match fs::symlink_metadata(&path) {
             Ok(meta) => meta,
             Err(source) => {
-                failures.push(ScanError { path, source });
+                // The listing usually gives the type without a stat; with no
+                // type, it may be a folder, so its contents count as unknown.
+                let folder = entry.file_type().map_or(true, |t| t.is_dir());
+                failures.push(path, source, folder);
                 continue;
             }
         };
@@ -134,14 +158,14 @@ fn walk(dir: &Path, files: &mut Vec<SourceFile>, failures: &mut Vec<ScanError>) 
         let hidden = entry.file_name().as_encoded_bytes().starts_with(b".");
         if meta.is_dir() && !hidden {
             if let Err(source) = walk(&path, files, failures) {
-                failures.push(ScanError { path, source });
+                failures.push(path, source, true);
             }
             continue;
         }
         let modified = match meta.modified() {
             Ok(modified) => modified,
             Err(source) => {
-                failures.push(ScanError { path, source });
+                failures.push(path, source, false);
                 continue;
             }
         };
