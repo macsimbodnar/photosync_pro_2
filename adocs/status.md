@@ -8,8 +8,6 @@ Updated: 2026-10-28, by Claude (S008 done, hand checks deferred)
 
 - Last done: S008  CLI commands
 - In progress: none
-  yet confirmed); waiting for the user's hand checks on Mac (real X-T5 card
-  in a reader, X-T5 over USB in card reader mode, root refusal)
 - Next: S009  TUI
 - Blocked: S017 waits for the user's hardware (DEC-029)
 - Parked:
