@@ -33,6 +33,7 @@ Why: one line.
 - DEC-014 2026-10-28 — dot-files and dot-folders on a source are ignored
 - DEC-015 2026-10-28 — unreadable library candidate: copy, do not skip
 - DEC-016 2026-10-28 — trash and hidden library entries never count as synced
+- DEC-017 2026-10-28 — copy engine details left open by the specs
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -177,3 +178,28 @@ then vanish when the trash is emptied), and refusing a volume root as the
 library (still misses hidden folders).
 Why: skipping a real copy costs only a second copy; counting a doomed one
 can lose the photo.
+
+## DEC-017  2026-10-28  copy engine details left open by the specs
+Tags: layout, safety, copy
+Decision: agent's pick in S004, not yet confirmed by the user.
+(1) Several `<any date> - <name>` folders: the earliest is reused.
+(2) Temp files are `.photosync-tmp-<pid>-<n>-<camera name>` in the target
+type folder, created only if absent. The next sync deletes regular files of
+that name wherever the library scan walks (not in dot or trash folders); a
+folder or symlink of that name is never touched. A second photosync running
+on the same library at that moment would lose its temp file, so that copy
+fails; no photo is lost.
+(3) No no-replace rename outside macOS and Linux: every copy there fails
+with an "unsupported" error. Rejected: a compile error (blocks building and
+testing the rest), a replacing rename (INV-2).
+(4) A copy whose folder flush fails after the rename is reported failed,
+though the file is in place; the next sync skips it as already synced.
+(5) The copy keeps the copy time as its mtime; the camera's mtime is not set.
+(6) INV-4 is read as: files the first sync copied or skipped are never
+copied again. A file failed for name collision is copied by a later sync
+into another folder, as Layout allows (DEC-013); into the same folder it
+fails again and nothing is copied.
+(7) The local date comes from libc `localtime_r` (DEC-008's libc); std has
+no time zones.
+Why: each is the smallest choice that keeps the prime directive; the user
+may override any of them.

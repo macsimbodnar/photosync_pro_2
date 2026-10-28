@@ -42,6 +42,20 @@ pub fn at(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
 }
 
+/// The local `YYYY-MM-DD` that `date(1)` prints for `secs` after the epoch:
+/// an independent check of the core's time zone handling.
+pub fn date_command(secs: u64) -> String {
+    let mut cmd = std::process::Command::new("date");
+    if cfg!(target_vendor = "apple") {
+        cmd.args(["-r", &secs.to_string()]);
+    } else {
+        cmd.arg(format!("-d@{secs}"));
+    }
+    let out = cmd.arg("+%Y-%m-%d").output().unwrap();
+    assert!(out.status.success(), "date failed: {out:?}");
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
 /// Every path under `root` (files and folders) with its mtime, and full
 /// contents for files. Contents stand in for INV-1's hash: stricter, and
 /// needs no hashing crate.

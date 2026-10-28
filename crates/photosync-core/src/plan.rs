@@ -18,6 +18,9 @@ use crate::source::{ScanError, SourceFile, SourceScan};
 /// in the `SourceScan`s.
 #[derive(Debug)]
 pub struct SyncPlan {
+    /// The library the plan is for, as given to `plan_sync`, which checked
+    /// it against the sources (INV-10).
+    pub library: PathBuf,
     /// New to the library, in source order, then path order.
     pub to_copy: Vec<SourceFile>,
     /// Already synced: same name, size and hash as a library file.
@@ -111,6 +114,7 @@ pub fn plan_sync(library: &Path, sources: &[SourceScan]) -> Result<SyncPlan, Pla
     }
 
     let mut plan = SyncPlan {
+        library: library.to_path_buf(),
         to_copy: Vec::new(),
         skipped: Vec::new(),
         duplicates: Vec::new(),

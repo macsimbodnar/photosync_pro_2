@@ -104,8 +104,8 @@ picks. It is simple to use.
 - `<date>` is `YYYY-MM-DD`, the earliest capture date among the new files
   of that first plan.
 - With a name: if a folder `<any date> - <name>` already exists in the
-  library, it is reused, so a re-run after an interruption lands in the same
-  folder.
+  library, it is reused (the earliest, if several; DEC-017), so a re-run
+  after an interruption lands in the same folder.
 - The capture date is the file's modification time as the camera wrote it,
   read as local time.
 - `<name>` is the optional name the user gives the sync, e.g. "Tirana":

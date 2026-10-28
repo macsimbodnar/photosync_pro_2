@@ -17,7 +17,7 @@ const SYSTEM_DIRS: &[&str] = &["$RECYCLE.BIN", "System Volume Information"];
 /// Dot entries (`.Trashes`, `.Trash`, `.Spotlight-V100`, photosync's own
 /// possibly partial `.photosync-tmp-*` files, ...) and `SYSTEM_DIRS` are skipped: ignoring a real copy only costs
 /// a second copy, while counting a doomed one could lose the photo.
-fn skipped_entry(name: &OsStr) -> bool {
+pub(crate) fn skipped_entry(name: &OsStr) -> bool {
     name.as_encoded_bytes().starts_with(b".")
         || SYSTEM_DIRS.iter().any(|d| name.eq_ignore_ascii_case(d))
 }
