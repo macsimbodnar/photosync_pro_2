@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-28, by Claude (S001 done)
+Updated: 2026-10-28, by Claude agent (S002 done)
 
-- Last done: S001  workspace skeleton and test suite
+- Last done: S002  scan source DCIM, classify by type
 - In progress: none
-- Next: S002  scan source DCIM, classify by type
+- Next: S003  in-memory library scan, already-synced detection
 - Blocked: none
 - Parked:
   - The camera's PTP mode (USB without card-reader mode) is unsupported
