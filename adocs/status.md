@@ -4,13 +4,18 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-28, by Claude agent (S024)
+Updated: 2026-10-29, by Claude agent (S019)
 
-- Last done: S024  twins on another device; one-sync result names unread cards (DEC-038, DEC-039)
+- Last done: S019  copy several cards at once, one thread per card (DEC-040)
 - In progress: none
-- Next: S019  copy several cards at once
+- Next: S017  hardware hand checks (waits for the user)
 - Blocked: S017 waits for the user's hardware (DEC-029)
 - Parked:
+  - S019's choices are the agent's pick, not yet confirmed by the user
+    (DEC-040): one thread per card (device) in a `Session`, `copy_plan`
+    stays one thread; the observer is called from the copy threads under
+    one lock; a twin is read only by its planned file's thread; a panic
+    stops the other threads and goes on to the caller once all are joined.
   - S024's choices are the agent's pick, not yet confirmed by the user
     (DEC-038, DEC-039): a twin must be on another device; the one-sync
     result names each unread card, complete or not; the exFAT script

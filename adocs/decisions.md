@@ -56,6 +56,7 @@ Why: one line.
 - DEC-037 2026-10-28 — twin-fallback reporting fixes (S023)
 - DEC-038 2026-10-28 — a twin must be on another device, not only another source
 - DEC-039 2026-10-28 — S024: device rule in planning, one-sync result names unread cards, twin images
+- DEC-040 2026-10-29 — S019: several cards copied at once, one thread per card
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -911,3 +912,61 @@ fresh folder on each (`OnDrive`), card c stays in the temp dir. Rejected:
 reusing the `PHOTOSYNC_TEST_CARD` image, which other tests count files on.
 Why: the device is what makes a card another card, and a not-complete
 result must still say which card had a read error.
+
+## DEC-040  2026-10-29  S019: several cards copied at once, one thread per card
+Tags: copy, progress, session, concurrency, safety, api, gui, test
+Decision: agent's pick in S019, not yet confirmed by the user.
+(1) Threads: a `Session` copies each card on its own scoped std thread;
+a card is a device, so two sources on one card (DEC-038) share a thread
+and that card is read one file at a time. Only one card with files: it
+copies on the calling thread. `copy_plan` stays one thread, in plan
+order, so its events keep `EventKind`'s strict order and the kept test
+`copy_events_arrive_in_order_and_their_totals_match_the_plan` holds.
+Rejected: one thread per source (reads one card from two threads), and
+`copy_plan` concurrent too (breaks that test's order).
+(2) Shared: the progress tracker behind one `Mutex`, the `Cancel`, a
+"a thread panicked" flag, and a "the INV-10 re-check failed" flag. Per
+thread: its folders made, its temp failures, its files. Renames into one
+folder keep the folder lock (DEC-008, DEC-019).
+(3) Events: the observer is called from the copy threads, one call at a
+time, under the tracker's lock, each event a whole snapshot (sources add
+up to the totals). `Started` comes from the calling thread before any
+copy thread starts; `Finished` or `Cancelled` once all have ended. Each
+card keeps the per-file order and has at most one file in flight.
+Rejected: funnelling events to the calling thread over a channel (an
+observer would act late, after its copy thread moved on).
+(4) Fallback rule: each planned file belongs to the thread of its own
+card. Its twins (F07) are the plan's duplicates of it, never planned
+themselves, and are read only by that thread, even while the twin's card
+is read by its own thread for its own files (only slower). So two
+threads never copy one photo, and a fallback never races a planned copy
+of its twin: there is none. Two cards' different photos of one name
+race to the folder lock: one is copied, the other is a name collision;
+which wins is timing.
+(5) INV-10: each thread re-checks before its first file into each type
+folder, even one another thread made; once a check failed in any thread,
+every thread checks before every file.
+(6) Cancel and panic: each thread checks "cancelled or another thread
+panicked" between files, between twins and before each chunk read. A
+panicking thread raises the flag in its unwind, the others stop as on a
+cancel, every thread is joined, then the first panic (in card order)
+goes on to the caller, which records the sync as crashed: not complete
+(DEC-031, DEC-034). The panicked thread's temp file stays, as after a
+kill (INV-7); the next session removes it. Rejected: the core catching
+the panic into `RunEnd::Crashed` (a second crash path beside the
+front-ends' own).
+(7) Outcome: merged by index in `to_copy`, so its lists are in plan
+order whatever the timing; temp failures in card order.
+(8) Tests: a shared test hook (`Arc<dyn Fn>`) that copy threads take on
+from the thread that starts them; the per-thread hook stays on its
+thread. Stages only the shared hook sees: `Checking`, `FolderReady`,
+`RenameLocked`, `RenameUnlocking`, `Halted`. Threads meet at hook stages
+(a `Mutex` + `Condvar` meeting that fails after 10 s instead of hanging),
+never sleeps. `Tracker` keeps its one-file-at-a-time methods for
+planning and its kept unit test, beside per-source ones.
+(9) Front-ends: the CLI line and the TUI draw from each event's
+snapshot only, so several files in flight need no change; the TUI's
+cancelling sentence says "files". A GUI forwards events to its UI
+thread, as the TUI does, and must not assume one file in flight.
+Why: the simplest design that keeps every invariant: one owner per photo,
+one lock per folder, one lock for progress, and every thread joined.

@@ -73,7 +73,8 @@ pub struct Search {
 #[derive(Debug, clap::Args)]
 pub struct SyncArgs {
     /// A card to copy from, e.g. /Volumes/X-T5 (see `photosync sources`).
-    /// Give it several times to copy several cards in one sync. With
+    /// Give it several times to copy several cards in one sync, at once,
+    /// each card on its own thread. With
     /// --one-by-one it may be left out: the first card is asked for.
     #[arg(
         long = "source",

@@ -7,9 +7,11 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
+use std::panic;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::hash::{CHUNK, Hash, hash_file};
@@ -387,8 +389,10 @@ pub struct TempCleanup {
     pub failures: Vec<ScanError>,
 }
 
-/// Copies every file in `plan.to_copy` into `folder`, one at a time: a
-/// session of one sync. First checks the library is still on the device
+/// Copies every file in `plan.to_copy` into `folder`, one at a time, in
+/// plan order, on the calling thread: a session of one sync, whose events
+/// keep `EventKind`'s order. (A `Session` copies each card on its own
+/// thread instead, S019.) First checks the library is still on the device
 /// and volume it was planned on (INV-10), and refuses before writing or
 /// deleting anything if not. Stale temp files in the library are removed
 /// next; so this must not run beside another copy into the same library.
@@ -418,66 +422,166 @@ pub fn copy_plan(
     }
     recheck_library(plan)?;
     let temps = remove_stale_temps(&folder.library);
-    Ok(copy_files(plan, folder, monitor, temps))
+    Ok(copy_files(plan, folder, monitor, temps, Threads::One))
+}
+
+/// How `copy_files` spreads the plan's files over threads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Threads {
+    /// Every file on the calling thread, in plan order.
+    One,
+    /// One thread per card: the files grouped by their source's device, so
+    /// two sources on one card (DEC-038) share a thread and the card is
+    /// read one file at a time. A single card with files copies on the
+    /// calling thread.
+    PerCard,
 }
 
 /// The copy loop of `copy_plan`, with no check or cleanup first: the
-/// caller has done both. `folder` is in `plan.library`.
+/// caller has done both, so no copy thread starts before the cleanup has
+/// ended. `folder` is in `plan.library`.
+///
+/// With `Threads::PerCard` each card's files go to one thread, in plan
+/// order (S019). What the threads share: the progress tracker behind one
+/// lock (so the observer is called by one thread at a time, each event a
+/// whole snapshot), the cancel, a flag that a thread panicked, and a flag
+/// that INV-10's re-check failed. Each thread keeps its own folders made
+/// and temp failures. Renames into one folder wait for that folder's lock,
+/// from any thread (DEC-008). A file is copied by the thread of its own
+/// card only; its twins (F07) are read by that same thread, as they are
+/// the plan's duplicates of it, which no thread copies as its own: two
+/// threads never copy one photo. The outcome is merged in plan order,
+/// whatever the timing. A panic in one thread stops the others at their
+/// next check, as a cancel does; once every thread has ended, the panic
+/// goes on to the caller, as it would with one thread.
 pub(crate) fn copy_files(
     plan: &SyncPlan,
     folder: &SyncFolder,
     monitor: &mut Monitor,
     temps: TempCleanup,
+    threads: Threads,
 ) -> CopyOutcome {
-    let mut outcome = CopyOutcome::nothing_to_copy(TempCleanup::default());
     let files = plan.to_copy.iter().map(|p| (Some(p.source), p.file.size));
-    let mut tracker = Tracker::start(monitor, Phase::Copying, &plan.sources, files);
-    let mut copier = Copier { plan, folder, ready: Vec::new(), moved: false, temps, cancel: tracker.cancel() };
-    for (i, planned) in plan.to_copy.iter().enumerate() {
-        let file = &planned.file;
-        if copier.cancel.is_cancelled() {
-            outcome.cancelled.extend(plan.to_copy[i..].iter().map(|p| p.file.clone()));
-            break;
-        }
-        tracker.file_started(&file.path, Some(planned.source), file.size);
-        let copied = match copier.copy_file(file, planned.hash, &mut tracker) {
-            // Only a read of the card: the twin is on another card, but a
-            // failure on the drive would fail its copy the same way.
-            Err(Stop::Failed(FailReason::Read(error))) if planned.hash.is_some() => {
-                let original = file.clone();
-                match copier.copy_twin(planned, &mut tracker) {
-                    Ok(Some(TwinCopy::Copied(tried, copied))) => {
-                        outcome.fallbacks.push(Fallback { original, error, tried, copied });
-                        Ok(())
-                    }
-                    Ok(Some(TwinCopy::NotFlushed(tried, twin))) => {
-                        let unflushed = UnflushedFallback { original, error, tried, twin };
-                        outcome.unflushed_fallbacks.push(unflushed);
-                        Ok(())
-                    }
-                    Ok(None) => Err(Stop::Failed(FailReason::Read(error))),
-                    Err(stop) => Err(stop),
-                }
-            }
-            Ok(to) => {
-                outcome.copied.push(Copied { file: file.clone(), to });
-                Ok(())
-            }
-            Err(stop) => Err(stop),
-        };
-        match copied {
-            Ok(()) => {}
-            Err(Stop::Failed(reason)) => outcome.failed.push(Failed { file: file.clone(), reason }),
-            Err(Stop::Cancelled) => {
-                outcome.cancelled.extend(plan.to_copy[i..].iter().map(|p| p.file.clone()));
-                break;
-            }
-        }
-        tracker.file_done(&file.path);
+    let tracker = Tracker::start(monitor, Phase::Copying, &plan.sources, files);
+    let shared = Shared {
+        cancel: tracker.cancel(),
+        tracker: Mutex::new(tracker),
+        panicked: AtomicBool::new(false),
+        moved: AtomicBool::new(false),
+    };
+    let groups = groups(plan, threads);
+    let lots: Vec<Lot> = if groups.len() < 2 {
+        groups.iter().map(|g| Copier::new(plan, folder, &shared).copy_all(g)).collect()
+    } else {
+        let hooks = inherited_hooks();
+        let joined: Vec<thread::Result<Lot>> = thread::scope(|scope| {
+            let workers: Vec<_> = groups
+                .iter()
+                .map(|group| {
+                    let (hooks, shared) = (hooks.clone(), &shared);
+                    scope.spawn(move || {
+                        adopt_hooks(hooks);
+                        let _flag = RaiseOnPanic(&shared.panicked);
+                        Copier::new(plan, folder, shared).copy_all(group)
+                    })
+                })
+                .collect();
+            // Every thread is joined before a panic goes on: none is left
+            // running unnoticed.
+            workers.into_iter().map(|w| w.join()).collect()
+        });
+        joined.into_iter().collect::<thread::Result<_>>().unwrap_or_else(|p| panic::resume_unwind(p))
+    };
+
+    let mut outcome = CopyOutcome::nothing_to_copy(temps);
+    let mut done: Vec<(usize, Done)> = Vec::new();
+    for lot in lots {
+        done.extend(lot.files);
+        outcome.temps.failures.extend(lot.temps_failed);
     }
+    done.sort_by_key(|(i, _)| *i);
+    for (i, d) in done {
+        let file = plan.to_copy[i].file.clone();
+        match d {
+            Done::Copied(to) => outcome.copied.push(Copied { file, to }),
+            Done::Failed(reason) => outcome.failed.push(Failed { file, reason }),
+            Done::Fallback(f) => outcome.fallbacks.push(f),
+            Done::Unflushed(f) => outcome.unflushed_fallbacks.push(f),
+            Done::Cancelled => outcome.cancelled.push(file),
+        }
+    }
+    let tracker = shared.tracker.into_inner().unwrap_or_else(PoisonError::into_inner);
     tracker.finish(!outcome.cancelled.is_empty());
-    outcome.temps = copier.temps;
     outcome
+}
+
+/// The plan's files as indices into `to_copy`, one group per thread, each
+/// in plan order; no group is empty.
+fn groups(plan: &SyncPlan, threads: Threads) -> Vec<Vec<usize>> {
+    let mut groups: Vec<(u64, Vec<usize>)> = Vec::new();
+    for (i, planned) in plan.to_copy.iter().enumerate() {
+        let card = match threads {
+            Threads::One => 0,
+            Threads::PerCard => plan.source_devices[planned.source],
+        };
+        match groups.iter_mut().find(|(c, _)| *c == card) {
+            Some((_, group)) => group.push(i),
+            None => groups.push((card, vec![i])),
+        }
+    }
+    groups.into_iter().map(|(_, group)| group).collect()
+}
+
+/// What the copy threads share.
+struct Shared<'m, 'a> {
+    tracker: Mutex<Tracker<'m, 'a>>,
+    cancel: Cancel,
+    /// A copy thread panicked: the others stop at their next check.
+    panicked: AtomicBool,
+    /// The INV-10 re-check has failed, in any thread: from then on every
+    /// thread runs it before every file, not only before a new folder.
+    moved: AtomicBool,
+}
+
+impl<'m, 'a> Shared<'m, 'a> {
+    /// A cancel, or a panic in another thread.
+    fn halted(&self) -> bool {
+        self.cancel.is_cancelled() || self.panicked.load(Ordering::SeqCst)
+    }
+
+    fn progress(&self, update: impl FnOnce(&mut Tracker<'m, 'a>)) {
+        // A thread that panicked in the observer leaves the counts whole:
+        // each update is one call, and the panic ends the copy anyway.
+        update(&mut self.tracker.lock().unwrap_or_else(PoisonError::into_inner));
+    }
+}
+
+/// Raises the flag if its thread unwinds, so the other threads stop.
+struct RaiseOnPanic<'f>(&'f AtomicBool);
+
+impl Drop for RaiseOnPanic<'_> {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            self.0.store(true, Ordering::SeqCst);
+            at_stage(Stage::Halted, Path::new(""));
+        }
+    }
+}
+
+/// How one planned file ended.
+enum Done {
+    Copied(PathBuf),
+    Failed(FailReason),
+    Fallback(Fallback),
+    Unflushed(UnflushedFallback),
+    Cancelled,
+}
+
+/// What one thread did: each of its files by index in `to_copy`, and the
+/// temp files it could not remove.
+struct Lot {
+    files: Vec<(usize, Done)>,
+    temps_failed: Vec<ScanError>,
 }
 
 /// INV-10 again, before the first write and before each folder is made:
@@ -583,34 +687,83 @@ fn write_error(path: &Path) -> impl FnOnce(io::Error) -> FailReason + '_ {
     move |error| FailReason::Write { path: path.to_path_buf(), error }
 }
 
-/// One run of the copy loop.
-struct Copier<'p> {
+/// One thread's run of the copy loop.
+struct Copier<'p, 's, 'm, 'a> {
     plan: &'p SyncPlan,
     folder: &'p SyncFolder,
-    /// The type folders made and flushed in this run.
+    /// The type folders this thread made, or found, and flushed. Each
+    /// thread checks INV-10 again before its first file into each one.
     ready: Vec<PathBuf>,
-    /// The INV-10 re-check has failed: from then on it runs before every
-    /// file, not only before a new folder.
-    moved: bool,
-    temps: TempCleanup,
-    cancel: Cancel,
+    temps_failed: Vec<ScanError>,
+    shared: &'s Shared<'m, 'a>,
 }
 
-impl Copier<'_> {
+impl<'p, 's, 'm, 'a> Copier<'p, 's, 'm, 'a> {
+    fn new(plan: &'p SyncPlan, folder: &'p SyncFolder, shared: &'s Shared<'m, 'a>) -> Self {
+        Copier { plan, folder, ready: Vec::new(), temps_failed: Vec::new(), shared }
+    }
+
+    /// Copies the files of `group` (indices into `to_copy`), in order. On a
+    /// cancel, the file cut short and the rest of the group are cancelled.
+    fn copy_all(mut self, group: &[usize]) -> Lot {
+        let mut files = Vec::new();
+        for (k, &i) in group.iter().enumerate() {
+            let planned = &self.plan.to_copy[i];
+            let (file, source) = (&planned.file, Some(planned.source));
+            if self.shared.halted() {
+                files.extend(group[k..].iter().map(|&i| (i, Done::Cancelled)));
+                break;
+            }
+            self.shared.progress(|t| t.file_started(&file.path, source, file.size));
+            let done = match self.copy_file(file, planned.hash, planned.source) {
+                // Only a read of the card: the twin is on another card, but a
+                // failure on the drive would fail its copy the same way.
+                Err(Stop::Failed(FailReason::Read(error))) if planned.hash.is_some() => {
+                    let original = file.clone();
+                    match self.copy_twin(planned) {
+                        Ok(Some(TwinCopy::Copied(tried, copied))) => {
+                            Ok(Done::Fallback(Fallback { original, error, tried, copied }))
+                        }
+                        Ok(Some(TwinCopy::NotFlushed(tried, twin))) => {
+                            Ok(Done::Unflushed(UnflushedFallback { original, error, tried, twin }))
+                        }
+                        Ok(None) => Ok(Done::Failed(FailReason::Read(error))),
+                        Err(stop) => Err(stop),
+                    }
+                }
+                Ok(to) => Ok(Done::Copied(to)),
+                Err(Stop::Failed(reason)) => Ok(Done::Failed(reason)),
+                Err(Stop::Cancelled) => Err(Stop::Cancelled),
+            };
+            match done {
+                Ok(done) => files.push((i, done)),
+                Err(_) => {
+                    files.extend(group[k..].iter().map(|&i| (i, Done::Cancelled)));
+                    break;
+                }
+            }
+            self.shared.progress(|t| t.file_done_of(source, &file.path));
+        }
+        Lot { files, temps_failed: self.temps_failed }
+    }
+
     /// F07: `planned` could not be read, so its twins are copied instead,
     /// in plan order, until one is read as the hash planning took. A twin
     /// that cannot be read, or reads otherwise, is passed for the next.
     /// `None`: no twin could be copied, or a failure on the drive's side
     /// ended the tries; the file fails with its own read error then. A
     /// twin's copy left in place unflushed ends them too, but is reported.
-    fn copy_twin(&mut self, planned: &Planned, tracker: &mut Tracker) -> Result<Option<TwinCopy>, Stop> {
+    /// The twins are the plan's duplicates of `planned`, read here only:
+    /// no thread copies one as its own file (S019).
+    fn copy_twin(&mut self, planned: &Planned) -> Result<Option<TwinCopy>, Stop> {
         let mut tried = Vec::new();
+        let source = Some(planned.source);
         for twin in &planned.twins {
-            if self.cancel.is_cancelled() {
+            if self.shared.halted() {
                 return Err(Stop::Cancelled);
             }
-            tracker.reread();
-            match self.copy_file(twin, planned.hash, tracker) {
+            self.shared.progress(|t| t.reread_of(source));
+            match self.copy_file(twin, planned.hash, planned.source) {
                 Ok(to) => return Ok(Some(TwinCopy::Copied(tried, Copied { file: twin.clone(), to }))),
                 Err(Stop::Failed(reason @ (FailReason::Read(_) | FailReason::SourceChanged))) => {
                     tried.push(Failed { file: twin.clone(), reason });
@@ -629,28 +782,26 @@ impl Copier<'_> {
     }
 
     /// Copies `file` to `<folder>/<TYPE>/<name>`. `expected`: the hash
-    /// planning took, which the bytes read must match.
-    fn copy_file(
-        &mut self,
-        file: &SourceFile,
-        expected: Option<Hash>,
-        tracker: &mut Tracker,
-    ) -> Result<PathBuf, Stop> {
+    /// planning took, which the bytes read must match. Its progress counts
+    /// under `source`, the planned file's.
+    fn copy_file(&mut self, file: &SourceFile, expected: Option<Hash>, source: usize) -> Result<PathBuf, Stop> {
         let (Some(media), Some(name)) = (file.media_type, file.path.file_name()) else {
             return Err(FailReason::Unsupported.into());
         };
         let dir = self.folder.path.join(media.dir_name());
         let new_dir = !self.ready.contains(&dir);
-        if new_dir || self.moved {
+        if new_dir || self.shared.moved.load(Ordering::SeqCst) {
             // The library may have moved since this run checked it: a
             // folder made now would land wherever its path leads (DEC-027).
+            at_stage(Stage::Checking, &file.path);
             if let Err(e) = recheck_library(self.plan) {
-                self.moved = true;
+                self.shared.moved.store(true, Ordering::SeqCst);
                 return Err(FailReason::Library(e).into());
             }
         }
         if new_dir {
             prepare_dir(self.folder, &dir)?;
+            at_stage(Stage::FolderReady, &dir);
             self.ready.push(dir.clone());
         }
         let target = dir.join(name);
@@ -668,7 +819,7 @@ impl Copier<'_> {
             .open(&temp)
             .map_err(write_error(&temp))?;
         // From here the temp file is ours: every failure and a cancel remove it.
-        let placed = fill_and_verify(file, expected, out, &temp, &dir, &self.cancel, tracker)
+        let placed = fill_and_verify(file, expected, out, &temp, &dir, self.shared, source)
             .and_then(|()| {
                 rename_noreplace(&temp, &target).map_err(|error| {
                     if error.kind() == io::ErrorKind::AlreadyExists {
@@ -680,7 +831,7 @@ impl Copier<'_> {
             });
         if let Err(reason) = placed {
             if let Err(source) = fs::remove_file(&temp) {
-                self.temps.failures.push(ScanError { path: temp, source });
+                self.temps_failed.push(ScanError { path: temp, source });
             }
             return Err(reason);
         }
@@ -731,21 +882,22 @@ fn temp_name(name: &OsStr) -> OsString {
 /// Streams the source into `out` while hashing what was read, checks that
 /// against `expected` if planning hashed the file, flushes file and folder,
 /// then checks the copy's hash against what was read (INV-3). The card is
-/// read once. `cancel` is checked before each read.
+/// read once. A cancel (or a panic in another copy thread) is checked
+/// before each read; each chunk counts under `source`.
 fn fill_and_verify(
     file: &SourceFile,
     expected: Option<Hash>,
     mut out: File,
     temp: &Path,
     dir: &Path,
-    cancel: &Cancel,
-    tracker: &mut Tracker,
+    shared: &Shared,
+    source: usize,
 ) -> Result<(), Stop> {
     let mut src = File::open(&file.path).map_err(FailReason::Read)?;
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0; CHUNK];
     loop {
-        if cancel.is_cancelled() {
+        if shared.halted() {
             return Err(Stop::Cancelled);
         }
         let n = match injected(Fault::Read).and_then(|()| src.read(&mut buf)) {
@@ -757,7 +909,7 @@ fn fill_and_verify(
         hasher.update(&buf[..n]);
         out.write_all(&buf[..n]).map_err(write_error(temp))?;
         at_stage(Stage::Written, temp);
-        tracker.bytes(n as u64);
+        shared.progress(|t| t.bytes_of(Some(source), n as u64));
     }
     let read = hasher.finalize();
     if expected.is_some_and(|planned| planned != read) {
@@ -818,14 +970,17 @@ fn rename_noreplace_with(
     let lock = folder_lock(folder)?;
     // The lock guards no data, so one a panic poisoned is still sound.
     let _held = lock.lock().unwrap_or_else(PoisonError::into_inner);
-    match excl(from, to) {
+    at_stage(Stage::RenameLocked, to);
+    let renamed = match excl(from, to) {
         // Only this errno: any other error may mean the rename half-ran or
         // the target is unusable, and falling back could hide it.
         Err(e) if EXCL_UNSUPPORTED.is_some_and(|code| e.raw_os_error() == Some(code)) => {
             rename_checked(from, to)
         }
         result => result,
-    }
+    };
+    at_stage(Stage::RenameUnlocking, to);
+    renamed
 }
 
 /// Checks that `to` is free, then renames. The caller holds the lock of
@@ -919,29 +1074,99 @@ enum Stage {
     Verified,
     Renamed,
     RenameSynced,
+    // The stages below reach the shared hook only: the per-thread hook's
+    // tests list the stages of one copy.
+    /// The INV-10 re-check is due before copying this source file.
+    Checking,
+    /// This type folder is made (or was there) and flushed.
+    FolderReady,
+    /// The folder's rename lock is held, before the rename.
+    RenameLocked,
+    /// The rename is done, and the lock not yet released.
+    RenameUnlocking,
+    /// A copy thread is unwinding from a panic, and has told the others
+    /// to stop.
+    Halted,
+}
+
+#[cfg(test)]
+impl Stage {
+    fn of_one_copy(self) -> bool {
+        matches!(
+            self,
+            Stage::Written
+                | Stage::FileSynced
+                | Stage::DirSynced
+                | Stage::Verified
+                | Stage::Renamed
+                | Stage::RenameSynced
+        )
+    }
 }
 
 // TEST ONLY: a per-thread hook the unit tests set to record stages, tamper
 // with files, or panic to stand in for a kill (no cleanup code runs on the
-// way out). A normal build has no hook and `at_stage` does nothing.
+// way out). A normal build has no hook and `at_stage` does nothing. The
+// shared hook is for the tests of several copy threads (S019): each copy
+// thread runs with the hook of the thread that started it. The per-thread
+// one stays on its own thread, so it sees one card's copy only when that
+// card copies on the calling thread.
 #[cfg(test)]
 type Hook = Box<dyn FnMut(Stage, &Path)>;
 
 #[cfg(test)]
+type SharedHook = Arc<dyn Fn(Stage, &Path) + Send + Sync>;
+
+#[cfg(test)]
 thread_local! {
     static HOOK: std::cell::RefCell<Option<Hook>> = const { std::cell::RefCell::new(None) };
+    static SHARED_HOOK: std::cell::RefCell<Option<SharedHook>> = const { std::cell::RefCell::new(None) };
 }
 
 fn at_stage(stage: Stage, path: &Path) {
     #[cfg(test)]
-    HOOK.with(|hook| {
-        if let Some(hook) = hook.borrow_mut().as_mut() {
+    {
+        if stage.of_one_copy() {
+            HOOK.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().as_mut() {
+                    hook(stage, path);
+                }
+            });
+        }
+        // Cloned out first: the hook may panic, or set it again.
+        if let Some(hook) = SHARED_HOOK.with(|h| h.borrow().clone()) {
             hook(stage, path);
         }
-    });
+    }
     #[cfg(not(test))]
     let _ = (stage, path);
 }
+
+/// What a copy thread takes from the thread that starts it: the shared
+/// test hook, or nothing in a normal build.
+#[cfg(test)]
+type Hooks = Option<SharedHook>;
+#[cfg(not(test))]
+#[derive(Clone)]
+struct Hooks;
+
+#[cfg(test)]
+fn inherited_hooks() -> Hooks {
+    SHARED_HOOK.with(|h| h.borrow().clone())
+}
+
+#[cfg(not(test))]
+fn inherited_hooks() -> Hooks {
+    Hooks
+}
+
+#[cfg(test)]
+fn adopt_hooks(hooks: Hooks) {
+    SHARED_HOOK.with(|h| *h.borrow_mut() = hooks);
+}
+
+#[cfg(not(test))]
+fn adopt_hooks(_: Hooks) {}
 
 /// An I/O error a test hook can make the next read or folder flush return,
 /// or every device read of the INV-10 re-check from then on.
@@ -973,6 +1198,9 @@ fn injected(fault: Fault) -> io::Result<()> {
     let _ = fault;
     Ok(())
 }
+
+#[cfg(test)]
+mod threads_tests;
 
 #[cfg(test)]
 mod tests {

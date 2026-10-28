@@ -17,8 +17,7 @@ not change the order.
 
 ## Open
 
-1. S019  copy several cards at once (split from S010)
-2. S017  hardware hand checks (waits for the user)
+1. S017  hardware hand checks (waits for the user)
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.
@@ -27,8 +26,8 @@ Linux verification.
 
 Last five; the full record is `plan_done/`.
 
+- S019  copy several cards at once, one thread per card (split from S010)
 - S024  twins on another device; one-sync result names unread cards (S023 fast check)
 - S023  twin-fallback reporting fixes (S021 fast check)
 - S021  twin fallback on a read error, F07 (split from S010)
 - S022  session CLI/TUI hardening (S020 fast check)
-- S020  one card after another in the CLI and TUI

@@ -10,8 +10,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::copy::{
-    CopyError, CopyOutcome, FolderError, SyncFolder, TempCleanup, check_name, copy_files,
-    recheck_library, remove_stale_temps, sync_folder,
+    CopyError, CopyOutcome, FolderError, SyncFolder, TempCleanup, Threads, check_name,
+    copy_files, recheck_library, remove_stale_temps, sync_folder,
 };
 use crate::plan::{PlanError, plan_in_session};
 use crate::progress::{Cancel, Event, Monitor};
@@ -19,8 +19,11 @@ use crate::report::{FileOutcome, Report, ReportError, add_by_type};
 use crate::source::{MediaType, ScanError, SourceScan, scan_source};
 use crate::Tally;
 
-/// What a front-end is told while a sync runs, on the calling thread.
-/// `Send`, so the sync can run on a worker thread.
+/// What a front-end is told while a sync runs, one call at a time. Scans
+/// and planning come on the calling thread; copy events come from the
+/// cards' copy threads too, under one lock (`Monitor::new`, S019). `Send`,
+/// so the sync can run on a worker thread, and the copy threads can call
+/// it.
 pub trait Watch: Send {
     /// A source was scanned, before anything is planned.
     fn scanned(&mut self, scan: &SourceScan) {
@@ -177,7 +180,8 @@ impl Session {
 
     /// One sync of the cards at `roots`, at once: scan, refuse a source
     /// given twice, plan, fix the folder if not yet fixed, check INV-10
-    /// again, copy, report. A cancel during planning gives the cancelled
+    /// again, remove stale temps if this is the session's first copy, then
+    /// copy each card on its own thread (one per device, S019), report. A cancel during planning gives the cancelled
     /// plan's report, as no file was written. The sync is recorded,
     /// whatever its end.
     pub fn sync(&mut self, roots: &[PathBuf], cancel: &Cancel, watch: &mut dyn Watch) -> &Run {
@@ -312,7 +316,7 @@ impl Session {
         let outcome = match &self.folder {
             Some(folder) => {
                 let mut monitor = Monitor::new(cancel.clone(), |e| watch.event(e));
-                copy_files(&plan, folder, &mut monitor, temps)
+                copy_files(&plan, folder, &mut monitor, temps, Threads::PerCard)
             }
             None => CopyOutcome::nothing_to_copy(temps),
         };

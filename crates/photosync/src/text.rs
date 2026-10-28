@@ -930,6 +930,68 @@ mod tests {
         assert_eq!(shown, [true, false, false, true, false, true, true]);
     }
 
+    /// S019: two cards copy at once, so their files' events interleave.
+    /// Each line is drawn from its event's snapshot alone, so it shows
+    /// each card's own count, whatever file the event is of.
+    #[test]
+    fn progress_of_two_cards_at_once_shows_each_card() {
+        let mut text = ProgressText::new(false);
+        let ev = |kind, (a, b): (u64, u64), ms| {
+            let mut p = progress(Phase::Copying, (a + b, 0), (4, 40), ms);
+            p.sources[0].done = Counts { files: a, bytes: 0 };
+            p.sources[0].total = Counts {
+                files: 2,
+                bytes: 20,
+            };
+            p.sources.push(SourceProgress {
+                root: PathBuf::from("/Volumes/CARD2"),
+                done: Counts { files: b, bytes: 0 },
+                total: Counts {
+                    files: 2,
+                    bytes: 20,
+                },
+            });
+            Event { kind, progress: p }
+        };
+        let lines: Vec<String> = [
+            ev(EventKind::Started, (0, 0), 0),
+            ev(
+                EventKind::FileStarted(PathBuf::from("/Volumes/CARD/a")),
+                (0, 0),
+                1,
+            ),
+            ev(
+                EventKind::FileStarted(PathBuf::from("/Volumes/CARD2/b")),
+                (0, 0),
+                2,
+            ),
+            ev(
+                EventKind::FileDone(PathBuf::from("/Volumes/CARD2/b")),
+                (0, 1),
+                3000,
+            ),
+            ev(
+                EventKind::FileDone(PathBuf::from("/Volumes/CARD/a")),
+                (1, 1),
+                6000,
+            ),
+            ev(EventKind::Finished, (2, 2), 7000),
+        ]
+        .iter()
+        .filter_map(|e| text.event(e))
+        .collect();
+        let each: Vec<&str> = lines.iter().map(|l| &l[l.find('[').unwrap()..]).collect();
+        assert_eq!(
+            each,
+            [
+                "[CARD 0/2, CARD2 0/2]\n",
+                "[CARD 0/2, CARD2 1/2]\n",
+                "[CARD 1/2, CARD2 1/2]\n",
+                "[CARD 2/2, CARD2 2/2]\n"
+            ]
+        );
+    }
+
     #[test]
     fn progress_in_place_rewrites_one_line_and_ends_it() {
         let mut text = ProgressText::new(true);

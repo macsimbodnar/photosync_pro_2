@@ -38,7 +38,12 @@ pub struct Monitor<'a> {
 }
 
 impl<'a> Monitor<'a> {
-    /// Events go to `observer`, in order, on the calling thread.
+    /// Events go to `observer`, in order, one call at a time. `plan_sync`
+    /// and `copy_plan` call it on the calling thread. A `Session` copying
+    /// several cards at once calls it from each card's copy thread too,
+    /// under one lock, so calls never overlap: `Started` comes from the
+    /// calling thread before any copy thread starts, and `Finished` or
+    /// `Cancelled` from it once every copy thread has ended (S019).
     pub fn new(cancel: Cancel, observer: impl FnMut(Event) + Send + 'a) -> Monitor<'a> {
         Monitor { observer: Box::new(observer), cancel, clock: real_clock() }
     }
@@ -81,7 +86,11 @@ pub struct Event {
 
 /// Per phase, in this order: `Started`, then for each file `FileStarted`,
 /// any number of `Bytes`, `FileDone`; then `Finished` or `Cancelled`. A
-/// file cut short by a cancel gets no `FileDone`.
+/// file cut short by a cancel gets no `FileDone`. When a `Session` copies
+/// several cards at once, their files' events interleave: each card keeps
+/// this order and has at most one file in flight, a `Bytes` event is of
+/// one of the files in flight, and each event's `progress` is a whole
+/// snapshot, its sources adding up to its totals (S019).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventKind {
     /// The totals are known; nothing is done yet.
@@ -134,14 +143,17 @@ pub fn eta(done_bytes: u64, total_bytes: u64, elapsed: Duration) -> Option<Durat
     Some(Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX)))
 }
 
-/// Keeps the counts for one phase and sends each event.
+/// Keeps the counts for one phase and sends each event. Several files can
+/// be in flight, at most one per source (S019): a `Session` copies each
+/// card on its own thread, each through this tracker behind one lock, so
+/// every event is a snapshot of one moment, never half of an update.
 pub(crate) struct Tracker<'m, 'a> {
     monitor: &'m mut Monitor<'a>,
     progress: Progress,
     start: Duration,
-    /// The current file: its source, scanned size, bytes counted and bytes
-    /// read by this read of it.
-    current: Option<Current>,
+    /// The files in flight: each one's source, scanned size, bytes counted
+    /// and bytes read by this read of it.
+    current: Vec<Current>,
 }
 
 struct Current {
@@ -174,7 +186,7 @@ impl<'m, 'a> Tracker<'m, 'a> {
         let start = (monitor.clock)();
         let progress =
             Progress { phase, done: Counts::default(), total, sources, elapsed: Duration::ZERO, eta: None };
-        let mut tracker = Tracker { monitor, progress, start, current: None };
+        let mut tracker = Tracker { monitor, progress, start, current: Vec::new() };
         tracker.send_at(EventKind::Started, start);
         tracker
     }
@@ -183,39 +195,63 @@ impl<'m, 'a> Tracker<'m, 'a> {
         self.monitor.cancel.clone()
     }
 
+    /// A file of `source` starts; it replaces any file of `source` still
+    /// in flight, as one source has one file in flight at a time.
     pub(crate) fn file_started(&mut self, path: &Path, source: Option<usize>, size: u64) {
-        self.current = Some(Current { source, size, counted: 0, read: 0 });
+        self.current.retain(|c| c.source != source);
+        self.current.push(Current { source, size, counted: 0, read: 0 });
         self.send(EventKind::FileStarted(path.to_path_buf()));
     }
 
-    /// `n` more bytes of the current file were read. Counted up to the
-    /// file's scanned size, so a file that grew cannot push done past total.
+    /// `bytes_of` the file in flight, when files go one at a time.
     pub(crate) fn bytes(&mut self, n: u64) {
-        let Some(c) = self.current.as_mut() else { return };
+        if let Some(source) = self.last() {
+            self.bytes_of(source, n);
+        }
+    }
+
+    /// `n` more bytes of `source`'s file in flight were read. Counted up to
+    /// the file's scanned size, so a file that grew cannot push done past
+    /// total.
+    pub(crate) fn bytes_of(&mut self, source: Option<usize>, n: u64) {
+        let Some(c) = self.current.iter_mut().find(|c| c.source == source) else { return };
         c.read = c.read.saturating_add(n);
         let now = c.read.min(c.size).max(c.counted);
-        let (source, more) = (c.source, now - c.counted);
+        let more = now - c.counted;
         c.counted = now;
         self.count(source, 0, more);
         self.send(EventKind::Bytes);
     }
 
-    /// The current file is read again from its start, from a twin (F07).
-    /// It stays one file of its own source: the bytes read again count
-    /// only past what the failed read counted, so done never goes back.
-    pub(crate) fn reread(&mut self) {
-        if let Some(c) = self.current.as_mut() {
+    /// `source`'s file in flight is read again from its start, from a twin
+    /// (F07). It stays one file of its own source: the bytes read again
+    /// count only past what the failed read counted, so done never goes
+    /// back.
+    pub(crate) fn reread_of(&mut self, source: Option<usize>) {
+        if let Some(c) = self.current.iter_mut().find(|c| c.source == source) {
             c.read = 0;
         }
     }
 
-    /// The current file is done: whatever of its size was not read counts
-    /// as done too, so done meets total at the end.
+    /// `file_done_of` the file in flight, when files go one at a time.
     pub(crate) fn file_done(&mut self, path: &Path) {
-        if let Some(c) = self.current.take() {
+        let source = self.last().flatten();
+        self.file_done_of(source, path);
+    }
+
+    /// `source`'s file in flight is done: whatever of its size was not
+    /// read counts as done too, so done meets total at the end.
+    pub(crate) fn file_done_of(&mut self, source: Option<usize>, path: &Path) {
+        if let Some(i) = self.current.iter().position(|c| c.source == source) {
+            let c = self.current.remove(i);
             self.count(c.source, 1, c.size - c.counted);
         }
         self.send(EventKind::FileDone(path.to_path_buf()));
+    }
+
+    /// The source of the file started last and still in flight.
+    fn last(&self) -> Option<Option<usize>> {
+        self.current.last().map(|c| c.source)
     }
 
     pub(crate) fn finish(mut self, cancelled: bool) {

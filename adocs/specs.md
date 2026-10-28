@@ -82,8 +82,9 @@ stays listed as retired.
   check (DEC-025, DEC-026). Copying checks again before it writes or
   deletes anything: if the library is now on another device or volume
   than when the sync was planned, or on a source's device, it refuses
-  (DEC-027). It checks again before it makes each folder, and once such
-  a check has failed, before every file: those files fail with the reason.
+  (DEC-027). It checks again before it makes each folder, in each card's
+  copy thread, and once such a check has failed in any of them, before
+  every file: those files fail with the reason.
 
 ## Behaviour
 
@@ -153,7 +154,13 @@ picks. It is simple to use.
   "USB card reader" connection mode. The default PTP mode does not mount as
   a volume and is not supported for now.
 - Several sources at once, when several readers are connected. Each source
-  shows as its own entry with its own progress.
+  shows as its own entry with its own progress. Each card (each device) is
+  copied on its own thread, at the same time as the others; two sources on
+  one card are read one file at a time. Renames into one folder still go
+  one at a time (DEC-008), so two cards' different photos of the same name
+  give one copy and one name collision, never an overwrite. A photo on two
+  cards is copied once, by the thread of the card it was planned from; its
+  twin on the other card is read only by that thread (DEC-040).
 - One source after another, with a single reader. The session stays open
   between cards, and the report covers all of them. A photo an earlier card
   of the session put on the drive, or found there, is a "duplicate in
@@ -227,7 +234,8 @@ picks. It is simple to use.
   `$RECYCLE.BIN` and `System Volume Information`, are not library files.
   The scan skips them, so a photo found only there is copied again
   (DEC-016). A session deletes photosync's own stale temp files once,
-  before its first copy, never while one of its copies runs.
+  before its first copy, before any card's copy thread starts, never
+  while one of its copies runs.
 - A source file counts as already synced if any library file anywhere has
   the same name and size and the same content (hash). Name + size picks
   the candidates, and the hash confirms them. So a photo synced earlier into
@@ -240,7 +248,13 @@ picks. It is simple to use.
 
 - Shows files and bytes done out of the total, per source and overall.
 - Shows an estimate of the time remaining.
+- With several cards at once, several files are in flight, at most one per
+  card. Each progress event is a whole snapshot: the cards' counts add up
+  to the totals, and nothing goes back.
 - The user can cancel. Cancelling is the same as an interruption (INV-7).
+  A cancel stops every card's copy at its next check. A crash in one
+  card's copy stops the others the same way; the sync is then not
+  complete (DEC-040).
 - Planning, which hashes the already-synced candidates, shows progress too
   and can be cancelled. A cancelled plan has written nothing.
 

@@ -28,7 +28,7 @@ change the library or the name, quit and start again. Without a terminal
 
 | Screen | Keys |
 |---|---|
-| cards | `↑` `↓` move, `Space` pick (several cards are copied one after another), `Enter` next (picks the card under the cursor if none is picked; for the next card of a session, straight to the check), `r` look again, `q` quit |
+| cards | `↑` `↓` move, `Space` pick (several cards are copied at once), `Enter` next (picks the card under the cursor if none is picked; for the next card of a session, straight to the check), `r` look again, `q` quit |
 | drive | `↑` `↓` move, `Enter` pick, `Esc` back, `r` look again, `q` quit |
 | library folder, name | type to edit, `Backspace`, `Enter` next, `Esc` back |
 | check | `Enter` start copying, `Esc` back, `q` quit |
@@ -64,8 +64,11 @@ syncs the `--source` cards and ends, so a script never waits; with no
 
 The X-T5 over a USB cable shows up as a card only in its "USB card reader"
 connection mode, not in the default PTP mode. `--source` can be given
-several times; the cards are copied one after another into one sync folder,
-`<library>/<date>[ - <name>]/<RAW|JPEG|HEIF|VIDEO>/`. A photo on two cards
+several times; the cards are copied at once, each on its own thread (two
+sources on one card are read one after the other), into one sync folder,
+`<library>/<date>[ - <name>]/<RAW|JPEG|HEIF|VIDEO>/`. The progress line
+counts each card, and a cancel stops them all. Two cards' different photos
+of the same name give one copy and one name collision, never an overwrite. A photo on two cards
 (backup slots) is copied once; the other card's copy is a "duplicate in
 session". If one card cannot be read, the photo is copied from the other,
 checked against what was read before: the report names the card it came
@@ -123,7 +126,8 @@ Exit codes:
 
 - `crates/photosync-core`: all sync logic, UI-free (INV-8). A `Session`
   runs one sync after another into one library and folder: it scans,
-  plans, copies and reports each, removes stale temp files once, knows
+  plans, copies (each card on its own thread) and reports each, removes
+  stale temp files once, before any copy starts, knows
   which photos earlier cards put on the drive, and keeps the worst
   outcome (`Session::verdict`). Front-ends drive it through `Watch`.
 - `crates/photosync`: the `photosync` binary. `app` is the interactive
@@ -168,6 +172,8 @@ and checks the files and the report text; the binary's unit test
 `tui::tests::tui_sync_on_exfat_end_to_end` drives the TUI's loop through a
 cancelled and a full sync there, then the same card again as the next
 card of the session, with scripted keys on ratatui's `TestBackend`.
+`tests/exfat_e2e.rs`'s `two_cards_on_two_devices_copy_at_once` syncs two
+cards on the twin images (below) to that drive at once, one thread per card.
 `tests/exfat_session.rs` runs `sync --one-by-one` over five cards in one
 session, one of them failing, typed at its prompt on a pseudo-terminal.
 The binary's unit tests `text::tests::a_session_names_the_card_a_file_was_copied_from_its_twin_for`
@@ -179,6 +185,11 @@ must be on another device, so those two cards are on two more small images
 tests and says so; it covers the binary's help, usage errors and refusals
 on temp dirs. The tests reach `photosync sources` and `drives` through a
 hidden `--search-root` option.
+
+photosync-core's `copy::threads_tests` (S019) copy several cards at once
+in a session; each meets the copy threads at a test hook, so what runs at
+the same time is fixed by the test, not by timing. They run under plain
+`cargo test`, and on exFAT through the script.
 
 The tests turn on photosync-core's `test-support` feature (through a
 dev-dependency of the crate on itself) for a seam that fakes a source's

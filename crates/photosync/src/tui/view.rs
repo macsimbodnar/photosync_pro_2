@@ -243,7 +243,7 @@ fn running(app: &App, frame: &mut Frame, area: Rect) {
     if run.cancelling {
         frame.render_widget(
             Paragraph::new(
-                "Cancelling: the file being copied is finished or dropped, then the report shows.",
+                "Cancelling: the files being copied are finished or dropped, then the report shows.",
             )
             .wrap(Wrap { trim: false })
             .yellow(),

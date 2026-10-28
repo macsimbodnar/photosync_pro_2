@@ -350,3 +350,88 @@ fn closed_stdout_never_panics_and_keeps_the_exit_code() {
         "{stderr}"
     );
 }
+
+/// S019: two cards on two devices, as in two card readers, copied at once
+/// (one thread per card). Each photo lands once with its bytes, one on
+/// both cards is copied once, the progress line counts each card, and the
+/// cards are left as they were (INV-1). Then a different photo of a
+/// taken name, on the other card, is a name collision: the drive's file
+/// stays (INV-2).
+#[test]
+fn two_cards_on_two_devices_copy_at_once() {
+    let test = "two_cards_on_two_devices_copy_at_once";
+    let (Some(drive), Some((twin_a, twin_b))) =
+        (common::test_drive(test), common::twin_cards(test))
+    else {
+        return;
+    };
+    let (a, b) = (
+        common::OnDrive::new(&twin_a, "s019-a"),
+        common::OnDrive::new(&twin_b, "s019-b"),
+    );
+    let library = common::OnDrive::new(&drive, "s019-lib");
+    let raw_a: Vec<u8> = (0..3 << 20).map(|i| (i % 251) as u8).collect();
+    let raw_b: Vec<u8> = (0..3 << 20).map(|i| (i % 241) as u8).collect();
+    write_file(&a.0, "DCIM/100_FUJI/DSCF0001.RAF", &raw_a, at(TAKEN));
+    write_file(&a.0, "DCIM/100_FUJI/DSCF0002.JPG", b"on both", at(TAKEN));
+    write_file(&b.0, "DCIM/100_FUJI/DSCF0101.RAF", &raw_b, at(TAKEN));
+    write_file(&b.0, "DCIM/100_FUJI/DSCF0002.JPG", b"on both", at(TAKEN));
+    let cards = (manifest(&a.0), manifest(&b.0));
+
+    let run = sync(&[&a.0, &b.0], &library.0, "Two");
+    assert_eq!(run.code, 0, "{run:?}");
+    let folder = library.0.join(format!("{} - Two", date_command(TAKEN)));
+    let want = [
+        (folder.join("JPEG/DSCF0002.JPG"), b"on both".to_vec()),
+        (folder.join("RAW/DSCF0001.RAF"), raw_a),
+        (folder.join("RAW/DSCF0101.RAF"), raw_b),
+    ];
+    let on_drive: Vec<(PathBuf, Vec<u8>)> = manifest(&library.0)
+        .into_iter()
+        .filter_map(|(p, (_, bytes))| bytes.map(|b| (p, b)))
+        .collect();
+    assert_eq!(on_drive, want, "each photo once");
+    let name = |d: &common::OnDrive| d.0.file_name().unwrap().to_string_lossy().into_owned();
+    let line = format!(
+        "copying 3/3 files, 6.3 MB of 6.3 MB (100%), ETA 0s [{} 2/2, {} 1/1]",
+        name(&a),
+        name(&b)
+    );
+    assert!(run.stderr.contains(&line), "{line}\n{run:?}");
+    assert!(
+        run.stdout.contains("(3 copied, 1 already there)."),
+        "{run:?}"
+    );
+    assert_eq!((manifest(&a.0), manifest(&b.0)), cards, "INV-1");
+
+    write_file(
+        &b.0,
+        "DCIM/100_FUJI/DSCF0001.RAF",
+        b"another camera",
+        at(TAKEN),
+    );
+    write_file(
+        &a.0,
+        "DCIM/100_FUJI/DSCF0003.RAF",
+        b"a raw three",
+        at(TAKEN),
+    );
+    let clash = sync(&[&a.0, &b.0], &library.0, "Two");
+    assert_eq!(clash.code, 1, "{clash:?}");
+    assert!(
+        clash.stdout.contains(&format!(
+            "  failed      {}: name collision with {}",
+            b.0.join("DCIM/100_FUJI/DSCF0001.RAF").display(),
+            folder.join("RAW/DSCF0001.RAF").display()
+        )),
+        "{clash:?}"
+    );
+    assert_eq!(
+        fs::read(folder.join("RAW/DSCF0001.RAF")).unwrap(),
+        want[1].1
+    );
+    assert_eq!(
+        fs::read(folder.join("RAW/DSCF0003.RAF")).unwrap(),
+        b"a raw three"
+    );
+}
