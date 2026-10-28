@@ -162,6 +162,9 @@ impl Pty {
         // tcgetattr before it is changed and set.
         unsafe {
             // The binary must not hold the keys' side: it is only ours.
+            // Not atomic with openpty: a parallel test's child may inherit
+            // these for a moment. Nothing waits for the pty to close, so
+            // that costs at most a delay on a failure path.
             libc::fcntl(keys, libc::F_SETFD, libc::FD_CLOEXEC);
             libc::fcntl(terminal, libc::F_SETFD, libc::FD_CLOEXEC);
             let mut mode: libc::termios = std::mem::zeroed();
@@ -183,7 +186,8 @@ impl Pty {
     /// Ctrl-D at the start of a line: the end of the input.
     pub fn end_input(&mut self) {
         use std::io::Write;
-        self.keys.write_all(&[0x04]).unwrap();
+        // Same EIO as above when the binary has already exited.
+        let _ = self.keys.write_all(&[0x04]);
     }
 }
 
@@ -209,7 +213,12 @@ where
         .spawn()
         .unwrap();
     let pid = child.id();
-    pty.keys.write_all(input).unwrap();
+    // Input past the pty's line buffer (MAX_INPUT, ~1 KiB on macOS) is
+    // dropped silently, so keep a test's typed input well below that.
+    assert!(input.len() < 512, "pty input too long to arrive whole");
+    // A binary that exits before reading it all makes the write fail with
+    // EIO; that is its business, and the Run below still shows what it did.
+    let _ = pty.keys.write_all(input);
     pty.end_input();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || tx.send(child.wait_with_output().unwrap()));
