@@ -26,6 +26,16 @@ pub fn scan_elsewhere(root: &Path) -> SourceScan {
     scan
 }
 
+/// `scan_elsewhere`, but on fake device `card` of its own (1, 2, ...).
+/// `scan_elsewhere` puts every source on one device, and a twin must be on
+/// another device than the file it stands in for (DEC-038), so a test of
+/// twins on two cards scans each with its own number.
+pub fn scan_card(root: &Path, card: u64) -> SourceScan {
+    let mut scan = scan_elsewhere(root);
+    scan.set_device_for_test(OTHER_DEVICE + card);
+    scan
+}
+
 /// A fresh directory under the system temp dir, removed on drop.
 pub struct TempDir(pub PathBuf);
 

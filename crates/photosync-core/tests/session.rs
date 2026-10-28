@@ -12,7 +12,7 @@ use photosync_core::{
 };
 
 mod common;
-use common::{TempDir, at, date_command, manifest, scan_elsewhere, write_file};
+use common::{TempDir, at, date_command, manifest, scan_card, scan_elsewhere, write_file};
 
 const T0: u64 = 1_761_650_000; // 2026-10-28, mid-day in most zones
 const DAY: u64 = 86_400;
@@ -491,7 +491,7 @@ fn a_twin_the_fallback_copied_is_the_original_for_later_cards() {
     let mut session = Session::new(&lib, None).unwrap();
 
     // Readable while planning, which scans and hashes first; not after.
-    let scans = vec![scan_elsewhere(&a), scan_elsewhere(&b)];
+    let scans = vec![scan_card(&a, 1), scan_card(&b, 2)];
     let unread = raf(&a);
     let mut lock = None;
     let mut watch = LockOnCopy { path: unread.clone(), lock: &mut lock };

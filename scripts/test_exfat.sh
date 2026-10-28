@@ -6,9 +6,11 @@
 # end-to-end test plans a library on it with the real volume lookup. A third
 # small image stands in for the external drive (PHOTOSYNC_TEST_LIBRARY): the
 # binary's end-to-end test syncs the card to it, on three devices as strict
-# INV-10 requires. All images are made in a temp dir outside the repo and
-# detached at the end, even on failure; if a detach fails, the script says so
-# and removes nothing.
+# INV-10 requires. Two more small images are two cards for the twin tests
+# (PHOTOSYNC_TEST_TWIN_A, PHOTOSYNC_TEST_TWIN_B): a twin must be on another
+# device than the file it stands in for (DEC-038). All images are made in a
+# temp dir outside the repo and detached at the end, even on failure; if a
+# detach fails, the script says so and removes nothing.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,6 +51,8 @@ work="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/photosync-exfat.XXXXXX")" && pwd -P)"
 mnt="$work/mnt"
 card="$work/card"
 library="$work/lib"
+twin_a="$work/twin_a"
+twin_b="$work/twin_b"
 # Whole-disk devices of attached images whose file is under $1. A failing
 # `hdiutil info` prints a placeholder, so the caller counts it as left.
 attached_under() {
@@ -68,7 +72,7 @@ cleanup() {
     # Every mount point is detached and checked, attached or not: one
     # attach may have mounted before it failed.
     local point mounts left=()
-    for point in "$library" "$card" "$mnt"; do
+    for point in "$twin_b" "$twin_a" "$library" "$card" "$mnt"; do
         if mounts=$(mount) && [[ $mounts == *" on $point "* ]]; then
             hdiutil detach "$point" -quiet || hdiutil detach "$point" -force -quiet || true
         fi
@@ -118,11 +122,15 @@ mkdir "$card/DCIM"
 echo "card image (DCIM at its top) mounted at $card"
 attach_exfat PSLIB 16m "$library"
 echo "library drive image mounted at $library"
+attach_exfat PSTWINA 16m "$twin_a"
+attach_exfat PSTWINB 16m "$twin_b"
+echo "twin card images mounted at $twin_a and $twin_b"
 
 args=()
 for name in ${skip[@]+"${skip[@]}"}; do
     args+=(--skip "$name")
 done
 TMPDIR="$mnt" PHOTOSYNC_TEST_CARD="$card" PHOTOSYNC_TEST_LIBRARY="$library" \
+    PHOTOSYNC_TEST_TWIN_A="$twin_a" PHOTOSYNC_TEST_TWIN_B="$twin_b" \
     cargo test --manifest-path "$repo/Cargo.toml" -p photosync-core -p photosync \
     --no-fail-fast -- --exact ${args[@]+"${args[@]}"}

@@ -9,7 +9,7 @@ use photosync_core::{
 };
 
 mod common;
-use common::{TempDir, at, manifest, scan_elsewhere, write_file};
+use common::{TempDir, at, manifest, scan_card, scan_elsewhere, write_file};
 #[cfg(unix)]
 use common::Mode;
 
@@ -484,7 +484,7 @@ fn planned_files_carry_their_source_hash_and_twins() {
     put(&b, &[("DCIM/100_FUJI/DSCF0001.RAF", b"backup"), ("DCIM/100_FUJI/DSCF0002.RAF", b"only b")]);
     put(&c, &[("DCIM/100_FUJI/DSCF0001.RAF", b"backup")]);
     fs::create_dir_all(&lib).unwrap();
-    let sources = [scan(&a), scan(&b), scan(&c)];
+    let sources = [scan_card(&a, 1), scan_card(&b, 2), scan_card(&c, 3)];
 
     let plan = plan_sync(&lib, &sources, &mut Monitor::default()).unwrap();
 
@@ -497,4 +497,32 @@ fn planned_files_carry_their_source_hash_and_twins() {
     assert_eq!(twins, [b.join("DCIM/100_FUJI/DSCF0001.RAF"), c.join("DCIM/100_FUJI/DSCF0001.RAF")]);
     assert!(only_b.twins().is_empty());
     assert!(plan.seen_earlier.is_empty(), "only a session fills it");
+}
+
+/// DEC-038: a twin must be on another device than the planned file's
+/// source, not only another source. Two sources on one card (its root and
+/// a folder in it, or two mounts of it) give no twin, so a card that just
+/// failed to read is never read again in its place: the copy on the second
+/// source is a plain duplicate in session.
+#[test]
+fn two_sources_on_one_device_give_no_twin() {
+    let dir = TempDir::new();
+    let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"backup")]);
+    put(&b, &[("DCIM/100_FUJI/DSCF0001.RAF", b"backup")]);
+    fs::create_dir_all(&lib).unwrap();
+    let (from_a, from_b) = (a.join("DCIM/100_FUJI/DSCF0001.RAF"), b.join("DCIM/100_FUJI/DSCF0001.RAF"));
+
+    let one_device = [scan_elsewhere(&a), scan_elsewhere(&b)];
+    let plan = plan_sync(&lib, &one_device, &mut Monitor::default()).unwrap();
+    assert_complete(&plan, &one_device);
+    let [planned] = &plan.to_copy[..] else { panic!("{:?}", plan.to_copy) };
+    assert!(planned.twins().is_empty(), "same device: {:?}", planned.twins());
+    assert_eq!(plan.duplicates, [Duplicate { file: one_device[1].files[0].clone(), of: from_a.clone() }]);
+
+    let two_devices = [scan_card(&a, 1), scan_card(&b, 2)];
+    let plan = plan_sync(&lib, &two_devices, &mut Monitor::default()).unwrap();
+    let [planned] = &plan.to_copy[..] else { panic!("{:?}", plan.to_copy) };
+    let twins: Vec<&Path> = planned.twins().iter().map(|f| f.path.as_path()).collect();
+    assert_eq!(twins, [from_b.as_path()]);
 }

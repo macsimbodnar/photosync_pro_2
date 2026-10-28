@@ -69,9 +69,10 @@ several times; the cards are copied one after another into one sync folder,
 (backup slots) is copied once; the other card's copy is a "duplicate in
 session". If one card cannot be read, the photo is copied from the other,
 checked against what was read before: the report names the card it came
-from and shows the read error ("check that card"). Only another card
-stands in: the same photo twice on one card is a duplicate of the first,
-and fails with it. A copy from the other card that is in place but whose
+from and shows the read error, and its result names the card that could
+not be read ("check that card"), complete or not. Only another card (another
+device) stands in: the same photo twice on one card, or on two sources that
+are one card, is a duplicate of the first, and fails with it. A copy from the other card that is in place but whose
 folder flush failed is "in place, flush not confirmed". The library folder must exist. It is never on a card, nor on the
 same drive as a source. Photos already anywhere in the library are
 skipped. A photo that changed on the card after it was compared with the
@@ -172,7 +173,9 @@ session, one of them failing, typed at its prompt on a pseudo-terminal.
 The binary's unit tests `text::tests::a_session_names_the_card_a_file_was_copied_from_its_twin_for`
 and `app::tests::the_result_box_names_the_card_a_file_was_copied_from_its_twin_for`
 run a session whose first sync copies a photo from its twin (the planned
-file is removed once copying starts), into a folder on that drive. Plain `cargo test` skips these
+file is removed once copying starts), into a folder on that drive. A twin
+must be on another device, so those two cards are on two more small images
+(`PHOTOSYNC_TEST_TWIN_A`, `PHOTOSYNC_TEST_TWIN_B`). Plain `cargo test` skips these
 tests and says so; it covers the binary's help, usage errors and refusals
 on temp dirs. The tests reach `photosync sources` and `drives` through a
 hidden `--search-root` option.

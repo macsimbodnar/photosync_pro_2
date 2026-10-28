@@ -32,7 +32,8 @@ stays listed as retired.
   that planning hashed must also read as that hash when copied: one that
   changed since fails, and so do its duplicates. One that cannot be read
   is copied from its first twin (same name, size and planning hash, on
-  another source, never the same card) that reads as that hash; a twin
+  another device than its source, so never the same card, even given as
+  two sources) that reads as that hash; a twin
   that cannot be read or reads otherwise is passed for the next. A failure on the drive's side
   is never retried on a twin (DEC-036).
 - INV-4 Idempotent. Syncing the same source to the same destination twice
@@ -247,7 +248,8 @@ picks. It is simple to use.
 
 - At the end, shows what was done: copied, skipped (already on drive, or
   duplicate in session, with the read error of a file copied from its
-  twin, and the card it could not be read on named in the result),
+  twin, and each card a file could not be read on named in the result,
+  complete or not),
   failed with a reason (name collisions and copies in place not flushed
   included),
   cancelled, ignored types, and the entries the scan could not read. Totals

@@ -1376,10 +1376,15 @@ mod tests {
     /// the drive image.
     #[test]
     fn the_result_box_names_the_card_a_file_was_copied_from_its_twin_for() {
-        use crate::common::{LoseOnCopy, OnDrive, test_drive};
+        use crate::common::{LoseOnCopy, OnDrive, test_drive, twin_cards};
 
         let Some(drive) =
             test_drive("the_result_box_names_the_card_a_file_was_copied_from_its_twin_for")
+        else {
+            return;
+        };
+        let Some((card_a, card_b)) =
+            twin_cards("the_result_box_names_the_card_a_file_was_copied_from_its_twin_for")
         else {
             return;
         };
@@ -1387,7 +1392,13 @@ mod tests {
         let ours = OnDrive::new(&drive, "S023-app");
         std::fs::create_dir(ours.0.join("Photos")).unwrap();
         let dir = TempDir::new();
-        let (a, b, c) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("c"));
+        // The twins on two images: on one device they would be no twins
+        // (DEC-038).
+        let (on_a, on_b) = (
+            OnDrive::new(&card_a, "S023-app"),
+            OnDrive::new(&card_b, "S023-app"),
+        );
+        let (a, b, c) = (on_a.0.clone(), on_b.0.clone(), dir.0.join("c"));
         let lost = write_file(&a, "DCIM/100_FUJI/DSCF0001.RAF", b"twin", at(1_700_000_000));
         write_file(&b, "DCIM/100_FUJI/DSCF0001.RAF", b"twin", at(1_700_000_000));
         write_file(
@@ -1435,9 +1446,9 @@ mod tests {
                     result.ends_with(&format!(" over 2 syncs. {warning}.")),
                     "{result}"
                 );
-                let own = "could not be read on its card and was copied from another card: \
-                           check that card.";
-                assert!(lines.iter().any(|l| l.ends_with(own)), "{lines:#?}");
+                // The sync's own result names the card too (S024).
+                let own = format!("{warning}.");
+                assert!(lines.iter().any(|l| l.ends_with(&own)), "{lines:#?}");
                 assert!(*complete, "the photos are on the drive");
             }
             other => panic!("{other:?}"),

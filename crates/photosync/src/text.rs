@@ -289,7 +289,9 @@ fn run_state(run: &Run) -> String {
                     totals.failed.files, totals.cancelled.files, unreadable
                 )
             };
-            if let Some(warning) = unread_warning(totals.unread.files, &unread_cards([report])) {
+            if let Some(warning) =
+                unread_warning(totals.unread.files, &unread_cards(report.sources()))
+            {
                 state.push_str(", but ");
                 state.push_str(&warning);
             }
@@ -301,12 +303,11 @@ fn run_state(run: &Run) -> String {
     }
 }
 
-/// The cards of `reports` with a file that could not be read and was
+/// The cards of `sources` with a file that could not be read and was
 /// copied from its twin, in order, each once.
-fn unread_cards<'r>(reports: impl IntoIterator<Item = &'r Report>) -> Vec<&'r Path> {
+fn unread_cards<'r>(sources: impl IntoIterator<Item = &'r SourceReport>) -> Vec<&'r Path> {
     let mut cards: Vec<&Path> = Vec::new();
-    let sources = reports.into_iter().flat_map(Report::sources);
-    for source in sources.filter(|s| s.totals().unread.files > 0) {
+    for source in sources.into_iter().filter(|s| s.totals().unread.files > 0) {
         if !cards.contains(&source.root.as_path()) {
             cards.push(&source.root);
         }
@@ -377,7 +378,10 @@ pub fn session_result(session: &Session) -> String {
         RunEnd::Report(report) => Some(report),
         _ => None,
     });
-    if let Some(warning) = unread_warning(totals.unread.files, &unread_cards(reports)) {
+    if let Some(warning) = unread_warning(
+        totals.unread.files,
+        &unread_cards(reports.flat_map(Report::sources)),
+    ) {
         line.push(' ');
         line.push_str(&warning);
         line.push('.');
@@ -665,18 +669,8 @@ pub fn result_line(totals: &Tally, sources: &[SourceReport]) -> String {
             totals.copied.files,
             totals.skipped.files
         );
-        // Every photo is safe, but the card had a read error.
-        if totals.unread.files > 0 {
-            line.push_str(&match totals.unread.files {
-                1 => " 1 could not be read on its card and was copied from another card: \
-                       check that card."
-                    .to_string(),
-                n => format!(
-                    " {n} could not be read on their card and were copied from another \
-                     card: check those cards."
-                ),
-            });
-        }
+        // Every photo is safe, but a card had a read error.
+        line.push_str(&unread_sentence(totals, sources));
         return line;
     }
     let unreadable: usize = sources.iter().map(|s| s.unreadable.len()).sum();
@@ -690,11 +684,21 @@ pub fn result_line(totals: &Tally, sources: &[SourceReport]) -> String {
             totals.not_flushed.files
         ));
     }
+    // Named here too, so what failed does not hide a card that only had a
+    // read error (S024).
+    line.push_str(&unread_sentence(totals, sources));
     line.push_str(
         " Do not format the card. Fix the cause and run the same sync again: \
          files already on the drive are skipped.",
     );
     line
+}
+
+/// " 1 could not be read on /Volumes/A and was copied from another card:
+/// check that card.", or "" when every file was read.
+fn unread_sentence(totals: &Tally, sources: &[SourceReport]) -> String {
+    unread_warning(totals.unread.files, &unread_cards(sources))
+        .map_or_else(String::new, |warning| format!(" {warning}."))
 }
 
 /// One plain sentence per refusal: what is wrong, and what to do.
@@ -1091,7 +1095,71 @@ mod tests {
         assert_eq!(
             result,
             "Result: all 1 photo or video on the drive (0 copied, 1 already there). \
-             1 could not be read on its card and was copied from another card: check that card."
+             1 could not be read on /c and was copied from another card: check that card."
+        );
+    }
+
+    /// S024: the one-sync result names each card a file could not be read
+    /// on, by name, whether the sync is complete or not: a not-complete
+    /// sync must not hide that another card had a read error too.
+    #[test]
+    fn the_one_sync_result_names_every_unread_card_complete_or_not() {
+        let unread = |root: &str| {
+            entry(
+                &format!("{root}/DCIM/D.RAF"),
+                FileOutcome::DuplicateUnread {
+                    of: PathBuf::from("/V/T/DCIM/D.RAF"),
+                    error: eio(),
+                },
+            )
+        };
+        let failed = || {
+            entry(
+                "/V/C/DCIM/E.RAF",
+                FileOutcome::Failed(FailReason::Read(eio())),
+            )
+        };
+        let source = |root: &str, files| SourceReport {
+            root: PathBuf::from(root),
+            files,
+            unreadable: Vec::new(),
+        };
+        // `Tally` has no public sum: the totals are of one source with
+        // every file.
+        let result = |sources: &[SourceReport], all: Vec<FileReport>| {
+            result_line(&source("/all", all).totals(), sources)
+        };
+
+        let both = result(
+            &[
+                source("/V/A", vec![unread("/V/A")]),
+                source("/V/B", vec![unread("/V/B")]),
+            ],
+            vec![unread("/V/A"), unread("/V/B")],
+        );
+        assert!(both.starts_with("Result: all 2 "), "{both}");
+        assert!(
+            both.ends_with(
+                " 2 could not be read on /V/A, /V/B and were copied from another card: \
+                 check those cards."
+            ),
+            "{both}"
+        );
+
+        let not = result(
+            &[
+                source("/V/A", vec![unread("/V/A")]),
+                source("/V/C", vec![failed()]),
+            ],
+            vec![unread("/V/A"), failed()],
+        );
+        assert!(
+            not.starts_with(
+                "Result: NOT COMPLETE: 1 failed, 0 cancelled, 0 unreadable. \
+                 1 could not be read on /V/A and was copied from another card: check that card. \
+                 Do not format the card."
+            ),
+            "{not}"
         );
     }
 
@@ -1101,7 +1169,7 @@ mod tests {
     /// the session is complete or not. Real syncs, so on the drive image.
     #[test]
     fn a_session_names_the_card_a_file_was_copied_from_its_twin_for() {
-        use crate::common::{LoseOnCopy, OnDrive, TempDir, at, test_drive, write_file};
+        use crate::common::{LoseOnCopy, OnDrive, TempDir, at, test_drive, twin_cards, write_file};
         use photosync_core::{Cancel, Session};
 
         struct Quiet;
@@ -1112,9 +1180,20 @@ mod tests {
         else {
             return;
         };
+        let Some((card_a, card_b)) =
+            twin_cards("a_session_names_the_card_a_file_was_copied_from_its_twin_for")
+        else {
+            return;
+        };
         let library = OnDrive::new(&drive, "S023-cli");
         let dir = TempDir::new();
-        let (a, b, c) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("c"));
+        // The twins on two images: on one device they would be no twins
+        // (DEC-038).
+        let (on_a, on_b) = (
+            OnDrive::new(&card_a, "S023-cli"),
+            OnDrive::new(&card_b, "S023-cli"),
+        );
+        let (a, b, c) = (on_a.0.clone(), on_b.0.clone(), dir.0.join("c"));
         let lost = write_file(&a, "DCIM/100_FUJI/DSCF0001.RAF", b"twin", at(1_700_000_000));
         write_file(&b, "DCIM/100_FUJI/DSCF0001.RAF", b"twin", at(1_700_000_000));
         write_file(

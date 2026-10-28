@@ -976,7 +976,7 @@ fn injected(fault: Fault) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::{TempDir, at, date_command, scan_elsewhere, write_file};
+    use crate::common::{TempDir, at, date_command, scan_card, scan_elsewhere, write_file};
     use super::*;
     use crate::plan::plan_sync;
     use std::sync::Barrier;
@@ -1644,7 +1644,7 @@ mod tests {
         cancel_at: Option<usize>,
         monitor: impl FnOnce(Cancel) -> Monitor<'static>,
     ) -> Run {
-        let scans: Vec<_> = cards.iter().map(|c| scan_elsewhere(c)).collect();
+        let scans = on_own_cards(cards);
         let plan = plan_sync(lib, &scans, &mut Monitor::default()).unwrap();
         let folder = sync_folder(&plan, None).unwrap().unwrap();
         let written = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -1666,6 +1666,12 @@ mod tests {
         clear_hook();
         FAULT.with(|f| f.set(None));
         Run { scans, plan, outcome: outcome.unwrap(), folder, written: written.get() }
+    }
+
+    /// Each card on a fake device of its own: a twin must be on another
+    /// device than the file it stands in for (DEC-038).
+    fn on_own_cards(cards: &[PathBuf]) -> Vec<crate::SourceScan> {
+        cards.iter().zip(1..).map(|(c, n)| scan_card(c, n)).collect()
     }
 
     fn quiet(cancel: Cancel) -> Monitor<'static> {
@@ -1738,7 +1744,7 @@ mod tests {
         // `run_failing` plans and copies at once; the third card changes in
         // between, so this run is spelled out.
         let run = {
-            let scans: Vec<_> = cards.iter().map(|c| scan_elsewhere(c)).collect();
+            let scans = on_own_cards(&cards);
             let plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
             write_file(&cards[2], "DCIM/100_FUJI/DSCF0001.RAF", &changed, at(1_700_000_000));
             let folder = sync_folder(&plan, None).unwrap().unwrap();
@@ -1910,7 +1916,7 @@ mod tests {
         use crate::{FileOutcome, Report};
         let dir = TempDir::new();
         let (cards, lib, bytes) = backup_cards(&dir.0, 3);
-        let scans: Vec<_> = cards.iter().map(|c| scan_elsewhere(c)).collect();
+        let scans = on_own_cards(&cards);
         let plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
         let folder = sync_folder(&plan, None).unwrap().unwrap();
         let written = std::rc::Rc::new(std::cell::Cell::new(0));

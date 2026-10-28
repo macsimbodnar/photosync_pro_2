@@ -268,7 +268,12 @@ pub(crate) fn plan_in_session(
         if let Some((_, of, copied)) = seen.iter().find(|(h, _, _)| *h == hash) {
             // A twin stands in for an unreadable card, so one on that same
             // card is none (INV-3): its read error would likely hit it too.
-            if let Some(i) = copied.filter(|i| plan.to_copy[*i].source != source) {
+            // By device, not source index: two sources can be one card
+            // (DEC-038).
+            let other_card = |i: &usize| {
+                sources[plan.to_copy[*i].source].device() != sources[source].device()
+            };
+            if let Some(i) = copied.filter(other_card) {
                 plan.to_copy[i].twins.push(file.clone());
             }
             plan.duplicates.push(Duplicate { file: file.clone(), of: of.clone() });

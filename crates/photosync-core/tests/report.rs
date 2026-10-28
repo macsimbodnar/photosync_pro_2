@@ -13,7 +13,7 @@ use photosync_core::{
 };
 
 mod common;
-use common::{TempDir, at, date_command, scan_elsewhere, write_file};
+use common::{TempDir, at, date_command, scan_card, scan_elsewhere, write_file};
 #[cfg(unix)]
 use common::Mode;
 
@@ -393,7 +393,7 @@ fn a_readable_twin_of_an_original_that_failed_to_read_is_copied_by_the_fallback(
     put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"twin"), ("DCIM/100_FUJI/DSCF0002.JPG", b"only a")]);
     put(&b, &[("DCIM/100_FUJI/DSCF0001.RAF", b"twin")]);
     std::fs::create_dir_all(&lib).unwrap();
-    let scans = vec![scan(&a), scan(&b)];
+    let scans = vec![scan_card(&a, 1), scan_card(&b, 2)];
     let plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
     let original = a.join("DCIM/100_FUJI/DSCF0001.RAF");
     let twin = b.join("DCIM/100_FUJI/DSCF0001.RAF");
@@ -443,7 +443,7 @@ fn report_refuses_a_twin_the_plan_does_not_list() {
     // Built by hand, so nothing is read or written. `tried` holds a failed
     // twin; `read` is the one copied in place of `original`.
     let build = |original: &Path, tried: Option<&Path>, read: &Path| {
-        let scans = vec![scan(&a), scan(&b)];
+        let scans = vec![scan_card(&a, 1), scan_card(&b, 2)];
         let plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
         let error = || std::io::Error::other("injected");
         let mut outcome = CopyOutcome::nothing_to_copy(Default::default());

@@ -93,8 +93,28 @@ pub fn test_drive(test: &str) -> Option<PathBuf> {
     Some(fs::canonicalize(drive).unwrap())
 }
 
-/// A fresh library folder on the test drive, removed on drop, failing or
-/// not: the drive image is shared by the tests.
+/// The two card images of `scripts/test_exfat.sh` for twins
+/// (`PHOTOSYNC_TEST_TWIN_A`, `PHOTOSYNC_TEST_TWIN_B`): a device each, as a
+/// twin must be on another device than the file it stands in for
+/// (DEC-038), and the temp dir is one device. `None`, said on stderr,
+/// without them.
+pub fn twin_cards(test: &str) -> Option<(PathBuf, PathBuf)> {
+    let (Some(a), Some(b)) = (
+        std::env::var_os("PHOTOSYNC_TEST_TWIN_A"),
+        std::env::var_os("PHOTOSYNC_TEST_TWIN_B"),
+    ) else {
+        eprintln!(
+            "SKIPPED {test}: PHOTOSYNC_TEST_TWIN_A or PHOTOSYNC_TEST_TWIN_B is not set \
+             (scripts/test_exfat.sh sets them)"
+        );
+        return None;
+    };
+    Some((fs::canonicalize(a).unwrap(), fs::canonicalize(b).unwrap()))
+}
+
+/// A fresh folder on a test image (a library on the drive, or a card on
+/// a twin image), removed on drop, failing or not: the images are shared
+/// by the tests.
 pub struct OnDrive(pub PathBuf);
 
 impl OnDrive {

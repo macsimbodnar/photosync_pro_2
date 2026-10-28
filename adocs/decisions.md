@@ -55,6 +55,7 @@ Why: one line.
 - DEC-036 2026-10-28 — twin fallback on a read error (S021, F07)
 - DEC-037 2026-10-28 — twin-fallback reporting fixes (S023)
 - DEC-038 2026-10-28 — a twin must be on another device, not only another source
+- DEC-039 2026-10-28 — S024: device rule in planning, one-sync result names unread cards, twin images
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -801,8 +802,9 @@ re-check) is not retried: of the planned file, nor after a twin's, which
 ends the tries; the file then fails with its own read error and the
 twin's drive error is not reported, except a twin's copy left in place
 unflushed, which is (amended in S023, DEC-037 (2)). Twins are only on
-another source: a same-hash file on the planned file's own card is a
-plain duplicate (amended in S023, DEC-037 (1)). A planned file that read otherwise
+another device: a same-hash file on the planned file's own card is a
+plain duplicate (amended in S023, DEC-037 (1); by device in S024,
+DEC-038). A planned file that read otherwise
 than planned does not fall back: it fails and so do its duplicates, as
 INV-3 and the kept test `a_file_changed_between_planning_and_copy_fails`
 say. Rejected: falling back on `SourceChanged` too (the S021 brief
@@ -863,7 +865,8 @@ and was/were copied from another card: check that card/those cards" to
 "complete" or to the failed/cancelled counts; `session_result` appends
 the same sentence over all syncs, complete or NOT COMPLETE, naming each
 card once. A not-complete sync with an unread file thus names it twice
-(in its state and at the end). The one-sync `result_line` is unchanged.
+(in its state and at the end). The one-sync `result_line` is unchanged
+(amended in S024, DEC-039 (2): it names the cards too).
 The TUI box stays green (exit 0, DEC-036 (3)).
 (4) The multi-sync tests need real syncs, so sources on another device
 than the library: they run on the exFAT drive image of
@@ -883,3 +886,28 @@ give no twin, so a card that just failed to read is never read again in its
 place. Rejected: comparing source indexes (lets one card count as two). The
 cost: exFAT session tests need separate card images.
 Why: matches INV-3 ("another card") and the strict device rule of DEC-025.
+
+## DEC-039  2026-10-28  S024: device rule in planning, one-sync result names unread cards, twin images
+Tags: fallback, plan, report, cli, tui, test
+Decision: agent's pick in S024, not yet confirmed by the user.
+(1) Planning applies DEC-038 by comparing the scans' `device()` of the
+planned file's source and of the same-hash file's; nothing else changes
+(copy and `Report::new` already follow `Planned::twins`).
+(2) The one-sync `result_line` names each card with an unread file, with
+the sentence of `run_state` and `session_result` (DEC-037 (3)): complete
+"... already there). 1 could not be read on /Volumes/A and was copied
+from another card: check that card."; NOT COMPLETE puts the same sentence
+after the counts (and the not-flushed count), before "Do not format the
+card." Supersedes the "on its card" wording, and two assertions of it
+change to the named card: `a_file_copied_from_its_twin_shows_its_read_error`
+and the per-sync line in `the_result_box_names_the_card_a_file_was_copied_from_its_twin_for`.
+(3) Core tests give each card of a twin test its own fake device with
+`common::scan_card(root, n)` (`OTHER_DEVICE + n`); `scan_elsewhere` stays
+one device for all, so a test not about twins is unchanged.
+(4) `scripts/test_exfat.sh` mounts two more 16 MB exFAT images, the twin
+cards, passed in `PHOTOSYNC_TEST_TWIN_A` and `PHOTOSYNC_TEST_TWIN_B`
+(`common::twin_cards`); the binary's two twin tests put cards a and b in a
+fresh folder on each (`OnDrive`), card c stays in the temp dir. Rejected:
+reusing the `PHOTOSYNC_TEST_CARD` image, which other tests count files on.
+Why: the device is what makes a card another card, and a not-complete
+result must still say which card had a read error.
