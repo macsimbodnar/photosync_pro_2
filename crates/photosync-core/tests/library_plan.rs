@@ -353,3 +353,30 @@ fn unreadable_library_folder_is_a_library_failure() {
     assert_eq!(plan.library_failures[0].path, locked);
     assert_eq!(plan.to_copy.len(), 1);
 }
+
+#[test]
+fn trashed_and_hidden_library_files_do_not_count_as_synced() {
+    let dir = TempDir::new();
+    let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+    put(&card, &[
+        ("DCIM/100_FUJI/DSCF0001.RAF", b"raw one"),
+        ("DCIM/100_FUJI/DSCF0002.RAF", b"raw two"),
+        ("DCIM/100_FUJI/DSCF0003.RAF", b"raw three"),
+        ("DCIM/100_FUJI/DSCF0004.RAF", b"raw four"),
+    ]);
+    // Deleted in Finder / Explorer, or hidden: the photo may vanish when the
+    // trash is emptied, so these must never stand in for a synced copy.
+    put(&lib, &[
+        (".Trashes/501/DSCF0001.RAF", b"raw one"),
+        ("$RECYCLE.BIN/S-1-5-21/DSCF0002.RAF", b"raw two"),
+        ("System Volume Information/DSCF0003.RAF", b"raw three"),
+        ("2026-10-28/RAW/.DSCF0004.RAF", b"raw four"),
+    ]);
+    let sources = [scan(&card)];
+
+    let plan = plan_sync(&lib, &sources).unwrap();
+
+    assert!(plan.skipped.is_empty(), "skipped: {:?}", plan.skipped);
+    assert_eq!(plan.to_copy.len(), 4);
+    assert_complete(&plan, &sources);
+}

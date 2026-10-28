@@ -129,9 +129,12 @@ picks. It is simple to use.
 ### Already-synced detection
 
 - Before copying, the app scans the library folder (not the rest of the
-  drive) into memory. Nothing is persisted (INV-9). Files named
-  `.photosync-tmp-*` are not library files: the scan skips them, and the
-  sync deletes stale ones.
+  drive) into memory. Nothing is persisted (INV-9).
+- Entries whose name starts with `.` (trash such as `.Trashes` and `.Trash`,
+  OS metadata, photosync's own `.photosync-tmp-*` files), as well as
+  `$RECYCLE.BIN` and `System Volume Information`, are not library files.
+  The scan skips them, so a photo found only there is copied again
+  (DEC-016). The sync deletes its own stale temp files.
 - A source file counts as already synced if any library file anywhere has
   the same name and size and the same content (hash). Name + size picks
   the candidates, and the hash confirms them. So a photo synced earlier into

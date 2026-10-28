@@ -10,9 +10,17 @@ use std::path::{Path, PathBuf};
 
 use crate::source::ScanError;
 
-/// Photosync's own copies in flight (INV-3). Not library files: a stale one
-/// may be partial, so it must never count as a synced photo.
-pub(crate) const TEMP_PREFIX: &[u8] = b".photosync-tmp-";
+/// Trash and OS metadata folders. A photo there may vanish when the trash is
+/// emptied, so it must never count as synced (DEC-016).
+const SYSTEM_DIRS: &[&str] = &["$RECYCLE.BIN", "System Volume Information"];
+
+/// Dot entries (`.Trashes`, `.Trash`, `.Spotlight-V100`, photosync's own
+/// possibly partial `.photosync-tmp-*` files, ...) and `SYSTEM_DIRS` are skipped: ignoring a real copy only costs
+/// a second copy, while counting a doomed one could lose the photo.
+fn skipped_entry(name: &OsStr) -> bool {
+    name.as_encoded_bytes().starts_with(b".")
+        || SYSTEM_DIRS.iter().any(|d| name.eq_ignore_ascii_case(d))
+}
 
 pub(crate) struct LibraryIndex {
     by_name_size: HashMap<(OsString, u64), Vec<PathBuf>>,
@@ -42,6 +50,9 @@ fn walk(dir: &Path, index: &mut LibraryIndex) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name();
+        if skipped_entry(&name) {
+            continue;
+        }
         let path = entry.path();
         let meta = match fs::symlink_metadata(&path) {
             Ok(meta) => meta,
@@ -54,7 +65,7 @@ fn walk(dir: &Path, index: &mut LibraryIndex) -> io::Result<()> {
             if let Err(source) = walk(&path, index) {
                 index.failures.push(ScanError { path, source });
             }
-        } else if meta.is_file() && !name.as_encoded_bytes().starts_with(TEMP_PREFIX) {
+        } else if meta.is_file() {
             index.by_name_size.entry((name, meta.len())).or_default().push(path);
         }
     }
