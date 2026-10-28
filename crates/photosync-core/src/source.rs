@@ -61,8 +61,11 @@ pub struct SourceFile {
 pub struct SourceScan {
     pub root: PathBuf,
     pub files: Vec<SourceFile>,
-    /// Files and folders under `DCIM` that could not be read. A failed
-    /// folder's contents are unknown, so they are in neither list.
+    /// Files and folders under `DCIM` that could not be read. A folder whose
+    /// listing broke partway keeps the files it gave before the break in
+    /// `files`; the rest of its contents are unknown and in neither list.
+    /// Only metadata is read here: a file whose data is unreadable shows up
+    /// later, when it is hashed or copied.
     pub failures: Vec<ScanError>,
 }
 
