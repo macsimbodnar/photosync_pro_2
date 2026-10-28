@@ -1446,9 +1446,14 @@ mod tests {
                     result.ends_with(&format!(" over 2 syncs. {warning}.")),
                     "{result}"
                 );
-                // The sync's own result names the card too (S024).
+                // The sync's own result names the card too (S024). Only the
+                // indented per-sync line counts: the session line ends the
+                // same way and would pass on its own.
                 let own = format!("{warning}.");
-                assert!(lines.iter().any(|l| l.ends_with(&own)), "{lines:#?}");
+                assert!(
+                    lines.iter().any(|l| l.starts_with("  Result: all") && l.ends_with(&own)),
+                    "{lines:#?}"
+                );
                 assert!(*complete, "the photos are on the drive");
             }
             other => panic!("{other:?}"),
