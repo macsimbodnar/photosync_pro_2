@@ -17,10 +17,11 @@ not change the order.
 
 ## Open
 
-1. S007  volume discovery (Mac, then Linux)
-2. S008  CLI commands
-3. S009  TUI
-4. S010  multi-source and one-by-one session
+1. S014  report hardening (S006 fast check)
+2. S007  volume discovery (Mac, then Linux)
+3. S008  CLI commands
+4. S009  TUI
+5. S010  multi-source and one-by-one session
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.
