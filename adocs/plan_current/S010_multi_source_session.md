@@ -5,5 +5,5 @@ touches:    photosync-core, crates/photosync, README.md
 excludes:   GUI
 closes:     2026-10-28_adversarial-F07
 paused_by:
-author:
+author:     Claude agent (2026-10-28)
 done:
