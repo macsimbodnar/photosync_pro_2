@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-28, by Claude agent (S020 done)
+Updated: 2026-10-28, by Claude (S020 fast check)
 
 - Last done: S020  one card after another in the CLI and TUI (DEC-034)
 - In progress: none
-- Next: S021  twin fallback on a read error, F07
+- Next: S022  session CLI/TUI hardening (S020 fast check)
 - Blocked: S017 waits for the user's hardware (DEC-029)
 - Parked:
   - S020's CLI and TUI session design is the agent's pick, not yet

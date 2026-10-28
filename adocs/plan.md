@@ -17,9 +17,10 @@ not change the order.
 
 ## Open
 
-1. S021  twin fallback on a read error, F07 (split from S010)
-2. S019  copy several cards at once (split from S010)
-3. S017  hardware hand checks (waits for the user)
+1. S022  session CLI/TUI hardening (S020 fast check)
+2. S021  twin fallback on a read error, F07 (split from S010)
+3. S019  copy several cards at once (split from S010)
+4. S017  hardware hand checks (waits for the user)
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.
