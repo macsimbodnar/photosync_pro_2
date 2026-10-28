@@ -92,7 +92,11 @@ picks. It is simple to use.
     it is a usage error (exit 2). It walks through picking the sources, the
     destination drive, the library folder on it (default `<drive>/Photos`),
     an optional name, then shows progress and the report, with the CLI's
-    sentences and exit codes. Cancel is a key, and Ctrl-C.
+    sentences and exit codes. Cancel is a key, and Ctrl-C. The last sync's
+    outcome decides the exit code and the message until a later sync
+    ends: going back after a refusal and quitting never exits 0. A sync
+    with no source picked does not start. A panic in the sync's thread
+    leaves the screen as it is and ends the sync as not complete (DEC-031).
   - A closed stdout never stops a sync nor panics: the exit code stays
     within 0/1/2.
   - GUI: a native Rust GUI, later. Adding it must need no change to the core

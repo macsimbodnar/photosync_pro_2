@@ -9,6 +9,8 @@ mod common;
 use std::fs;
 use std::panic;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -104,6 +106,34 @@ fn restore_runs_on_panic() {
     });
     assert!(result.is_err());
     assert!(rx.try_recv().is_ok(), "not restored");
+}
+
+/// S018: the panic hook in place while the TUI runs (ratatui's restores
+/// the terminal) acts for the TUI's own thread only. A worker's panic must
+/// leave the screen in raw mode for the loop that keeps drawing on it.
+#[test]
+fn panic_hook_acts_for_the_tui_thread_only() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let previous = panic::take_hook();
+    let counted = calls.clone();
+    // Stands in for ratatui's hook, which `run` gets from `try_init`.
+    panic::set_hook(Box::new(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+    }));
+    restore_on_panic_of_this_thread_only();
+
+    let worker = std::thread::spawn(|| panic!("worker")).join();
+    let after_worker = calls.load(Ordering::SeqCst);
+    let tui = panic::catch_unwind(|| panic!("tui"));
+    let after_tui = calls.load(Ordering::SeqCst);
+    panic::set_hook(previous);
+
+    assert!(worker.is_err() && tui.is_err());
+    assert_eq!(
+        (after_worker, after_tui),
+        (0, 1),
+        "hook calls: worker, then tui"
+    );
 }
 
 /// The loop on temp dirs: one device holds card and library, so the core

@@ -58,6 +58,8 @@ pub enum Msg {
     /// The worker is gone. After `Finished` that is normal; before it, the
     /// worker died, and nothing says what is on the drive.
     WorkerGone,
+    /// The sync panicked, with the panic's text: it ended with no result.
+    Crashed(String),
 }
 
 /// What the front-end must do for the model.
@@ -155,6 +157,8 @@ pub struct App {
     /// One line about the last key, e.g. why Enter did nothing.
     hint: Option<String>,
     running: Option<Running>,
+    /// The last sync's end. Only a later sync's end replaces it, so going
+    /// back after a failure never turns the exit into 0 (S018).
     outcome: Option<Outcome>,
     /// Ctrl-C was pressed while cancelling: quit at once (INV-7 makes it
     /// safe), as the CLI's second Ctrl-C does (DEC-028 (5)).
@@ -296,19 +300,28 @@ impl App {
                 None
             }
             Msg::WorkerGone => {
-                if self.running.take().is_some() {
-                    self.outcome = Some(Outcome::Refused {
-                        sentence: "The copy stopped with an internal error, so nothing \
-                                   says which files are on the drive. Do not format the \
-                                   card. Run the same sync again: files already on the \
-                                   drive are skipped."
-                            .to_string(),
-                        code: EXIT_INCOMPLETE,
-                    });
-                    self.screen = Screen::Refused;
-                }
+                self.died("The copy stopped with an internal error");
                 None
             }
+            Msg::Crashed(text) => {
+                self.died(&format!("The copy stopped with an internal error ({text})"));
+                None
+            }
+        }
+    }
+
+    /// The sync ended with no result. After `Finished` this changes nothing.
+    fn died(&mut self, what: &str) {
+        if self.running.take().is_some() {
+            self.outcome = Some(Outcome::Refused {
+                sentence: format!(
+                    "{what}, so nothing says which files are on the drive. Do not format \
+                     the card. Run the same sync again: files already on the drive are \
+                     skipped."
+                ),
+                code: EXIT_INCOMPLETE,
+            });
+            self.screen = Screen::Refused;
         }
     }
 
@@ -339,6 +352,14 @@ impl App {
                 None
             }
             Screen::Confirm => match key {
+                // `r` on the drive screen can drop the only picked card.
+                Key::Enter if self.picked.is_empty() => {
+                    self.hint = Some(
+                        "No card picked: the card is gone. Go back (Esc) to the cards and pick one."
+                            .into(),
+                    );
+                    None
+                }
                 Key::Enter => Some(Effect::Start(self.start())),
                 Key::Esc => {
                     self.screen = Screen::Name;
@@ -360,9 +381,10 @@ impl App {
             }
             Screen::Refused => match key {
                 // Nothing was written, or a re-run is what the sentence
-                // asks for: either way the user may fix and try again.
+                // asks for: either way the user may fix and try again. The
+                // outcome stays until a later sync ends: quitting from any
+                // screen must still say the card is not safe (S018).
                 Key::Enter | Key::Esc => {
-                    self.outcome = None;
                     self.screen = Screen::Confirm;
                     None
                 }
@@ -499,7 +521,6 @@ impl App {
             cancelling: false,
             cancel: cancel.clone(),
         });
-        self.outcome = None;
         self.screen = Screen::Running;
         Job {
             sources: self.picked.clone(),
@@ -921,6 +942,106 @@ mod tests {
         let exit = app.exit();
         assert_eq!(exit.code, EXIT_INCOMPLETE);
         assert!(exit.message.unwrap().contains("Do not format the card."));
+    }
+
+    /// S018: the outcome that says the card is not safe stays the exit
+    /// until a later sync finishes. Going back from its screen and quitting
+    /// elsewhere must not exit 0 or lose the sentence.
+    #[test]
+    fn a_failure_is_kept_after_going_back_and_quitting_elsewhere() {
+        let report_error = || {
+            Msg::Finished(Err(SyncError::Report(
+                photosync_core::ReportError::SourceTwice(PathBuf::from("/V/CARD")),
+            )))
+        };
+        for (what, end) in [
+            (
+                "worker gone",
+                Box::new(|| Msg::WorkerGone) as Box<dyn Fn() -> Msg>,
+            ),
+            ("report error", Box::new(report_error)),
+        ] {
+            for back in [Key::Enter, Key::Esc] {
+                let (mut app, _job) = running();
+                app.update(end());
+                let failed = app.exit();
+                assert_eq!(failed.code, EXIT_INCOMPLETE, "{what}");
+                assert!(failed.message.is_some(), "{what}");
+
+                keys(&mut app, &[back]);
+                assert_eq!(app.screen(), Screen::Confirm, "{what}");
+                assert_eq!(app.exit(), failed, "{what}: back with {back:?}");
+                let quit = keys(
+                    &mut app,
+                    &[Key::Esc, Key::Esc, Key::Esc, Key::Esc, Key::Char('q')],
+                );
+                assert_eq!(app.screen(), Screen::Sources, "{what}");
+                assert!(matches!(quit[..], [Effect::Quit]), "{what}");
+                assert_eq!(app.exit(), failed, "{what}: quit from the cards");
+            }
+        }
+    }
+
+    /// A later sync's end replaces the kept outcome: the last sync is what
+    /// says whether the card is safe.
+    #[test]
+    fn a_later_sync_replaces_the_kept_failure() {
+        let (mut app, _job) = running();
+        app.update(Msg::WorkerGone);
+        keys(&mut app, &[Key::Enter]);
+        let _again = start(&mut app);
+        // While it runs, quitting is not complete either.
+        assert_eq!(app.exit().code, EXIT_INCOMPLETE);
+        let err = SyncError::Plan(PlanError::Library(ScanError {
+            path: PathBuf::from("/V/SSD/Photos"),
+            source: io::Error::from(io::ErrorKind::NotFound),
+        }));
+        let sentence = text::refusal(&err);
+        app.update(Msg::Finished(Err(err)));
+        let exit = app.exit();
+        assert_eq!((exit.code, exit.message), (EXIT_REFUSED, Some(sentence)));
+    }
+
+    /// `r` on the drive screen can drop the only picked card: Confirm then
+    /// has nothing to copy from and must not start a sync of no source.
+    #[test]
+    fn confirm_refuses_to_start_with_no_card_picked() {
+        let mut app = app(&["/V/CARD"], &["/V/SSD"]);
+        keys(&mut app, &[Key::Enter]);
+        assert_eq!(app.screen(), Screen::Drive);
+        assert!(matches!(
+            keys(&mut app, &[Key::Char('r')])[..],
+            [Effect::Discover]
+        ));
+        app.update(Msg::Volumes(found(&[], &["/V/SSD"])));
+        assert!(app.picked().is_empty());
+        keys(&mut app, &[Key::Enter, Key::Enter, Key::Enter]);
+        assert_eq!(app.screen(), Screen::Confirm);
+
+        let effect = app.update(Msg::Key(Key::Enter));
+        assert!(effect.is_none(), "{effect:?}");
+        assert_eq!(app.screen(), Screen::Confirm);
+        assert!(app.running().is_none());
+        assert!(
+            app.hint().is_some_and(|h| h.contains("No card")),
+            "{:?}",
+            app.hint()
+        );
+    }
+
+    #[test]
+    fn a_sync_that_panicked_is_not_complete_and_says_why() {
+        let (mut app, _job) = running();
+        app.update(Msg::Crashed("index out of bounds".into()));
+        assert_eq!(app.screen(), Screen::Refused);
+        let exit = app.exit();
+        assert_eq!(exit.code, EXIT_INCOMPLETE);
+        let message = exit.message.unwrap();
+        assert!(message.contains("index out of bounds"), "{message}");
+        assert!(message.contains("Do not format the card."), "{message}");
+        // The channel closing after it changes nothing.
+        app.update(Msg::WorkerGone);
+        assert_eq!(app.exit().message.unwrap(), message);
     }
 
     #[test]

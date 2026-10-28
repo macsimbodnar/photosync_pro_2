@@ -6,8 +6,10 @@
 mod view;
 
 use std::io;
+use std::panic;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, TryRecvError};
+use std::thread;
 use std::time::Duration;
 
 use photosync_core::{Volumes, discover_volumes};
@@ -24,12 +26,14 @@ const FRAME: Duration = Duration::from_millis(50);
 
 /// Runs the TUI until the user quits, and returns the model, which says
 /// what to print and the exit code (`App::exit`). The terminal is restored
-/// on every way out: return, error, or panic (ratatui's panic hook, and
-/// `Restore` while unwinding).
+/// on every way out: return, error, or a panic of this thread (ratatui's
+/// panic hook, and `Restore` while unwinding). A worker's panic leaves it
+/// as it is: the loop shows it as the sync's end.
 pub fn run(search_roots: Vec<PathBuf>) -> Result<App, Failed> {
     // Before init: a failed init may have turned on raw mode already.
     let _restore = Restore(ratatui::restore);
     let mut terminal = ratatui::try_init().map_err(Failed::Start)?;
+    restore_on_panic_of_this_thread_only();
     run_loop(&mut terminal, read_key, || discover_volumes(&search_roots)).map_err(Failed::Running)
 }
 
@@ -49,6 +53,21 @@ impl<F: FnMut()> Drop for Restore<F> {
     fn drop(&mut self) {
         (self.0)();
     }
+}
+
+/// ratatui's panic hook restores the terminal on a panic in any thread.
+/// A worker's panic must not: the loop goes on drawing, and would draw
+/// over the shell. So the hook in place acts for this thread only. Another
+/// thread's panic is not printed either, as stderr is the screen: the
+/// worker catches it and sends its text as the sync's end (`worker`).
+fn restore_on_panic_of_this_thread_only() {
+    let tui = thread::current().id();
+    let hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        if thread::current().id() == tui {
+            hook(info);
+        }
+    }));
 }
 
 /// The loop, with the keys and discovery injected, so tests run it on a

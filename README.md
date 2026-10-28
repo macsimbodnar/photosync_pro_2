@@ -16,6 +16,8 @@ Run `photosync` with no command, in a terminal, for the interactive view
 folder on it (default `<drive>/Photos`; it must exist), an optional name,
 then check and start. It shows the progress with an ETA, then the report,
 which is printed again when you quit. The exit code is the same as `sync`'s.
+After a refusal you can go back and try again; until a later sync ends,
+quitting from any screen still prints the refusal and keeps its exit code.
 Without a terminal (stdin or stdout redirected), `photosync` alone prints
 the usage and exits 2.
 
@@ -90,10 +92,10 @@ Exit codes:
 - `crates/photosync-core`: all sync logic, UI-free (INV-8).
 - `crates/photosync`: the `photosync` binary. `app` is the interactive
   model (screens, keys, what each message changes) and `worker` runs a sync
-  on its own thread; neither names ratatui or crossterm
-  (`tests/ui_split.rs`), so a GUI can reuse them with `flow` (one sync) and
-  `text` (sentences, the report). `tui` and `tui/view` are the terminal
-  shell around them.
+  on its own thread; no file outside `src/tui/` names ratatui or crossterm
+  (`tests/ui_split.rs` checks every file), so a GUI can reuse them with
+  `flow` (one sync) and `text` (sentences, the report). `tui` and
+  `tui/view` are the terminal shell around them.
 
 ## Build and test
 

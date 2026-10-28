@@ -47,6 +47,7 @@ Why: one line.
 - DEC-028 2026-10-28 — CLI details left open by S008
 - DEC-029 2026-10-28 — hardware hand checks deferred to S017
 - DEC-030 2026-10-28 — TUI details left open by S009
+- DEC-031 2026-10-28 — TUI hardening details left open by S018
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -582,3 +583,29 @@ the binary with `option_env!`). The exFAT TUI test writes its photos to
 `tests/exfat_e2e.rs` counts the card's files.
 Why: the smallest TUI that keeps the model free of the terminal, reuses
 the CLI's sentences and exit codes, and errs toward "not safe to format".
+
+## DEC-031  2026-10-28  TUI hardening details left open by S018
+Tags: tui, exit-codes, tests, architecture
+Decision: agent's pick in S018, not yet confirmed by the user.
+(1) The model's outcome is replaced only by a later sync's end
+(`Finished`, `WorkerGone`, `Crashed`), never by going back or by
+starting: the last sync wins. So a retry that is refused before copying
+(exit 2) replaces an earlier worker death (exit 1); both say not safe.
+While a retry runs, quitting exits 1 as before (DEC-030 (4)).
+(2) Worker panic: after `ratatui::try_init`, `tui::run` wraps the panic
+hook so it acts for the TUI's own thread only. Another thread's panic is
+not printed (stderr is the screen); `worker::spawn` catches it
+(`catch_unwind`) and sends `Msg::Crashed(text)`, which the model shows
+like a worker death, with the panic's text, exit 1. The panic's location
+is not kept. Rejected: catch alone (the hook runs before unwinding, so it
+would still restore the terminal).
+(3) Confirm with no source picked stays on Confirm with a hint, rather
+than going back to the cards.
+(4) `tests/ui_split.rs` walks every `.rs` under `src/`: outside
+`src/tui/` and `main.rs` no file may name ratatui, crossterm or the `tui`
+module, nor use `#[path]`; `main.rs` may name `tui` but not the crates;
+in `src/tui/` no `pub use` or `pub type` may name the crates. Words are
+matched as identifiers, after cutting `//` comments. A renamed
+dependency in `Cargo.toml` (`package = "ratatui"`) is not checked.
+Why: each errs toward "not safe to format" and keeps the check from
+depending on a list someone must remember to extend.
