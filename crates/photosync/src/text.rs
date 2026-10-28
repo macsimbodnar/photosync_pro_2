@@ -14,6 +14,7 @@ use photosync_core::{
 };
 
 use crate::flow::{SyncError, Watch};
+use crate::system;
 
 /// Bytes in decimal units, as Finder shows them.
 pub fn size(bytes: u64) -> String {
@@ -97,6 +98,8 @@ pub struct ProgressText {
     in_place: bool,
     interval: Duration,
     last: Option<Duration>,
+    /// The terminal's width in columns, read when a line is due.
+    width: Option<fn() -> Option<usize>>,
 }
 
 impl ProgressText {
@@ -107,7 +110,16 @@ impl ProgressText {
             in_place,
             interval,
             last: None,
+            width: None,
         }
+    }
+
+    /// Cuts each in-place line to the width `width` gives. A line that
+    /// wraps cannot be rewritten in place: `\r` returns to its last row
+    /// only, so each update would leave a row behind (S008 fast check).
+    pub fn cut_to(mut self, width: fn() -> Option<usize>) -> ProgressText {
+        self.width = Some(width);
+        self
     }
 
     /// The text to write for `event`, if it is due.
@@ -133,6 +145,11 @@ impl ProgressText {
         if event.kind == EventKind::Cancelled {
             line.push_str(", cancelled");
         }
+        if let (true, Some(width)) = (self.in_place, self.width.and_then(|w| w())) {
+            // One column spare: a line that fills the last column leaves
+            // some terminals' cursor on the next row.
+            line = line.chars().take(width.saturating_sub(1)).collect();
+        }
         Some(match (self.in_place, end) {
             (true, false) => format!("\r\x1b[K{line}"),
             (true, true) => format!("\r\x1b[K{line}\n"),
@@ -149,14 +166,14 @@ pub struct StderrWatch {
 impl StderrWatch {
     pub fn new() -> StderrWatch {
         StderrWatch {
-            progress: ProgressText::new(io::stderr().is_terminal()),
+            progress: ProgressText::new(io::stderr().is_terminal()).cut_to(system::stderr_width),
         }
     }
 }
 
 impl Watch for StderrWatch {
     fn scanned(&mut self, scan: &SourceScan) {
-        eprintln!("{}", scanned(scan));
+        system::say(&scanned(scan));
     }
 
     fn event(&mut self, event: Event) {
@@ -642,6 +659,39 @@ mod tests {
         let end = text.event(&ev(EventKind::Cancelled)).unwrap();
         assert!(start.starts_with("\r\x1b[Kcomparing with library 0/2") && !start.ends_with('\n'));
         assert!(end.ends_with(", cancelled\n"), "{end:?}");
+    }
+
+    /// A line wider than the terminal would wrap, and `\r` could not
+    /// rewrite it: each update would leave a row behind.
+    #[test]
+    fn progress_in_place_is_cut_to_the_terminal_width() {
+        let ev = Event {
+            kind: EventKind::Started,
+            progress: progress(Phase::Copying, (1, 25_000_000), (4, 100_000_000), 0),
+        };
+        let full = progress_line(&ev.progress);
+        assert!(full.len() > 20);
+
+        let mut narrow = ProgressText::new(true).cut_to(|| Some(20));
+        assert_eq!(
+            narrow.event(&ev).unwrap(),
+            format!("\r\x1b[K{}", &full[..19])
+        );
+        // Unknown width, or not a terminal: the whole line.
+        let mut unknown = ProgressText::new(true).cut_to(|| None);
+        assert_eq!(unknown.event(&ev).unwrap(), format!("\r\x1b[K{full}"));
+        let mut log = ProgressText::new(false).cut_to(|| Some(20));
+        assert_eq!(log.event(&ev).unwrap(), format!("{full}\n"));
+        // The end of a phase is cut too, and still ends its line.
+        let mut end = ProgressText::new(true).cut_to(|| Some(10));
+        let done = Event {
+            kind: EventKind::Finished,
+            ..ev
+        };
+        assert_eq!(
+            end.event(&done).unwrap(),
+            format!("\r\x1b[K{}\n", &full[..9])
+        );
     }
 
     #[test]

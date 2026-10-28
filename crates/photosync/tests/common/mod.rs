@@ -104,6 +104,15 @@ impl std::fmt::Debug for Run {
     }
 }
 
+/// Not `env!`: the binary's own unit tests share this file, and Cargo
+/// names the binary only to integration tests.
+fn binary() -> &'static str {
+    match option_env!("CARGO_BIN_EXE_photosync") {
+        Some(path) => path,
+        None => panic!("only integration tests run the binary"),
+    }
+}
+
 pub fn photosync<I, S>(args: I) -> Run
 where
     I: IntoIterator<Item = S>,
@@ -113,10 +122,7 @@ where
         status,
         stdout,
         stderr,
-    } = Command::new(env!("CARGO_BIN_EXE_photosync"))
-        .args(args)
-        .output()
-        .unwrap();
+    } = Command::new(binary()).args(args).output().unwrap();
     Run {
         // A signal death has no code; -1 fails every exit code check.
         code: status.code().unwrap_or(-1),

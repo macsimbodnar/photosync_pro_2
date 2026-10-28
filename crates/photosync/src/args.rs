@@ -1,5 +1,5 @@
-//! Command-line arguments and exit codes. No I/O here, so the TUI (S009) can
-//! reuse the same arguments.
+//! Command-line arguments and exit codes. No I/O here, so the TUI shares the
+//! exit codes.
 
 use std::path::PathBuf;
 
@@ -29,12 +29,16 @@ Exit codes:
     long_about = "Copies photos from a Fujifilm X-T5 card (in a card reader, or the camera \
                   over USB in \"USB card reader\" mode) to an external drive. RAW, JPEG, HEIF \
                   and video go to separate folders. Photos already on the drive are skipped. \
-                  The card is never written to.",
+                  The card is never written to.\n\n\
+                  With no command, in a terminal, photosync opens its interactive view (TUI): \
+                  pick the cards, the drive and the library folder, follow the copy, read the \
+                  report.",
     after_help = EXIT_CODES
 )]
 pub struct Cli {
+    /// None: open the TUI, if stdin and stdout are a terminal.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -107,7 +111,7 @@ mod tests {
             "l",
         ]);
         for cli in [one, two] {
-            let Command::Sync(args) = cli.unwrap().command else {
+            let Some(Command::Sync(args)) = cli.unwrap().command else {
                 panic!("not sync")
             };
             assert_eq!(args.sources, [PathBuf::from("a"), PathBuf::from("b")]);

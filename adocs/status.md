@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-28, by Claude (S008 done, hand checks deferred)
+Updated: 2026-10-28, by Claude (S009 done)
 
-- Last done: S008  CLI commands
+- Last done: S009  TUI
 - In progress: none
-- Next: S009  TUI
+- Next: S010  multi-source and one-by-one session
 - Blocked: S017 waits for the user's hardware (DEC-029)
 - Parked:
   - The camera's PTP mode (USB without card-reader mode) is unsupported

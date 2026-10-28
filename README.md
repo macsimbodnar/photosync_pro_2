@@ -6,10 +6,34 @@ separate folders under one folder per sync, optionally named
 (`2026-10-28 - Tirana/RAW/`). Photos already in the library are skipped. Mac
 first, then Linux.
 
-Status: early development. The CLI works; the TUI and a GUI come later. What
+Status: early development. The CLI and the TUI work; a GUI comes later. What
 it must do is in `adocs/specs.md`, and the plan is in `adocs/plan.md`.
 
 ## Usage
+
+Run `photosync` with no command, in a terminal, for the interactive view
+(TUI). It walks through five steps: pick the cards, the drive, the library
+folder on it (default `<drive>/Photos`; it must exist), an optional name,
+then check and start. It shows the progress with an ETA, then the report,
+which is printed again when you quit. The exit code is the same as `sync`'s.
+Without a terminal (stdin or stdout redirected), `photosync` alone prints
+the usage and exits 2.
+
+| Screen | Keys |
+|---|---|
+| cards | `↑` `↓` move, `Space` pick (several cards are copied one after another), `Enter` next (picks the card under the cursor if none is picked), `r` look again, `q` quit |
+| drive | `↑` `↓` move, `Enter` pick, `Esc` back, `r` look again, `q` quit |
+| library folder, name | type to edit, `Backspace`, `Enter` next, `Esc` back |
+| check | `Enter` start copying, `Esc` back, `q` quit |
+| copying | `c` or `Esc` cancel; `Ctrl-C` cancels, a second `Ctrl-C` quits at once |
+| refused | `Enter` back to fix it, `q` quit |
+| report | `↑` `↓` `PgUp` `PgDn` scroll, `q` quit |
+
+`Ctrl-C` quits from any screen but the copy. Quitting during a copy is safe
+(no partial file is left under a photo's name), but exits 1: run the same
+sync again.
+
+The commands, for scripts:
 
 ```sh
 photosync sources        # mounted camera cards (volumes with DCIM), one per line
@@ -48,7 +72,9 @@ Result: all 3 photos or videos on the drive (3 copied, 0 already there).
 
 Every file that was not copied or skipped gets its own line with the
 reason; a copy whose folder flush failed shows as "in place, flush not
-confirmed".
+confirmed". On a terminal the progress line is cut to its width. A closed
+stdout (e.g. `| head`) does not stop the sync: photosync says on stderr that
+the report could not be written and keeps the exit code.
 
 Exit codes:
 
@@ -57,10 +83,17 @@ Exit codes:
   read. Do not format the card; fix the cause and run the same sync again.
 - `2` usage error, or the sync was refused before copying anything.
 
+`sources` and `drives` exit 1 if their list cannot be written to stdout.
+
 ## Layout
 
 - `crates/photosync-core`: all sync logic, UI-free (INV-8).
-- `crates/photosync`: the `photosync` binary (CLI, later the TUI).
+- `crates/photosync`: the `photosync` binary. `app` is the interactive
+  model (screens, keys, what each message changes) and `worker` runs a sync
+  on its own thread; neither names ratatui or crossterm
+  (`tests/ui_split.rs`), so a GUI can reuse them with `flow` (one sync) and
+  `text` (sentences, the report). `tui` and `tui/view` are the terminal
+  shell around them.
 
 ## Build and test
 
@@ -91,7 +124,10 @@ exFAT image with a `DCIM` folder, a stand-in card, and passes its path in
 refused. A third image stands in for the external drive
 (`PHOTOSYNC_TEST_LIBRARY`): the script also runs the `photosync` binary's
 tests, and `tests/exfat_e2e.rs` syncs the stand-in card to it, re-syncs,
-and checks the files and the report text. Plain `cargo test` skips these
+and checks the files and the report text; the binary's unit test
+`tui::tests::tui_sync_on_exfat_end_to_end` drives the TUI's loop through a
+cancelled and a full sync there, with scripted keys on ratatui's
+`TestBackend`. Plain `cargo test` skips these
 tests and says so; it covers the binary's help, usage errors and refusals
 on temp dirs. The tests reach `photosync sources` and `drives` through a
 hidden `--search-root` option.

@@ -46,6 +46,7 @@ Why: one line.
 - DEC-027 2026-10-28 — INV-10 enforcement: read-only device, test-support seam, re-check before copy (S016)
 - DEC-028 2026-10-28 — CLI details left open by S008
 - DEC-029 2026-10-28 — hardware hand checks deferred to S017
+- DEC-030 2026-10-28 — TUI details left open by S009
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -536,3 +537,48 @@ Ctrl-C) move to S017, which waits for the user. Audit F09 now closes with
 S017.
 Why: the user asked; the risk is noted, since real card mounts are proven
 only on disk images until S017.
+
+## DEC-030  2026-10-28  TUI details left open by S009
+Tags: tui, gui, architecture, cli, exit-codes, tests
+Decision: agent's pick in S009, not yet confirmed by the user.
+(1) Layout, all in the binary crate: `app` (model: screens, `Key`, `Msg`,
+`Effect`, `update`, exit code), `worker` (runs `flow::sync` on a thread,
+sends `Msg` to a closure), `tui` (crossterm keys to `Key`, the loop, with
+keys and discovery injected) and `tui/view` (ratatui only). `app`,
+`worker`, `flow`, `text` and `args` never name ratatui or crossterm
+(`tests/ui_split.rs`, a source-text check like `no_test_seam.rs`). The GUI
+reuses them by moving them into a shared crate, or by living in this
+binary. Rejected: a shared crate now (one user, and S009 touches only
+`crates/photosync`).
+(2) The model takes keys, not commands: every printable key is
+`Key::Char`, and its meaning depends on the screen, so a text field takes
+`q`. A GUI adds its own messages beside `Key`.
+(3) Ctrl-C is a key in raw mode: while copying, the first cancels and a
+second quits at once (as the CLI's second Ctrl-C, INV-7); elsewhere it
+quits. No SIGINT handler in the TUI. The model makes a new core `Cancel`
+for each start and sets it itself, so a retry gets a fresh one.
+(4) One sync per TUI run (S010 adds the session). After a refusal the user
+can go back and start again; the report screen only quits. On quit the
+report is printed to stdout and the refusal to stderr; the exit code is
+`sync`'s; quitting mid-sync, or a worker that died before its result,
+exits 1.
+(5) The library is a text field, default `<drive>/Photos`. The TUI does
+not check that it exists: the core refuses, and the screen shows the CLI's
+sentence (DEC-028 (1)), which names `photosync drives`.
+(6) No command without a terminal (stdin or stdout not a tty) is clap's
+usage error, exit 2: the TUI would wait for keys nobody can type.
+(7) Closed stdout: a report that cannot be written is said on stderr and
+the sync keeps its 0/1 code, which is what says if the card is safe.
+`sources` and `drives` exit 1 if their list cannot be written: it is their
+whole output. A closed stderr is ignored: there is nowhere to say it.
+(8) The CLI's in-place progress line is cut to the width of stderr's
+terminal minus one column (`TIOCGWINSZ` on fd 2), read when a line is due;
+unknown width keeps the whole line; log lines are never cut.
+(9) ratatui without default features, `crossterm` only; crossterm is used
+through `ratatui::crossterm`, so the two never disagree on its version.
+(10) Tests: the binary's unit tests share `tests/common/mod.rs` (it finds
+the binary with `option_env!`). The exFAT TUI test writes its photos to
+`DCIM/900_TUI` on the shared card image and removes them when done:
+`tests/exfat_e2e.rs` counts the card's files.
+Why: the smallest TUI that keeps the model free of the terminal, reuses
+the CLI's sentences and exit codes, and errs toward "not safe to format".

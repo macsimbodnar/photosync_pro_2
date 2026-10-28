@@ -1,6 +1,7 @@
-//! What the binary asks of the OS itself: who it runs as, and Ctrl-C.
+//! What the binary asks of the OS itself: who it runs as, Ctrl-C, the
+//! terminal's width, and writing to stdout and stderr without panicking.
 
-use std::io;
+use std::io::{self, Write};
 use std::sync::OnceLock;
 
 use photosync_core::Cancel;
@@ -50,6 +51,37 @@ extern "C" fn on_sigint(_: libc::c_int) {
     if let Some(cancel) = CANCEL.get() {
         cancel.cancel();
     }
+}
+
+/// The width in columns of the terminal stderr writes to, if it is one.
+#[cfg(unix)]
+pub fn stderr_width() -> Option<usize> {
+    // SAFETY: TIOCGWINSZ only writes a `winsize` into `size`, which is
+    // zeroed and lives across the call.
+    let size = unsafe {
+        let mut size: libc::winsize = std::mem::zeroed();
+        (libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &mut size) == 0).then_some(size)
+    }?;
+    (size.ws_col > 0).then_some(usize::from(size.ws_col))
+}
+
+/// Writes `text` to stdout. `print!` panics when stdout is closed (e.g.
+/// `| head`), which would end the process with code 101; this returns the
+/// error, so the caller keeps the exit code within 0/1/2.
+pub fn write_out(text: &str) -> io::Result<()> {
+    write_all(&mut io::stdout().lock(), text)
+}
+
+pub fn write_all(out: &mut impl Write, text: &str) -> io::Result<()> {
+    out.write_all(text.as_bytes())?;
+    out.flush()
+}
+
+/// Writes one line to stderr. A closed stderr is not an error to report:
+/// there is nowhere left to report it, and the exit code still says what
+/// happened. `eprintln!` would panic instead.
+pub fn say(line: &str) {
+    let _ = writeln!(io::stderr().lock(), "{line}");
 }
 
 #[cfg(test)]

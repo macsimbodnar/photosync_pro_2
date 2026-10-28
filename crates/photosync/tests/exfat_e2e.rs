@@ -263,3 +263,81 @@ fn sync_from_a_mounted_card_to_a_drive_end_to_end() {
     assert!(refused.stdout.is_empty(), "{refused:?}");
     assert_eq!(fs::read_dir(&on_card).unwrap().count(), 0);
 }
+
+/// Runs the binary with stdout, and stderr too if `close_stderr`, on a
+/// pipe whose reader is already gone, as `photosync ... | head` ends up.
+/// Rust ignores SIGPIPE, so each write fails with EPIPE; `print!` would
+/// panic on that and exit 101.
+fn closed_run(args: &[&std::ffi::OsStr], close_stderr: bool) -> (i32, String) {
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_photosync"));
+    cmd.args(args).stdout(writer.try_clone().unwrap());
+    if close_stderr {
+        cmd.stderr(writer);
+    } else {
+        cmd.stderr(std::process::Stdio::piped());
+    }
+    let out = cmd.output().unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8(out.stderr).unwrap(),
+    )
+}
+
+/// S008 fast check: a closed stdout never panics. The sync still finishes,
+/// its exit code still says whether the card is safe, and a list that
+/// could not be written is not a success.
+#[test]
+fn closed_stdout_never_panics_and_keeps_the_exit_code() {
+    let Some((card, drive)) = mounts("closed_stdout_never_panics_and_keeps_the_exit_code") else {
+        return;
+    };
+    // A plain folder on the temp image, not the card the other test counts.
+    let dir = TempDir::new();
+    let source = dir.0.join("card");
+    write_file(
+        &source,
+        "DCIM/100_FUJI/DSCF0101.RAF",
+        b"closed raw",
+        at(TAKEN),
+    );
+    let library = drive.join("Closed");
+    fs::create_dir(&library).unwrap();
+    let args = [
+        "sync".as_ref(),
+        "--source".as_ref(),
+        source.as_os_str(),
+        "--dest".as_ref(),
+        library.as_os_str(),
+    ];
+
+    let (code, stderr) = closed_run(&args, false);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stderr.contains("Cannot write the report to stdout: "),
+        "{stderr}"
+    );
+    let copied = library.join(date_command(TAKEN)).join("RAW/DSCF0101.RAF");
+    assert_eq!(fs::read(&copied).unwrap(), b"closed raw");
+
+    // Nothing to write to at all: the re-sync still runs and exits 0.
+    let (code, stderr) = closed_run(&args, true);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(fs::read(&copied).unwrap(), b"closed raw");
+
+    let root = card.parent().unwrap();
+    let (code, stderr) = closed_run(
+        &[
+            "sources".as_ref(),
+            "--search-root".as_ref(),
+            root.as_os_str(),
+        ],
+        false,
+    );
+    assert_eq!(code, 1, "{stderr}");
+    assert!(
+        stderr.contains("Cannot write the list to stdout: "),
+        "{stderr}"
+    );
+}

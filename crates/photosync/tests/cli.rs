@@ -6,6 +6,8 @@ mod common;
 
 use std::fs;
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use common::{TempDir, at, manifest, photosync, write_file};
 
@@ -42,6 +44,7 @@ fn help_documents_every_command_flag_and_exit_code() {
         "sources",
         "drives",
         "sync",
+        "With no command, in a terminal, photosync opens its interactive view",
         "Exit codes:",
         "\n  0  ",
         "\n  1  ",
@@ -82,8 +85,9 @@ fn usage_errors_exit_2_and_copy_nothing() {
     let src = dir.0.join("card");
     card(&src);
     let s = src.to_str().unwrap();
-    let cases: [&[&str]; 5] = [
-        &[],
+    // No arguments is not here: it opens the TUI, or without a terminal is
+    // the usage error of `no_arguments_without_a_terminal_is_a_usage_error`.
+    let cases: [&[&str]; 4] = [
         &["frobnicate"],
         &["sync", "--source", s],
         &["sync", "--dest", s],
@@ -94,6 +98,33 @@ fn usage_errors_exit_2_and_copy_nothing() {
         assert_eq!(run.code, 2, "{args:?}: {run:?}");
         assert!(run.stdout.is_empty(), "{args:?}: {run:?}");
     }
+}
+
+/// With no command the TUI waits for keys; with no terminal nobody can type
+/// them. So it must not hang, but print the usage and exit 2, writing
+/// nothing. Here stdin is /dev/null and stdout a pipe.
+#[test]
+fn no_arguments_without_a_terminal_is_a_usage_error() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_photosync"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("photosync with no arguments and no terminal hangs");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(out.stdout.is_empty(), "{stderr}");
+    assert!(stderr.contains("needs a terminal"), "{stderr}");
+    assert!(stderr.contains("Usage: photosync"), "{stderr}");
 }
 
 /// Refused before planning: the library here is missing, which planning

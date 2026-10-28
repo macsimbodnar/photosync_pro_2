@@ -87,7 +87,14 @@ picks. It is simple to use.
     some failed or were cancelled or part of a card could not be read, 2
     for a usage error or a sync refused before copying (DEC-028).
     It refuses to run as root (euid 0): root can write to system volumes.
-  - TUI: a terminal interface, the first interactive front-end.
+  - TUI: a terminal interface, the first interactive front-end. `photosync`
+    with no command opens it when stdin and stdout are a terminal; otherwise
+    it is a usage error (exit 2). It walks through picking the sources, the
+    destination drive, the library folder on it (default `<drive>/Photos`),
+    an optional name, then shows progress and the report, with the CLI's
+    sentences and exit codes. Cancel is a key, and Ctrl-C.
+  - A closed stdout never stops a sync nor panics: the exit code stays
+    within 0/1/2.
   - GUI: a native Rust GUI, later. Adding it must need no change to the core
     beyond new API, which keeps INV-8 true.
 

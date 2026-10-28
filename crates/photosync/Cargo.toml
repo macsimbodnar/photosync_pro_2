@@ -7,3 +7,7 @@ edition.workspace = true
 clap = { version = "4.6.7", features = ["derive"] }
 libc = "0.2.191"
 photosync-core = { path = "../photosync-core" }
+# The TUI (DEC-006). Only the crossterm backend: it also gives the CLI the
+# terminal width. crossterm is used through ratatui::crossterm, so the two
+# never disagree on its version.
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
