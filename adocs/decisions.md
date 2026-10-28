@@ -24,6 +24,11 @@ Why: one line.
 - DEC-005 2026-10-28 — one folder per sync, dated by file timestamp
 - DEC-006 2026-10-28 — dependencies approved: clap, ratatui, crossterm, blake3, iced
 - DEC-007 2026-10-28 — TESTS becomes gating on cargo test
+- DEC-008 2026-10-28 — libc approved for no-replace rename
+- DEC-009 2026-10-28 — sync folder fixed at session start, reused by name
+- DEC-010 2026-10-28 — already-synced scan covers the library folder only
+- DEC-011 2026-10-28 — iced: approved dependency, tentative GUI choice
+- DEC-012 2026-10-28 — copy verification may read from the OS cache
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -85,3 +90,45 @@ Decision: user changed TESTS from `none` (DEC-001) to: the suite is green
 before a step is done (`cargo test --workspace`), and a defect gets a
 failing test first.
 Why: a Rust workspace now exists in the plan, so completion can be checked.
+
+## DEC-008  2026-10-28  libc approved for no-replace rename
+Tags: dependencies, safety
+Decision: user approved the `libc` crate, to rename without replacing
+(`renamex_np(RENAME_EXCL)` on Mac, `renameat2(RENAME_NOREPLACE)` on Linux).
+Renames are also serialised per destination inside the app. Rejected: a
+check-then-rename under a lock alone, which does not protect against other
+programs. Closes the plan side of audit 2026-10-28_adversarial-F02.
+Why: `std::fs::rename` silently replaces an existing file on Unix (INV-2).
+
+## DEC-009  2026-10-28  sync folder fixed at session start, reused by name
+Tags: layout
+Decision: user chose that the folder is computed once, from the first plan
+of the session, and reused by later cards. A named sync reuses an existing
+`<any date> - <name>` folder. Rejected: the sync date (a re-run on another
+day splits the folder), and asking every time. Refines DEC-005. For audit
+2026-10-28_adversarial-F04.
+Why: one session and its re-runs stay in one folder.
+
+## DEC-010  2026-10-28  already-synced scan covers the library folder only
+Tags: dedup, scope
+Decision: user chose to scan only the library folder, not the whole drive.
+Rejected: the whole drive (slower, and it matches unrelated copies). Accepts
+audit 2026-10-28_adversarial-F10.
+Why: the library is where photosync writes, so it is what "already synced"
+means.
+
+## DEC-011  2026-10-28  iced: approved dependency, tentative GUI choice
+Tags: gui, dependencies
+Decision: iced is approved as a dependency (DEC-006) and is the tentative
+GUI framework. It is confirmed when the GUI is planned, so the specs, plan
+and decisions now say the same. Accepts audit 2026-10-28_adversarial-F12.
+Why: the docs disagreed; no GUI work is due yet.
+
+## DEC-012  2026-10-28  copy verification may read from the OS cache
+Tags: safety
+Decision: agent proposed, user accepted with the triage. Copies are
+fsync'ed (file and folder) before verifying (S004). The verifying read may
+still come from the OS page cache. Bypassing the cache is not portable, so
+this is a known limit, not a defect. For audit 2026-10-28_adversarial-F06.
+Why: fsync covers the real unplug risk; a cache bypass costs portability for
+little gain.

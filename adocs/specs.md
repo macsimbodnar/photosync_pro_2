@@ -17,13 +17,18 @@ names, and commit messages. An invariant nothing could check is a wish —
 reword it until it is checkable. Numbers are never reused; a retired one
 stays listed as retired.
 
-- INV-1 Source is read-only. A hash and mtime manifest of the source taken
-  before a sync equals one taken after it.
+- INV-1 Source is read-only. A manifest of the source (every path, with
+  its hash and mtime) taken before a sync equals one taken after it, so
+  added or removed files are caught too. This holds for scan, copy, cancel
+  and multi-source sessions.
 - INV-2 No destination overwrite. Every file present on the destination
-  before a sync is still there afterwards with the same bytes.
-- INV-3 Verified copy. A file counts as copied only after the destination
-  copy's hash equals the source hash. Copies are written under a temporary
-  name and renamed into place only after that check.
+  before a sync is still there afterwards with the same bytes. The one
+  exception is photosync's own stale temp files (`.photosync-tmp-*`),
+  which a later sync may delete.
+- INV-3 Verified copy. A file counts as copied only after its destination
+  copy is flushed to disk (file and folder) and its hash equals the source
+  hash. Copies are written under a temporary name and moved into place only
+  after that check, by a rename that fails if the target exists.
 - INV-4 Idempotent. Syncing the same source to the same destination twice
   copies zero files the second time, whatever target folder is picked.
 - INV-5 Type separation. Every RAW file lands in a RAW folder and every JPEG
@@ -34,12 +39,15 @@ stays listed as retired.
 - INV-7 Interruption is safe. Killing the app or unplugging a device during a
   sync leaves no partial file under a final name. Re-running the sync
   finishes the job.
-- INV-8 Core is UI-free. The core library depends on no terminal or GUI
-  crate and never writes to stdout or stderr. All output goes through its
+- INV-8 Core is UI-free. The core library depends on no terminal, GUI or
+  logging crate and never writes to stdout or stderr. All output goes through its
   API: return values and progress events.
 - INV-9 No state outside the library. A sync reads and writes nothing on
   the drive except the photo files under the library folder. It keeps no
   index or catalog file anywhere.
+- INV-10 Destination is never a source. A sync refuses to start if the
+  library is on a source volume, inside any `DCIM` tree, or contains a
+  source.
 
 ## Behaviour
 
@@ -72,7 +80,9 @@ picks. It is simple to use.
 - Any slot setup works: RAW on one card and JPEG on the other, backup
   (identical cards), or overflow. Each file goes to the folder for its type,
   whatever card it came from. A file found on two sources in one session is
-  copied once.
+  copied once. If reading it from one source fails, the copy on the other
+  source is tried. The report lists the extra copies as "duplicate in
+  session".
 
 ### Destination
 
@@ -84,9 +94,15 @@ picks. It is simple to use.
 
 `<library>/<date>[ - <name>]/<TYPE>/<camera file name>`
 
-- One sync puts all its new files in one folder, `<date>[ - <name>]`.
+- One sync session puts all its new files in one folder, `<date>[ - <name>]`.
   Files skipped as already synced stay where they already are.
-- `<date>` is `YYYY-MM-DD`, the earliest capture date among the new files.
+- The folder is fixed once, when the session's first copy plan is made.
+  Later cards in the same session reuse it.
+- `<date>` is `YYYY-MM-DD`, the earliest capture date among the new files
+  of that first plan.
+- With a name: if a folder `<any date> - <name>` already exists in the
+  library, it is reused, so a re-run after an interruption lands in the same
+  folder.
 - The capture date is the file's modification time as the camera wrote it,
   read as local time.
 - `<name>` is the optional name the user gives the sync, e.g. "Tirana":
@@ -105,8 +121,10 @@ picks. It is simple to use.
 
 ### Already-synced detection
 
-- Before copying, the app scans the whole library on the drive into memory.
-  Nothing is persisted (INV-9).
+- Before copying, the app scans the library folder (not the rest of the
+  drive) into memory. Nothing is persisted (INV-9). Files named
+  `.photosync-tmp-*` are not library files: the scan skips them, and the
+  sync deletes stale ones.
 - A source file counts as already synced if any library file anywhere has
   the same name and size and the same content (hash). Name + size picks
   the candidates, and the hash confirms them. So a photo synced earlier into
@@ -136,4 +154,5 @@ picks. It is simple to use.
 - Naming a selection of photos, instead of the whole sync, is a possible
   future feature.
 - Capture date from EXIF instead of the file timestamp: maybe later.
-- Native GUI framework: iced is proposed, not chosen (DEC-002).
+- Native GUI framework: iced is approved as a dependency and is the
+  tentative choice, to be confirmed when the GUI is planned (DEC-011).
