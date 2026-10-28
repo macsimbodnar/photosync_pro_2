@@ -257,3 +257,6 @@ none.
 attempts, prints the paths and the commands to clean up by hand, removes
 nothing, and exits non-zero (the test status if that failed, else 1).
 Why: each is the smallest choice that keeps the prime directive.
+Known limit (S013 fast check): the INV-3 flush test proves that each flush
+call is present, but not that it really flushes. Replacing one with `Ok(())`
+stays green, and no hook can observe an fsync.

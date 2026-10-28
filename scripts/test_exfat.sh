@@ -40,8 +40,11 @@ cleanup() {
         hdiutil detach "$mnt" -quiet || hdiutil detach "$mnt" -force -quiet || true
     fi
     # Checked, not trusted to `attached`: `rm -rf` through a live mount would
-    # delete inside the image, and the image file under it.
-    if mount | grep -qF " on $mnt "; then
+    # delete inside the image, and the image file under it. Captured, not
+    # piped into `grep -q` (an early exit can SIGPIPE `mount`), and a failing
+    # `mount` counts as still mounted, so the check fails safe.
+    local mounts
+    if ! mounts=$(mount) || [[ $mounts == *" on $mnt "* ]]; then
         echo "test_exfat.sh: FAILED to detach $mnt; left it and $work in place" >&2
         echo "test_exfat.sh: detach by hand: hdiutil detach '$mnt' -force; rm -rf '$work'" >&2
         exit $(( status ? status : 1 ))
