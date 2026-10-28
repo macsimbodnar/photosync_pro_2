@@ -88,7 +88,7 @@ appears before the rename, and the existing file must survive.
 
 ## 2026-10-28_adversarial-F03  High  Nothing stops the destination from being a source, or the library from sitting inside one
 
-Status: closed
+Status: planned
 
 **Evidence**: S007 lists "destination drives" and sources from the same mount
 roots (`/Volumes`, `/media/$USER`, `/run/media/$USER`). No line in
