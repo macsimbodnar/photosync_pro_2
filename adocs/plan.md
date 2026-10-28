@@ -17,9 +17,10 @@ not change the order.
 
 ## Open
 
-1. S008  CLI commands
-2. S009  TUI
-3. S010  multi-source and one-by-one session
+1. S015  strict INV-10: library never on a source disk or a card
+2. S008  CLI commands
+3. S009  TUI
+4. S010  multi-source and one-by-one session
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.

@@ -41,6 +41,7 @@ Why: one line.
 - DEC-022 2026-10-28 — sync report details left open by S006
 - DEC-023 2026-10-28 — report hardening details left open by S014
 - DEC-024 2026-10-28 — volume discovery and the INV-10 device check (S007)
+- DEC-025 2026-10-28 — strict INV-10: library never on a source's disk or on any card
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -357,7 +358,8 @@ choice errs toward "not safe" and toward refusing over guessing.
 
 ## DEC-024  2026-10-28  volume discovery and the INV-10 device check (S007)
 Tags: sources, destination, safety, api
-Decision: agent's pick in S007, not yet confirmed by the user.
+Decision: agent's pick in S007; the user confirmed it. Point on the device
+check tightened by DEC-025 (S007 fast check).
 (1) A volume is a direct entry of a search root that is a folder (a symlink
 is not followed) and a mount point: on another device than its parent, or
 `/`. The symlink rule keeps out the macOS boot volume (`Macintosh HD -> /`);
@@ -390,3 +392,14 @@ folder source, every test included), and an injectable device function on
 unit tests treat temp folders as volumes; the real one is tested on `/`,
 `/dev` and a temp folder.
 Why: each picks what keeps a photo off the wrong disk, with the least API.
+
+## DEC-025  2026-10-28  strict INV-10: library never on a source's disk or on any card
+Tags: safety, sources, destination
+Decision: user chose "strict" after the S007 fast check found two ways to put
+the library on a card from the CLI. A plan is refused if the library is on
+the same device (`st_dev`) as any source, whatever folder the source is,
+mount point or not; or if the library's volume (walk up to its mount point)
+has a `DCIM` folder at its top, i.e. is a card, selected or not. Rejected:
+the S007 rule (device only for sources that are mount points). The cost the
+user accepted: no sync from a folder on the same drive as the library.
+Why: the prime directive; a typed path must not be able to write to a card.

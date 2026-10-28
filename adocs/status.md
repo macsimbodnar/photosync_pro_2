@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-28, by Claude agent (S007)
+Updated: 2026-10-28, by Claude (S007 fast check)
 
 - Last done: S007  volume discovery (Mac, then Linux)
 - In progress: none
-- Next: S008  CLI commands
+- Next: S015  strict INV-10: library never on a source disk or a card
 - Blocked: none
 - Parked:
   - The camera's PTP mode (USB without card-reader mode) is unsupported
@@ -21,3 +21,6 @@ Updated: 2026-10-28, by Claude agent (S007)
   - Linux exFAT (later Linux verification): `canonicalize` keeps the case it
     is given, so two library spellings that differ only in case get two
     fallback locks (S013 fast check). Fold the case or key by inode there.
+  - A freshly formatted card without `DCIM` looks like any USB drive and is
+    offered as a destination (S007 fast check). Telling them apart needs
+    DiskArbitration (Mac) or udev (Linux).
