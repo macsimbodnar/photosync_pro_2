@@ -77,6 +77,9 @@ picks. It is simple to use.
   shows as its own entry with its own progress.
 - One source after another, with a single reader. The session stays open
   between cards, and the report covers all of them.
+- An unreadable file or folder under `DCIM` does not stop the scan: it is
+  recorded as a failure with its path and error, and the rest of the card
+  is still scanned. Only an unreadable source or `DCIM` fails the source.
 - Any slot setup works: RAW on one card and JPEG on the other, backup
   (identical cards), or overflow. Each file goes to the folder for its type,
   whatever card it came from. A file found on two sources in one session is

@@ -201,3 +201,130 @@ fn dot_files_and_dot_folders_are_ignored() {
         vec![dir.0.join("DCIM/.hidden"), dir.0.join("DCIM/100_FUJI/._DSCF0001.RAF")]
     );
 }
+
+// S011: unreadable entries under DCIM are per-entry failures, not a failed scan.
+
+/// Sets `path`'s permission bits for the guard's lifetime. Declared after the
+/// `TempDir`, so it drops first and `remove_dir_all` can clean up.
+#[cfg(unix)]
+struct Mode(PathBuf);
+
+#[cfg(unix)]
+impl Mode {
+    fn set(path: &Path, mode: u32) -> Mode {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        Mode(path.to_path_buf())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Mode {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_subfolder_is_a_failure_and_the_rest_is_listed() {
+    let dir = TempDir::new();
+    let mut expected = sample_card(&dir.0);
+    write_file(&dir.0, "DCIM/102_FUJI/DSCF0100.RAF", b"raw", at(1));
+    let locked = dir.0.join("DCIM/102_FUJI");
+    let _mode = Mode::set(&locked, 0o000);
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let scan = scan_source(&dir.0).unwrap();
+
+    let got: Vec<_> = scan
+        .files
+        .iter()
+        .map(|f| (f.path.clone(), f.media_type, f.size, f.modified))
+        .collect();
+    assert_eq!(got, expected);
+    assert_eq!(scan.failures.len(), 1);
+    assert_eq!(scan.failures[0].path, locked);
+    assert_eq!(scan.failures[0].source.kind(), std::io::ErrorKind::PermissionDenied);
+}
+
+/// A folder that can be listed but not searched: its entries' names are
+/// known, their metadata is not. That is an unreadable file.
+#[cfg(unix)]
+#[test]
+fn unreadable_files_are_failures_and_the_rest_is_listed() {
+    let dir = TempDir::new();
+    write_file(&dir.0, "DCIM/100_FUJI/DSCF0001.RAF", b"raw", at(1));
+    write_file(&dir.0, "DCIM/101_FUJI/DSCF0002.RAF", b"raw", at(1));
+    write_file(&dir.0, "DCIM/101_FUJI/DSCF0003.JPG", b"jpg", at(1));
+    let _mode = Mode::set(&dir.0.join("DCIM/101_FUJI"), 0o444);
+
+    let scan = scan_source(&dir.0).unwrap();
+
+    let files: Vec<_> = scan.files.iter().map(|f| f.path.clone()).collect();
+    assert_eq!(files, vec![dir.0.join("DCIM/100_FUJI/DSCF0001.RAF")]);
+    let failed: Vec<_> = scan.failures.iter().map(|f| f.path.clone()).collect();
+    assert_eq!(
+        failed,
+        vec![dir.0.join("DCIM/101_FUJI/DSCF0002.RAF"), dir.0.join("DCIM/101_FUJI/DSCF0003.JPG")]
+    );
+    assert!(scan
+        .failures
+        .iter()
+        .all(|f| f.source.kind() == std::io::ErrorKind::PermissionDenied));
+}
+
+#[test]
+fn readable_source_has_no_failures() {
+    let dir = TempDir::new();
+    sample_card(&dir.0);
+    assert!(scan_source(&dir.0).unwrap().failures.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_dcim_is_an_error() {
+    let dir = TempDir::new();
+    write_file(&dir.0, "DCIM/100_FUJI/DSCF0001.RAF", b"raw", at(1));
+    let dcim = dir.0.join("DCIM");
+    let _mode = Mode::set(&dcim, 0o000);
+
+    let err = scan_source(&dir.0).unwrap_err();
+
+    assert_eq!(err.path, dcim);
+    assert_eq!(err.source.kind(), std::io::ErrorKind::PermissionDenied);
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_root_is_an_error() {
+    let dir = TempDir::new();
+    write_file(&dir.0, "DCIM/100_FUJI/DSCF0001.RAF", b"raw", at(1));
+    let _mode = Mode::set(&dir.0, 0o000);
+
+    let err = scan_source(&dir.0).unwrap_err();
+
+    assert_eq!(err.path, dir.0.join("DCIM"));
+    assert_eq!(err.source.kind(), std::io::ErrorKind::PermissionDenied);
+}
+
+#[cfg(unix)]
+#[test]
+fn inv1_scan_with_failures_leaves_source_manifest_unchanged() {
+    let dir = TempDir::new();
+    sample_card(&dir.0);
+    write_file(&dir.0, "DCIM/102_FUJI/DSCF0100.RAF", b"raw", at(1));
+    write_file(&dir.0, "DCIM/103_FUJI/DSCF0101.RAF", b"raw", at(1));
+    // The manifest needs read access, so it is taken with the locks off.
+    let before = manifest(&dir.0);
+
+    {
+        let _a = Mode::set(&dir.0.join("DCIM/102_FUJI"), 0o000);
+        let _b = Mode::set(&dir.0.join("DCIM/103_FUJI"), 0o444);
+        let scan = scan_source(&dir.0).unwrap();
+        assert_eq!(scan.failures.len(), 2);
+    }
+
+    assert_eq!(manifest(&dir.0), before);
+}

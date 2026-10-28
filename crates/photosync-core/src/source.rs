@@ -55,11 +55,15 @@ pub struct SourceFile {
     pub modified: SystemTime,
 }
 
-/// Every file under `<root>/DCIM`, sorted by path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Every readable file under `<root>/DCIM`, and every entry that could not
+/// be read, both sorted by path.
+#[derive(Debug)]
 pub struct SourceScan {
     pub root: PathBuf,
     pub files: Vec<SourceFile>,
+    /// Files and folders under `DCIM` that could not be read. A failed
+    /// folder's contents are unknown, so they are in neither list.
+    pub failures: Vec<ScanError>,
 }
 
 impl SourceScan {
@@ -91,43 +95,56 @@ impl Error for ScanError {
     }
 }
 
-/// Scans `<root>/DCIM`. `root` is the source volume. Fails on the first
-/// unreadable entry, so a scan is never silently partial. A missing `DCIM`
-/// is an error, not an empty source.
+/// Scans `<root>/DCIM`. `root` is the source volume. Only an unreadable
+/// `DCIM` (or a missing one, which is not an empty source) fails the scan.
+/// An unreadable entry under it is recorded in `failures` and the walk goes
+/// on, so one bad folder does not hide the rest of the card.
 ///
 /// Symlinks are not followed, so the walk cannot loop or leave the source;
 /// a symlink is listed as an ignored file.
 pub fn scan_source(root: &Path) -> Result<SourceScan, ScanError> {
+    let dcim = root.join("DCIM");
     let mut files = Vec::new();
-    walk(&root.join("DCIM"), &mut files)?;
+    let mut failures = Vec::new();
+    walk(&dcim, &mut files, &mut failures).map_err(|source| ScanError { path: dcim, source })?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(SourceScan { root: root.to_path_buf(), files })
+    failures.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(SourceScan { root: root.to_path_buf(), files, failures })
 }
 
-fn walk(dir: &Path, out: &mut Vec<SourceFile>) -> Result<(), ScanError> {
-    let err = |path: &Path| {
-        let path = path.to_path_buf();
-        move |source| ScanError { path, source }
-    };
-    for entry in fs::read_dir(dir).map_err(err(dir))? {
-        let entry = entry.map_err(err(dir))?;
+/// Walks `dir`. An `Err` means `dir`'s own listing failed; the caller
+/// decides whether that fails the scan or is one more failure.
+fn walk(dir: &Path, files: &mut Vec<SourceFile>, failures: &mut Vec<ScanError>) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        // A broken listing cannot be trusted to go on; what it gave so far stays.
+        let entry = entry?;
         let path = entry.path();
-        let meta = fs::symlink_metadata(&path).map_err(err(&path))?;
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(source) => {
+                failures.push(ScanError { path, source });
+                continue;
+            }
+        };
         // macOS leaves `._*` AppleDouble files on FAT cards; they and any other
         // dot entry are metadata, never photos (DEC-014).
         let hidden = entry.file_name().as_encoded_bytes().starts_with(b".");
         if meta.is_dir() && !hidden {
-            walk(&path, out)?;
+            if let Err(source) = walk(&path, files, failures) {
+                failures.push(ScanError { path, source });
+            }
             continue;
         }
+        let modified = match meta.modified() {
+            Ok(modified) => modified,
+            Err(source) => {
+                failures.push(ScanError { path, source });
+                continue;
+            }
+        };
         let media_type =
             if meta.is_file() && !hidden { MediaType::from_path(&path) } else { None };
-        out.push(SourceFile {
-            media_type,
-            size: meta.len(),
-            modified: meta.modified().map_err(err(&path))?,
-            path,
-        });
+        files.push(SourceFile { media_type, size: meta.len(), modified, path });
     }
     Ok(())
 }
