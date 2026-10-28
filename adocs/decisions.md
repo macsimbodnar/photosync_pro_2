@@ -472,3 +472,8 @@ mounts a second exFAT image with `DCIM` at its top and names it in
 skipped and returns. With the lookup replaced by `|_| Ok(None)` the script
 fails (checked in S016).
 Why: no hand-edited scan or plan gets a write onto a card, and no front-end reaches the tests' seam.
+Limit (S016 fast check): `cargo test --workspace` and `--all-targets`
+builds unify dev-dependency features, so there the binary links a core with
+`test-support` on. Only a plain `cargo build` excludes the seam by
+construction. `crates/photosync/tests/no_test_seam.rs` therefore fails if
+the binary's source or manifest mentions the seam.
