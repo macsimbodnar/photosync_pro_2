@@ -47,6 +47,20 @@ work="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/photosync-exfat.XXXXXX")" && pwd -P)"
 mnt="$work/mnt"
 card="$work/card"
 library="$work/lib"
+# Whole-disk devices of attached images whose file is under $1. A failing
+# `hdiutil info` prints a placeholder, so the caller counts it as left.
+attached_under() {
+    local info
+    if ! info=$(hdiutil info); then
+        echo "hdiutil-info-failed"
+        return
+    fi
+    awk -v dir="$1/" '
+        /^image-path/ { sub(/^image-path *: */, ""); mine = (index($0, dir) == 1); next }
+        mine && /^\/dev\/disk[0-9]+[ \t]/ { print $1; mine = 0 }
+    ' <<<"$info"
+}
+
 cleanup() {
     local status=$?
     # Every mount point is detached and checked, attached or not: one
@@ -64,6 +78,15 @@ cleanup() {
         if ! mounts=$(mount) || [[ $mounts == *" on $point "* ]]; then
             left+=("$point")
         fi
+    done
+    # An image can be attached without being mounted (an attach killed
+    # midway); no mount point shows it, so detach by image path as well.
+    local dev
+    for dev in $(attached_under "$work"); do
+        hdiutil detach "$dev" -quiet || hdiutil detach "$dev" -force -quiet || true
+    done
+    for dev in $(attached_under "$work"); do
+        left+=("$dev")
     done
     if (( ${#left[@]} )); then
         echo "test_exfat.sh: FAILED to detach ${left[*]}; left them and $work in place" >&2

@@ -27,3 +27,7 @@ Updated: 2026-10-28, by Claude agent (S020 done)
   - A freshly formatted card without `DCIM` looks like any USB drive and is
     offered as a destination (S007 fast check). Telling them apart needs
     DiskArbitration (Mac) or udev (Linux).
+  - 2026-10-28: macOS's disk-image service once hung attaching the third
+    test image (also seen by the S020 agent). The helper was force-killed
+    with the user's OK; a dead `PSLIB.dmg` entry stays in `hdiutil info`
+    until reboot. New images attach and detach fine.
