@@ -30,6 +30,7 @@ Why: one line.
 - DEC-011 2026-10-28 — iced: approved dependency, tentative GUI choice
 - DEC-012 2026-10-28 — copy verification may read from the OS cache
 - DEC-013 2026-10-28 — name collision fails the file; never rename
+- DEC-014 2026-10-28 — dot-files and dot-folders on a source are ignored
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -144,3 +145,11 @@ only (on uncompressed RAF, hashes the whole library every sync). For
 F01, planned in S004.
 Why: camera names stay untouched, and dedup by name + size + hash stays
 correct.
+
+## DEC-014  2026-10-28  dot-files and dot-folders on a source are ignored
+Tags: sources, layout
+Decision: user chose to ignore every entry whose name starts with `.`. Such
+entries are counted as ignored, and dot folders are not walked. Rejected:
+ignoring only `._*` (too narrow), and copying them (the S002 fast check
+found that `._DSCF0001.RAF` would be classed as RAW and copied).
+Why: these are OS metadata, never photos.

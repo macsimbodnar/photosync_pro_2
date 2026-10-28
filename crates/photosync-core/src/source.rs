@@ -113,11 +113,15 @@ fn walk(dir: &Path, out: &mut Vec<SourceFile>) -> Result<(), ScanError> {
         let entry = entry.map_err(err(dir))?;
         let path = entry.path();
         let meta = fs::symlink_metadata(&path).map_err(err(&path))?;
-        if meta.is_dir() {
+        // macOS leaves `._*` AppleDouble files on FAT cards; they and any other
+        // dot entry are metadata, never photos (DEC-014).
+        let hidden = entry.file_name().as_encoded_bytes().starts_with(b".");
+        if meta.is_dir() && !hidden {
             walk(&path, out)?;
             continue;
         }
-        let media_type = if meta.is_file() { MediaType::from_path(&path) } else { None };
+        let media_type =
+            if meta.is_file() && !hidden { MediaType::from_path(&path) } else { None };
         out.push(SourceFile {
             media_type,
             size: meta.len(),

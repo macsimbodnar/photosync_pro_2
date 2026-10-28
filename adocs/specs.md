@@ -115,6 +115,9 @@ picks. It is simple to use.
   - `HEIF`: `.HIF`, `.HEIF`
   - `VIDEO`: `.MOV`, `.MP4`
 - Other files on the card are ignored and counted in the report.
+- Any file or folder whose name starts with `.` is ignored, whatever its
+  extension (e.g. macOS `._DSCF0001.JPG` AppleDouble files). A dot folder
+  is not walked; it counts as one ignored entry (DEC-014).
 - File names are the camera's own and are never changed. If the target
   folder already holds a different file with the same name (counter wrap or
   reset), the new file is not copied. It is reported as failed with reason

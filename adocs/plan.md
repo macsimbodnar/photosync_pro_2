@@ -17,14 +17,15 @@ not change the order.
 
 ## Open
 
-1. S003  in-memory library scan, already-synced detection
-2. S004  copy engine: folder naming, temp copy, verify, rename
-3. S005  progress events, ETA, cancel
-4. S006  sync report
-5. S007  volume discovery (Mac, then Linux)
-6. S008  CLI commands
-7. S009  TUI
-8. S010  multi-source and one-by-one session
+1. S011  scan: per-file errors instead of whole-source failure
+2. S003  in-memory library scan, already-synced detection
+3. S004  copy engine: folder naming, temp copy, verify, rename
+4. S005  progress events, ETA, cancel
+5. S006  sync report
+6. S007  volume discovery (Mac, then Linux)
+7. S008  CLI commands
+8. S009  TUI
+9. S010  multi-source and one-by-one session
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.

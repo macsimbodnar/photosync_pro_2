@@ -182,3 +182,22 @@ fn inv1_scan_leaves_source_manifest_unchanged() {
 
     assert_eq!(manifest(&dir.0), before);
 }
+
+#[test]
+fn dot_files_and_dot_folders_are_ignored() {
+    let dir = TempDir::new();
+    write_file(&dir.0, "DCIM/100_FUJI/DSCF0001.RAF", b"raw", at(1_700_000_001));
+    write_file(&dir.0, "DCIM/100_FUJI/._DSCF0001.RAF", b"appledouble", at(1_700_000_002));
+    write_file(&dir.0, "DCIM/.hidden/DSCF0002.JPG", b"jpg", at(1_700_000_003));
+
+    let scan = scan_source(&dir.0).unwrap();
+
+    let supported: Vec<_> = scan.supported().map(|f| f.path.clone()).collect();
+    assert_eq!(supported, vec![dir.0.join("DCIM/100_FUJI/DSCF0001.RAF")]);
+    // The dot folder is one ignored entry; its contents are not walked.
+    let ignored: Vec<_> = scan.ignored().map(|f| f.path.clone()).collect();
+    assert_eq!(
+        ignored,
+        vec![dir.0.join("DCIM/.hidden"), dir.0.join("DCIM/100_FUJI/._DSCF0001.RAF")]
+    );
+}
