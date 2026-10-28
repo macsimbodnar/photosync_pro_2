@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-28, by Claude agent (S023)
+Updated: 2026-10-28, by Claude (S023 fast check)
 
 - Last done: S023  twin-fallback reporting fixes (DEC-037, DEC-036 amended)
 - In progress: none
-- Next: S019  copy several cards at once
+- Next: S024  twins on another device; one-sync result names unread cards
 - Blocked: S017 waits for the user's hardware (DEC-029)
 - Parked:
   - S023's choices are the agent's pick, not yet confirmed by the user

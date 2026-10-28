@@ -54,6 +54,7 @@ Why: one line.
 - DEC-035 2026-10-28 — S022: seam for a refused report, prompt poll, cancel during lookup
 - DEC-036 2026-10-28 — twin fallback on a read error (S021, F07)
 - DEC-037 2026-10-28 — twin-fallback reporting fixes (S023)
+- DEC-038 2026-10-28 — a twin must be on another device, not only another source
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -872,3 +873,13 @@ file once copying starts (`common::LoseOnCopy`): chmod does nothing on
 exFAT.
 Why: the report is what the user trusts before formatting a card; it
 must say what is on the drive and which card had trouble.
+
+## DEC-038  2026-10-28  a twin must be on another device, not only another source
+Tags: fallback, sources, safety
+Decision: agent's pick after the S023 fast check, not yet confirmed by the
+user. A twin must be on another device (`st_dev`) than the planned file's
+source. Two sources on one card (e.g. `/Volumes/A` and `/Volumes/A/OLD`)
+give no twin, so a card that just failed to read is never read again in its
+place. Rejected: comparing source indexes (lets one card count as two). The
+cost: exFAT session tests need separate card images.
+Why: matches INV-3 ("another card") and the strict device rule of DEC-025.

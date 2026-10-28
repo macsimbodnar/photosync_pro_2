@@ -17,8 +17,9 @@ not change the order.
 
 ## Open
 
-1. S019  copy several cards at once (split from S010)
-2. S017  hardware hand checks (waits for the user)
+1. S024  twins on another device; one-sync result names unread cards
+2. S019  copy several cards at once (split from S010)
+3. S017  hardware hand checks (waits for the user)
 
 Later, not yet steps: GUI (iced), Mac .app and Linux AppImage packaging,
 Linux verification.
