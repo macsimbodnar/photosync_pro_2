@@ -12,7 +12,7 @@ it must do is in `adocs/specs.md`, and the plan is in `adocs/plan.md`.
 ## Usage
 
 Run `photosync` with no command, in a terminal, for the interactive view
-(TUI). It walks through five steps: pick the cards, the drive, the library
+(TUI); it calls itself "phoosync pro 2" (DEC-041). It walks through five steps: pick the cards, the drive, the library
 folder on it (default `<drive>/Photos`; it must exist), an optional name,
 then check and start. It shows the progress with an ETA, then the report,
 which is printed again when you quit. The exit code is the same as `sync`'s.

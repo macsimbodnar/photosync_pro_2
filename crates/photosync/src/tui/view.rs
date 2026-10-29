@@ -24,7 +24,7 @@ pub fn render(app: &App, frame: &mut Frame) {
 
     frame.render_widget(
         Line::from(vec![
-            Span::from(" photosync ").bold().reversed(),
+            Span::from(" phoosync pro 2 ").bold().reversed(),
             Span::from(format!("  {}", heading(app))),
         ]),
         title,
@@ -39,7 +39,7 @@ pub fn render(app: &App, frame: &mut Frame) {
             app.library(),
             &[
                 "The folder on the drive that holds your photos. It must exist:".into(),
-                "photosync never creates it. Photos already anywhere in it are skipped.".into(),
+                "phoosync pro 2 never creates it. Photos already anywhere in it are skipped.".into(),
             ],
         ),
         Screen::Name => field(

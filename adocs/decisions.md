@@ -57,6 +57,7 @@ Why: one line.
 - DEC-038 2026-10-28 — a twin must be on another device, not only another source
 - DEC-039 2026-10-28 — S024: device rule in planning, one-sync result names unread cards, twin images
 - DEC-040 2026-10-29 — S019: several cards copied at once, one thread per card
+- DEC-041 2026-10-29 — the TUI shows the app as "phoosync pro 2"
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -970,3 +971,10 @@ cancelling sentence says "files". A GUI forwards events to its UI
 thread, as the TUI does, and must not assume one file in flight.
 Why: the simplest design that keeps every invariant: one owner per photo,
 one lock per folder, one lock for progress, and every thread joined.
+
+## DEC-041  2026-10-29  the TUI shows the app as "phoosync pro 2"
+Tags: ui, naming
+Decision: the user's call. The TUI's title and text name the app "phoosync
+pro 2", a joke name, spelling intended. The binary, crates, `--help`,
+`--version` and the docs stay `photosync` for now.
+Why: the user wants the joke name in the UI only.
