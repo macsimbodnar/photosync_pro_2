@@ -17,8 +17,8 @@ not change the order.
 
 ## Open
 
-1. S037  TUI report cuts long lines (found in S028)
-2. S045  watchdog test fails now and then: a race (found in S035)
+1. S045  watchdog test fails now and then: a race (found in S035)
+2. S037  TUI report cuts long lines (found in S028)
 3. S036  plan the GUI: confirm iced, layout, steps
 4. S025  first run on Linux: build, tests, hand checks (waits for the user)
 5. S017  hardware hand checks on Mac (waits for the user)

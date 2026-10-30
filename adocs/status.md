@@ -8,7 +8,7 @@ Updated: 2026-10-30, by Claude (S035 done)
 
 - Last done: S035  CLI bytes per source (F10)
 - In progress: none
-- Next: S037  TUI report cuts long lines (found in S028); then the rest of plan.md's Open list
+- Next: S045, the flaky watchdog test: a flaky gate hurts every later step; then the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
