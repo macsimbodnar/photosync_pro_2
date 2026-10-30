@@ -13,7 +13,10 @@
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use common::{TempDir, at, date_command, manifest, photosync_tty, write_file};
 
@@ -42,7 +45,12 @@ fn ignored_image_tests_pass_on_real_mounts() {
     use common::images::{CARD, LIBRARY, ignored_tests_pass_on_images};
     ignored_tests_pass_on_images(
         &[CARD, LIBRARY],
-        &["one_card_after_another_keeps_the_worst_outcome_on_exfat"],
+        &[
+            "one_card_after_another_keeps_the_worst_outcome_on_exfat",
+            "a_refused_sync_fixed_and_retried_exits_0",
+            "a_refused_sync_of_two_cards_names_the_one_not_completed",
+            "a_swapped_card_does_not_clear_a_refused_sync",
+        ],
     );
 }
 
@@ -209,4 +217,168 @@ fn the_session_summary_points_back_at_a_library_problem_of_an_earlier_sync() {
         "{run:?}"
     );
     assert!(last[0].starts_with("Result: all 3 "), "{run:?}");
+}
+
+/// A session on the terminal, `--one-by-one` from the given cards into a
+/// library that is missing at first. At each prompt, `answer` runs and says
+/// what to type: so a test can make the library, or swap a card, when the
+/// user would.
+fn session_at_prompts(
+    cards: &[&Path],
+    library: &Path,
+    mut answer: impl FnMut(usize) -> String,
+) -> common::Run {
+    let mut pty = common::Pty::open();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_photosync"));
+    command.arg("sync");
+    for card in cards {
+        command.arg("--source").arg(card);
+    }
+    let mut child = command
+        .arg("--dest")
+        .arg(library)
+        .arg("--one-by-one")
+        .stdin(pty.stdin())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stderr = child.stderr.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut all = String::new();
+        for line in BufReader::new(stderr).lines() {
+            let line = line.unwrap();
+            all.push_str(&line);
+            all.push('\n');
+            if line.starts_with("Insert the next card") {
+                let _ = tx.send(());
+            }
+        }
+        all
+    });
+    let mut prompt = 0;
+    while rx.recv_timeout(Duration::from_secs(60)).is_ok() {
+        prompt += 1;
+        writeln!(pty.keys, "{}", answer(prompt)).unwrap();
+    }
+    let stderr = reader.join().unwrap();
+    let out = child.wait_with_output().unwrap();
+    drop(pty);
+    common::Run {
+        code: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8(out.stdout).unwrap(),
+        stderr,
+    }
+}
+
+/// S032 (F07), the finding's own case: the library is missing, the user
+/// makes it at the prompt, the same card then completes. Every photo is on
+/// the drive: exit 0, and no "do not format". The summary keeps the refusal.
+#[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
+fn a_refused_sync_fixed_and_retried_exits_0() {
+    let (_, drive) = mounts();
+    let dir = TempDir::new();
+    let x = dir.0.join("x");
+    write_file(&x, "DCIM/100_FUJI/DSCF7301.RAF", b"x raw", at(TAKEN));
+    let ours = common::OnDrive::new(&drive, "s032-fixed");
+    let library = ours.0.join("Lib");
+
+    let run = session_at_prompts(&[&x], &library, |prompt| match prompt {
+        1 => {
+            fs::create_dir(&library).unwrap();
+            x.display().to_string()
+        }
+        _ => "q".to_string(),
+    });
+
+    assert_eq!(run.code, 0, "{run:?}");
+    assert!(run.stderr.contains("does not exist."), "{run:?}");
+    assert!(
+        run.stdout.contains(&format!(
+            "  sync 1 ({0}): refused, nothing copied; its cards completed later\n  sync 2 ({0}): complete\n",
+            x.display()
+        )),
+        "{run:?}"
+    );
+    let result = run.stdout.lines().last().unwrap();
+    assert_eq!(
+        result, "Result: all 1 photo or video on the drive (1 copied, 0 already there), over 2 syncs.",
+        "{run:?}"
+    );
+    assert!(!run.stdout.contains("NOT COMPLETE"), "{run:?}");
+    assert!(!run.stdout.to_lowercase().contains("do not format"), "{run:?}");
+}
+
+/// S032: x and y refused, then x alone complete. y is not on the drive: the
+/// warning stays, says which card, and the exit code stays 2.
+#[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
+fn a_refused_sync_of_two_cards_names_the_one_not_completed() {
+    let (_, drive) = mounts();
+    let dir = TempDir::new();
+    let (x, y) = (dir.0.join("x"), dir.0.join("y"));
+    write_file(&x, "DCIM/100_FUJI/DSCF7401.RAF", b"x raw", at(TAKEN));
+    write_file(&y, "DCIM/100_FUJI/DSCF7402.RAF", b"y raw", at(TAKEN));
+    let ours = common::OnDrive::new(&drive, "s032-two");
+    let library = ours.0.join("Lib");
+
+    let run = session_at_prompts(&[&x, &y], &library, |prompt| match prompt {
+        1 => {
+            fs::create_dir(&library).unwrap();
+            x.display().to_string()
+        }
+        _ => "q".to_string(),
+    });
+
+    assert_eq!(run.code, 2, "{run:?}");
+    let state = format!(
+        "sync 1 ({}, {}): refused, nothing copied; still to sync: {}",
+        x.display(),
+        y.display(),
+        y.display()
+    );
+    assert!(run.stdout.contains(&format!("  {state}\n")), "{run:?}");
+    assert!(
+        run.stdout.ends_with(&format!(
+            "\nResult: NOT COMPLETE: 1 of 2 syncs not complete: {state}. Do not format the \
+             cards of those syncs. Fix the cause and sync them again: files already on the \
+             drive are skipped.\n"
+        )),
+        "{run:?}"
+    );
+}
+
+/// S032: one reader: the refused card is swapped for another, at the same
+/// path, and that one completes. The refused card's photos are not on the
+/// drive, so the warning stays.
+#[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
+fn a_swapped_card_does_not_clear_a_refused_sync() {
+    let (_, drive) = mounts();
+    let dir = TempDir::new();
+    let x = dir.0.join("x");
+    write_file(&x, "DCIM/100_FUJI/DSCF7501.RAF", b"first card", at(TAKEN));
+    let ours = common::OnDrive::new(&drive, "s032-swap");
+    let library = ours.0.join("Lib");
+
+    let run = session_at_prompts(&[&x], &library, |prompt| match prompt {
+        1 => {
+            fs::create_dir(&library).unwrap();
+            fs::remove_dir_all(x.join("DCIM")).unwrap();
+            write_file(&x, "DCIM/100_FUJI/DSCF7502.RAF", b"second card", at(TAKEN));
+            x.display().to_string()
+        }
+        _ => "q".to_string(),
+    });
+
+    assert_eq!(run.code, 2, "{run:?}");
+    assert!(
+        run.stdout.contains(&format!(
+            "Result: NOT COMPLETE: 1 of 2 syncs not complete: sync 1 ({}): refused, nothing copied.",
+            x.display()
+        )),
+        "{run:?}"
+    );
 }

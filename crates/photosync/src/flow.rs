@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use photosync_core::Session;
+use photosync_core::{Session, check_library_found};
 pub use photosync_core::{SyncError, Watch};
 
 /// The interactive model keeps the session between cards and lends it to
@@ -19,6 +19,14 @@ pub type Shared = Arc<Mutex<Session>>;
 /// the session.
 pub fn start(library: &Path, name: Option<&str>) -> Result<Session, SyncError> {
     Session::new(library, name).map_err(SyncError::Folder)
+}
+
+/// `start`, and a library that is not there is refused too, while the user
+/// can still change it (DEC-050). A session never changes its library.
+pub fn start_found(library: &Path, name: Option<&str>) -> Result<Session, SyncError> {
+    let session = start(library, name)?;
+    check_library_found(library).map_err(SyncError::Plan)?;
+    Ok(session)
 }
 
 /// The session, also after a sync panicked while holding it: the session

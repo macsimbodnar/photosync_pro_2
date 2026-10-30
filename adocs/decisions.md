@@ -66,6 +66,7 @@ Why: one line.
 - DEC-047 2026-10-30 — how tests see a real flush; root guard outside main (S030)
 - DEC-048 2026-10-30 — the end of a report counts the problem lines above the duplicates (S040)
 - DEC-049 2026-10-30 — the gate mounts its own images and runs the real syncs (S029)
+- DEC-050 2026-10-30 — a refused sync whose cards completed later stops counting; the TUI checks the library first (S032)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -727,7 +728,9 @@ picked, discovery again; from the cards Enter goes straight to Check, and
 Esc from Check back to the cards; Esc on the cards does nothing in a
 session. To change the library or the name, quit and start again.
 Rejected: re-targeting a session whose syncs were all refused (more core
-API for a typo; the refused sync would still count).
+API for a typo; the refused sync would still count). Amended by DEC-050: it
+stops counting once its cards complete later, and the TUI checks the library
+before it makes the session.
 (3) The model keeps the session as `flow::Shared` (`Arc<Mutex<Session>>`)
 and lends it to the worker in each `Job`. The worker unlocks before it
 sends `Finished` or `Crashed`; the model then reads the session's last
@@ -1201,3 +1204,51 @@ its fix." Why both: the plain run has permission bits and the script has exFAT's
 and HFS+'s behaviour, and each skips what the other needs.
 Why: the prime rule; a step could be stamped done with the copy path, the
 closed-stdout rule or the worst-outcome exit code broken (F04, M29).
+
+## DEC-050  2026-10-30  a refused sync whose cards completed later stops counting; the TUI checks the library first (S032)
+Tags: session, exit-codes, tui, tests
+Decision: agent's pick under the user's standing instruction, not yet confirmed
+by the user. Amends DEC-034 (2).
+(1) A sync with `Verdict::Refused` (it wrote nothing) stops counting in
+`Session::verdict` and `not_complete` once each of its cards completed later in
+the session. It stays in `runs`, and `Run::verdict` still says `Refused`.
+(2) "Completed later" means: a later run whose whole report `is_complete()` read
+a card at the same `resolved_root`, listing every supported file the refused
+sync listed, with the same path under the root, size and mtime. More files are
+fine: a photo taken since. Why a listing and not the path: a swapped card comes
+back at the same path (DEC-034 (1)), and a path alone would call one card's
+sync the other's. No hash: a refused sync may not have hashed anything, and two
+cards alike in all of these, at one path, are the backup slot's. No `st_dev`: a
+re-seated card may get a new one, and only a false alarm would come of it.
+(3) A whole report, not the card's own part of it: a twin's failure can land in
+either card's bucket (INV-6), and such a run keeps the session not complete
+anyway, so this only costs a name in a result that is already NOT COMPLETE.
+(4) Never cleared, the safest reading: a card the refusal could not scan (gone,
+no `DCIM`), or read only in part: nothing says what it held. So a card that was
+not mounted, then mounted at that path, still ends in exit 2. Also never: a
+recorded refusal (`record_refusal`, it read no card), a report refused after
+copying and a crash (files may be on the drive, nothing says which), a failed or
+cancelled sync, and a refusal after the complete sync, not before it. Each card
+counts alone: A+B refused, A complete, B complete in another sync clears it. A
+backup card with the same photos at another path does not stand in for A.
+(5) Text: "sync 1 (A): refused, nothing copied; its cards completed later" in the
+summary, and "Its cards completed later." under the refusal in the TUI's report,
+so what the user saw is not left unexplained. With only some done: "; still to
+sync: B". A cleared refusal still counts as a problem line in the TUI's report:
+the line is there, and the count says what is above the duplicates (DEC-048).
+(6) TUI: `App::start` refuses a library `fs::canonicalize` cannot find or read
+before it makes the session, with the CLI's sentence; the session is not made, no
+card is read, the folder is not made, and Enter then Esc, Esc go back to the
+library. Exit stays 2 if the user quits there. Only this first check moves (`check_library_found`
+in the core): every sync still does all of INV-10, as it needs the scans. The
+offer to make the folder is left out: S032 excludes making it unasked.
+(7) The check is on in `App::checking_library`, which `tui::run_loop` uses, and off
+in `App::new`. Why: 16 unit tests of `app.rs` and `tui/view.rs` drive `App::new` on
+made-up libraries such as `/V/SSD/Photos` and expect a job, which pins the old
+order; S032 does not allow editing them. So they test the model without the check,
+and `tui::tests::a_fresh_drive_is_refused_before_the_session_starts` tests the
+real loop. Cost: a new front-end must pick `checking_library`. For the user: those
+tests could move to real temp folders, and `App::new` could then always check.
+Why: F07: on the expected first run, every photo on the drive still ended in "do
+not format", which teaches the user to ignore that warning. The prime rule keeps
+every case where a card cannot be shown to have completed.

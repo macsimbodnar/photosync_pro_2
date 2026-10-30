@@ -19,10 +19,14 @@ which is printed again when you quit. The exit code is the same as `sync`'s.
 After the report, `n` takes the next card (one card reader: swap the card)
 into the same session: the same library, name and folder, straight to the
 check. The report then shows every card of the session and the totals of
-all. After a refusal you can go back and try again, or take the next card.
+all. A library folder that is not there is refused at the check, before
+any card is read: make the folder, or go back and change it (photosync never
+makes it). After a refusal you can go back and try again, or take the next card.
 The exit code and the message on quitting are the worst of the session:
-a sync that was not complete is named, and no later sync hides it. To
-change the library or the name, quit and start again. Without a terminal
+a sync that was not complete is named, and no later sync hides it. The one
+exception: a refused sync, which wrote nothing, stops counting once each of its
+cards has completed later in the session. Another card at the same path does not
+count. To change the library or the name, quit and start again. Without a terminal
 (stdin or stdout redirected), `photosync` alone prints the usage and exits
 2.
 
@@ -54,7 +58,12 @@ stderr: swap the card and press Enter (it copies the cards it finds
 mounted), or type a card's path. `q`, Ctrl-D or Ctrl-C finishes. Without
 `--source` it asks for the first card too. All cards go into one session
 and one folder; after several, a summary names each sync that was not
-complete, and the exit code is the worst of them. A sync that copied a
+complete, and the exit code is the worst of them. A refused sync stops
+counting once each of its cards has completed later in the session: make the
+missing library at the prompt, give the same card, and it ends in exit 0. Until
+then the result names the cards still to sync. A card swapped in at the same
+path is another card: its files must include all the refused card listed. A
+sync that copied a
 photo from the other card is "complete, but 1 could not be read on
 <card> ...: check that card", and the session's result names that card
 too. It asks only when
@@ -138,7 +147,9 @@ Exit codes:
 - `0` every photo and video is on the drive (copied, or already there).
 - `1` some files failed or were cancelled, or part of a card could not be
   read. Do not format the card; fix the cause and run the same sync again.
-- `2` usage error, or the sync was refused before copying anything.
+- `2` usage error, or a sync was refused before copying anything and its cards
+  did not complete later in the session. Another card of the session may have
+  been copied.
 
 `sources` and `drives` exit 1 if their list cannot be written to stdout.
 
@@ -271,7 +282,8 @@ card of the session, with scripted keys on ratatui's `TestBackend`.
 `tests/exfat_e2e.rs`'s `two_cards_on_two_devices_copy_at_once` syncs two
 cards on the twin images (below) to that drive at once, one thread per card.
 `tests/exfat_session.rs` runs `sync --one-by-one` over five cards in one
-session, one of them failing, typed at its prompt on a pseudo-terminal.
+session, one of them failing, typed at its prompt on a pseudo-terminal, and
+refused syncs fixed, half fixed and answered with a swapped card.
 The script also mounts an HFS+ image and runs the sync name tests in
 `tests/copy_engine.rs` on it; HFS+, like exFAT, lists a name decomposed.
 The binary's unit tests `text::tests::a_session_names_the_card_a_file_was_copied_from_its_twin_for`

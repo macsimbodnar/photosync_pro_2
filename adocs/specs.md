@@ -115,7 +115,8 @@ picks. It is simple to use.
     2, so a script never hangs. A Ctrl-C at the prompt is always seen,
     and one while the cards are looked for runs no further sync. All syncs are one session; after several, a
     summary ends the report, and the exit code and the result are the
-    session's worst, naming each sync that was not complete (DEC-034).
+    session's worst, naming each sync that was not complete (DEC-034),
+    but for a refused sync whose cards completed later (Sources; DEC-050).
     A sync with a file copied from its twin is never plain "complete":
     its state and the session's result name each card that could not be
     read (DEC-037).
@@ -132,10 +133,12 @@ picks. It is simple to use.
     totals of all, naming the library and the folder. The exit code and
     the message are the session's worst, naming each sync that was not
     complete, so neither going back nor a later sync ever hides an earlier
-    one that was not complete. The result names each card a file could
-    not be read on and was copied from its twin, as the CLI's does. A name that cannot be a folder name is
-    refused before the session starts and can be fixed; after that, the
-    library and the name stay. A sync with no source picked does not
+    one that was not complete; a refused sync whose cards completed later
+    is the one exception (Sources; DEC-050). The result names each card a file could
+    not be read on and was copied from its twin, as the CLI's does. A name that cannot be a folder name,
+    or a library folder that is not there, is refused before the session
+    starts, with no card read, and can be fixed; after that, the library
+    and the name stay. The TUI never makes the folder (DEC-050). A sync with no source picked does not
     start. A panic in the sync's thread leaves the screen as it is, and
     the sync is recorded in the session as not complete (DEC-031,
     DEC-034).
@@ -170,6 +173,19 @@ picks. It is simple to use.
   The same card synced again is "already on drive", not a duplicate of
   itself. The session's verdict is the worst of its syncs, so a later sync
   never hides an earlier one that was not complete.
+- One exception: a sync refused before it wrote anything stops counting once
+  each of its cards has completed in a later sync of the session, as nothing
+  is left to warn of (DEC-050). A card completed later only if a later sync
+  whose whole report is complete had it at the same resolved path, holding
+  every supported file the refused sync listed, each with the same path under
+  the root, size and modification time. So a swapped card at that path, or a
+  backup card at another, clears nothing. A card the refused sync could not
+  read, or read only in part, never clears: nothing says what it held. A sync
+  that failed, was cancelled or crashed, or whose report was refused, always
+  counts, and so does a refusal before the complete sync, not after it. The
+  sync stays in the report and the summary, saying its cards completed later;
+  while only some have, the result names those still to sync. Exit 2 can
+  therefore come after another card of the session was copied.
 - An unreadable file or folder under `DCIM` does not stop the scan: it is
   recorded as a failure with its path and error, and the rest of the card
   is still scanned. Only an unreadable source or `DCIM` fails the source.

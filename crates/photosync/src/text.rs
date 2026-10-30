@@ -442,9 +442,23 @@ fn unread_warning(files: u64, cards: &[&Path]) -> Option<String> {
 pub fn not_complete(session: &Session) -> Option<String> {
     let each: Vec<String> = session
         .not_complete()
-        .map(|(i, run)| format!("{}: {}", run_name(i, run), run_state(run)))
+        .map(|(i, run)| format!("{}: {}", run_name(i, run), state_in(session, i, run)))
         .collect();
     (!each.is_empty()).then(|| each.join("; "))
+}
+
+/// `run_state`, and what became of a refused sync's cards since.
+fn state_in(session: &Session, index: usize, run: &Run) -> String {
+    let mut state = run_state(run);
+    let left = session.cards_left(index);
+    if session.completed_later(index) {
+        state.push_str("; its cards completed later");
+    } else if left.len() < run.sources.len() {
+        let named: Vec<String> = left.iter().map(|c| c.display().to_string()).collect();
+        state.push_str("; still to sync: ");
+        state.push_str(&named.join(", "));
+    }
+    state
 }
 
 /// The session's result line: the worst of its syncs. A session of one
@@ -520,8 +534,8 @@ pub fn session_report(session: &Session) -> Option<String> {
                 ..
             },
         ] => Some(report_in(report, session.library(), session.folder())),
-        runs => {
-            let parts: Vec<SyncPart> = runs.iter().map(sync_part).collect();
+        _ => {
+            let parts = sync_parts(session);
             let mut out = vec!["Report".to_string()];
             out.extend(library_and_folder(session));
             out.extend(several_syncs(&parts));
@@ -549,6 +563,21 @@ enum PartEnd<'r> {
     },
     /// Refused or crashed: its sentence.
     Stopped(String),
+}
+
+/// Each sync's part. A refusal whose cards completed later says so under
+/// its sentence, which still asks for what has since been done.
+fn sync_parts(session: &Session) -> Vec<SyncPart<'_>> {
+    let parts = session.runs().iter().map(sync_part);
+    parts
+        .enumerate()
+        .map(|(i, mut part)| {
+            if let (true, PartEnd::Stopped(sentence)) = (session.completed_later(i), &mut part.end) {
+                sentence.push_str(" Its cards completed later.");
+            }
+            part
+        })
+        .collect()
 }
 
 fn sync_part(run: &Run) -> SyncPart<'_> {
@@ -670,9 +699,9 @@ pub fn session_summary(session: &Session) -> String {
     )];
     out.extend(library_and_folder(session));
     for (i, run) in runs.iter().enumerate() {
-        out.push(format!("  {}: {}", run_name(i, run), run_state(run)));
+        out.push(format!("  {}: {}", run_name(i, run), state_in(session, i, run)));
     }
-    let parts: Vec<SyncPart> = runs.iter().map(sync_part).collect();
+    let parts = sync_parts(session);
     out.extend(all_syncs(session, summary_pointer(&parts)));
     out.join("\n") + "\n"
 }

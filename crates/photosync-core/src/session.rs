@@ -1,13 +1,16 @@
 //! A sync session: one card after another, or several cards at once, into
 //! one library and one folder (DEC-009). It keeps every sync's end, a
 //! report or why there is none, and the worst of them, so no later sync
-//! can hide an earlier one that was not complete. Front-ends only drive
-//! it: scan lines and progress go to their `Watch`, every rule is here.
+//! can hide an earlier one that was not complete. The one thing that clears
+//! a sync is the sync its refusal asked for: the same cards, complete
+//! (`Session::completed_later`, DEC-050). Front-ends only drive it: scan
+//! lines and progress go to their `Watch`, every rule is here.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::copy::{
     CopyError, CopyOutcome, FolderError, SyncFolder, TempCleanup, Threads, check_name,
@@ -121,6 +124,37 @@ impl Run {
     }
 }
 
+/// What one card held when a sync read it: enough to tell later whether a
+/// sync at that path had that card's photos, as a swapped card comes back at
+/// the same path (DEC-034 (1), DEC-050).
+#[derive(Debug)]
+struct Listed {
+    resolved_root: PathBuf,
+    /// Under the root, so two spellings of one root compare equal.
+    files: HashSet<(PathBuf, u64, SystemTime)>,
+    /// False when part of the card could not be read: what it held is then
+    /// not known, and no later sync can be shown to hold all of it.
+    whole: bool,
+}
+
+impl Listed {
+    fn of(scan: &SourceScan) -> Listed {
+        let under_root = |path: &Path| path.strip_prefix(&scan.root).unwrap_or(path).to_path_buf();
+        Listed {
+            resolved_root: scan.resolved_root.clone(),
+            files: scan.supported().map(|f| (under_root(&f.path), f.size, f.modified)).collect(),
+            whole: scan.failures.is_empty(),
+        }
+    }
+
+    /// Whether `later` is this card: same path, and all these photos on it.
+    fn is_in(&self, later: &Listed) -> bool {
+        self.whole
+            && self.resolved_root == later.resolved_root
+            && self.files.is_subset(&later.files)
+    }
+}
+
 /// A sync session into one library. Its folder is fixed by its first plan
 /// with something to copy, or a named folder already there (DEC-009).
 /// Stale temp files are removed once, before its first copy, never again
@@ -136,6 +170,9 @@ pub struct Session {
     /// the session's source file it holds.
     on_drive: HashMap<PathBuf, PathBuf>,
     runs: Vec<Run>,
+    /// For each run, in the order of its sources, the cards it read. Stops
+    /// at the first it could not; a recorded run read none.
+    listed: Vec<Vec<Listed>>,
 }
 
 impl Session {
@@ -153,6 +190,7 @@ impl Session {
             cleaned: false,
             on_drive: HashMap::new(),
             runs: Vec::new(),
+            listed: Vec::new(),
         })
     }
 
@@ -186,17 +224,19 @@ impl Session {
     /// whatever its end.
     pub fn sync(&mut self, roots: &[PathBuf], cancel: &Cancel, watch: &mut dyn Watch) -> &Run {
         let mut scans = Vec::new();
+        let mut listed = Vec::new();
         let mut scanned = Ok(());
         for root in roots {
-            scanned = scan_source(root)
-                .map_err(SyncError::Scan)
-                .and_then(|scan| accept(&mut scans, scan, watch));
+            scanned = scan_source(root).map_err(SyncError::Scan).and_then(|scan| {
+                listed.push(Listed::of(&scan));
+                accept(&mut scans, scan, watch)
+            });
             if scanned.is_err() {
                 break;
             }
         }
         let result = scanned.and_then(|()| self.run(scans, cancel, watch));
-        self.end(roots.to_vec(), result)
+        self.end(roots.to_vec(), listed, result)
     }
 
     /// `sync` of cards the caller has scanned already (`scan_source`), in
@@ -208,6 +248,7 @@ impl Session {
         watch: &mut dyn Watch,
     ) -> &Run {
         let roots: Vec<PathBuf> = scans.iter().map(|s| s.root.clone()).collect();
+        let listed = scans.iter().map(Listed::of).collect();
         let mut accepted = Vec::new();
         let mut result = Ok(());
         for scan in scans {
@@ -217,10 +258,15 @@ impl Session {
             }
         }
         let result = result.and_then(|()| self.run(accepted, cancel, watch));
-        self.end(roots, result)
+        self.end(roots, listed, result)
     }
 
-    fn end(&mut self, roots: Vec<PathBuf>, result: Result<Report, SyncError>) -> &Run {
+    fn end(
+        &mut self,
+        roots: Vec<PathBuf>,
+        listed: Vec<Listed>,
+        result: Result<Report, SyncError>,
+    ) -> &Run {
         let end = match result {
             Ok(report) => {
                 self.remember(&report);
@@ -228,6 +274,7 @@ impl Session {
             }
             Err(e) => RunEnd::Refused(e),
         };
+        self.listed.push(listed);
         self.push(&roots, end)
     }
 
@@ -235,6 +282,7 @@ impl Session {
     /// lost it, e.g. its thread panicked with `what`. Not complete: files
     /// may be on the drive, but nothing says which.
     pub fn record_crash(&mut self, roots: &[PathBuf], what: String) -> &Run {
+        self.listed.push(Vec::new());
         self.push(roots, RunEnd::Crashed(what))
     }
 
@@ -245,18 +293,59 @@ impl Session {
     /// one can only keep or worsen the session's verdict, never make the
     /// cards look safe.
     pub fn record_refusal(&mut self, roots: &[PathBuf], error: SyncError) -> &Run {
+        self.listed.push(Vec::new());
         self.push(roots, RunEnd::Refused(error))
     }
 
-    /// The worst verdict of every sync; `Complete` with none.
+    /// The worst verdict of every sync, but a refused one whose cards all
+    /// completed later; `Complete` with none.
     pub fn verdict(&self) -> Verdict {
-        self.runs.iter().map(Run::verdict).max().unwrap_or(Verdict::Complete)
+        self.not_complete().map(|(_, run)| run.verdict()).max().unwrap_or(Verdict::Complete)
     }
 
-    /// The syncs that were not complete, with their index in `runs`, so a
-    /// front-end can name each one.
+    /// The syncs that were not complete and still count, with their index in
+    /// `runs`, so a front-end can name each one.
     pub fn not_complete(&self) -> impl Iterator<Item = (usize, &Run)> {
-        self.runs.iter().enumerate().filter(|(_, run)| run.verdict() != Verdict::Complete)
+        self.runs.iter().enumerate().filter(|(i, run)| {
+            run.verdict() != Verdict::Complete && !self.completed_later(*i)
+        })
+    }
+
+    /// Whether sync `index` was refused, and every card it was given then
+    /// completed in a later sync of this session (DEC-050). It wrote nothing
+    /// (`Verdict::Refused`), so all that was left to do is what those syncs
+    /// did. The sync itself stays in `runs`, refused.
+    pub fn completed_later(&self, index: usize) -> bool {
+        self.runs.get(index).is_some_and(|run| {
+            !run.sources.is_empty() && self.cards_left(index).is_empty()
+        })
+    }
+
+    /// The cards of refused sync `index` that no later sync completed: all
+    /// of them for a sync of any other end.
+    pub fn cards_left(&self, index: usize) -> Vec<&Path> {
+        let Some(run) = self.runs.get(index) else {
+            return Vec::new();
+        };
+        let sources = run.sources.iter().map(PathBuf::as_path);
+        if run.verdict() != Verdict::Refused {
+            return sources.collect();
+        }
+        // A whole report only: its other card's failure may be this card's
+        // file too, as a twin takes its original's bucket (INV-6).
+        let complete: Vec<&Listed> = (index + 1..self.runs.len())
+            .filter(|&later| matches!(&self.runs[later].end, RunEnd::Report(r) if r.is_complete()))
+            .flat_map(|later| &self.listed[later])
+            .collect();
+        let read = &self.listed[index];
+        sources
+            .enumerate()
+            .filter(|(i, _)| {
+                // Not read: nothing says which card was there.
+                !read.get(*i).is_some_and(|card| complete.iter().any(|later| card.is_in(later)))
+            })
+            .map(|(_, source)| source)
+            .collect()
     }
 
     /// The reports of every sync, merged: totals over all of them.

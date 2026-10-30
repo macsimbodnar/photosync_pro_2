@@ -355,6 +355,15 @@ fn key(file: &SourceFile) -> (OsString, u64) {
     (file.path.file_name().unwrap_or_default().to_os_string(), file.size)
 }
 
+/// The library's first check alone, with no card read yet: for a front-end
+/// that can still let the user change the library (DEC-050). Each sync does
+/// the whole check itself; passing this promises nothing about it.
+pub fn check_library_found(library: &Path) -> Result<(), PlanError> {
+    fs::canonicalize(library)
+        .map(drop)
+        .map_err(|source| PlanError::Library(ScanError { path: library.to_path_buf(), source }))
+}
+
 /// INV-10, on resolved paths, so a symlink or `..` cannot hide an overlap.
 /// The path checks name the plain overlaps. The device check catches what
 /// paths cannot: a second mount or a bind mount of the card, or another

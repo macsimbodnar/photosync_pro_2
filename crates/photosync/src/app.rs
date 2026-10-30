@@ -187,6 +187,9 @@ pub struct App {
     /// Ctrl-C was pressed while cancelling: quit at once (INV-7 makes it
     /// safe), as the CLI's second Ctrl-C does (DEC-028 (5)).
     quit_while_running: bool,
+    /// The first start refuses a library that is not there, before it makes
+    /// the session (`flow::start_found`).
+    checks_library: bool,
 }
 
 impl Default for App {
@@ -219,6 +222,17 @@ impl App {
             folder: None,
             syncs: 0,
             quit_while_running: false,
+            checks_library: false,
+        }
+    }
+
+    /// `new`, for a real front-end: a library that is not there is refused
+    /// while it can still be changed. `new` leaves that to the session's
+    /// first sync, so the model's own tests run on made-up paths (DEC-050).
+    pub fn checking_library() -> App {
+        App {
+            checks_library: true,
+            ..App::new()
         }
     }
 
@@ -640,14 +654,21 @@ impl App {
     }
 
     /// The job for the picked cards, in the session, which the first start
-    /// makes. A name that is not one folder name is refused here, before
-    /// any card is read, and no session is made: the name can be fixed.
+    /// makes. A name that is not one folder name, or a library that is not
+    /// there, is refused here, before any card is read, and no session is
+    /// made: it can be fixed.
     fn start(&mut self) -> Option<Job> {
         let session = match &self.session {
             Some(session) => session.clone(),
             None => {
                 let library = PathBuf::from(self.library.trim());
-                match flow::start(&library, self.name_arg().as_deref()) {
+                let name = self.name_arg();
+                let started = if self.checks_library {
+                    flow::start_found(&library, name.as_deref())
+                } else {
+                    flow::start(&library, name.as_deref())
+                };
+                match started {
                     Ok(session) => {
                         let session = Arc::new(Mutex::new(session));
                         self.session = Some(session.clone());
@@ -1463,6 +1484,95 @@ mod tests {
         run_job(&mut app, next);
         assert_eq!(flow::lock(&session).runs().len(), 2);
         assert_eq!(app.syncs(), 2);
+    }
+
+    /// S032 (F07) in the TUI: the sync is refused in the session (the library
+    /// went missing after the check, or the check is not on, as here), the
+    /// folder is made, and going back and starting again completes the card.
+    /// Real syncs, so on the drive image.
+    #[test]
+    #[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
+    fn a_refused_sync_then_the_same_card_complete_exits_0() {
+        use crate::common::{OnDrive, test_drive};
+
+        let ours = OnDrive::new(&test_drive(), "s032-app");
+        let dir = TempDir::new();
+        let a = dir.0.join("a");
+        write_file(&a, "DCIM/100_FUJI/DSCF0001.RAF", b"raw", at(1_700_000_000));
+        let (sa, sd) = (a.display().to_string(), ours.0.display().to_string());
+
+        let mut app = app(&[&sa], &[&sd]);
+        keys(&mut app, &[Key::Enter, Key::Enter, Key::Enter, Key::Enter]);
+        let first = start(&mut app);
+        run_job(&mut app, first);
+        assert_eq!(app.screen(), Screen::Refused);
+        assert_eq!(app.exit().code, EXIT_REFUSED);
+
+        std::fs::create_dir(ours.0.join("Photos")).unwrap();
+        keys(&mut app, &[Key::Enter]);
+        let again = start(&mut app);
+        run_job(&mut app, again);
+
+        assert_eq!(app.screen(), Screen::Report);
+        let exit = app.exit();
+        assert_eq!(exit.code, EXIT_OK, "{exit:?}");
+        assert_eq!(exit.message, None, "{exit:?}");
+        match app.outcome() {
+            Some(Outcome::Report { result, complete, .. }) => {
+                assert!(*complete);
+                assert_eq!(
+                    result,
+                    "Result: all 1 photo or video on the drive (1 copied, 0 already there), over 2 syncs."
+                );
+            }
+            other => panic!("no report: {other:?}"),
+        }
+        let report = exit.report.unwrap();
+        assert!(report.contains("Its cards completed later."), "{report}");
+    }
+
+    /// S032: two cards refused, then only one complete: the other's photos
+    /// are not on the drive, so the TUI still says it, naming that card.
+    #[test]
+    #[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
+    fn a_refused_sync_of_two_cards_keeps_the_card_not_completed() {
+        use crate::common::{OnDrive, test_drive};
+
+        let ours = OnDrive::new(&test_drive(), "s032-app-two");
+        let dir = TempDir::new();
+        let (a, b) = (dir.0.join("a"), dir.0.join("b"));
+        write_file(&a, "DCIM/100_FUJI/DSCF0001.RAF", b"a raw", at(1_700_000_000));
+        write_file(&b, "DCIM/100_FUJI/DSCF0002.RAF", b"b raw", at(1_700_000_000));
+        let s = |p: &PathBuf| p.display().to_string();
+        let (sa, sb, sd) = (s(&a), s(&b), s(&ours.0));
+
+        let mut app = app(&[&sa, &sb], &[&sd]);
+        keys(&mut app, &[Key::Char(' '), Key::Down, Key::Char(' ')]);
+        keys(&mut app, &[Key::Enter, Key::Enter, Key::Enter, Key::Enter]);
+        let first = start(&mut app);
+        assert_eq!(first.sources, [a.clone(), b.clone()]);
+        run_job(&mut app, first);
+        assert_eq!(app.screen(), Screen::Refused);
+
+        std::fs::create_dir(ours.0.join("Photos")).unwrap();
+        keys(&mut app, &[Key::Char('n')]);
+        app.update(Msg::Volumes(found(&[&sa], &[&sd])));
+        keys(&mut app, &[Key::Enter]);
+        let again = start(&mut app);
+        assert_eq!(again.sources, [a.clone()]);
+        run_job(&mut app, again);
+
+        assert_eq!(app.screen(), Screen::Report);
+        let exit = app.exit();
+        assert_eq!(exit.code, EXIT_REFUSED, "{exit:?}");
+        let message = exit.message.unwrap();
+        assert!(
+            message.starts_with(&format!(
+                "Result: NOT COMPLETE: 1 of 2 syncs not complete: sync 1 ({sa}, {sb}): refused, \
+                 nothing copied; still to sync: {sb}. Do not format"
+            )),
+            "{message}"
+        );
     }
 
     /// S023: in the TUI, the result of a session of several syncs, one of

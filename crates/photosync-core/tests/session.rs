@@ -608,3 +608,237 @@ impl Watch for LockOnCopy<'_> {
         }
     }
 }
+
+/// One sync of `cards`, refused because the library folder is missing (it
+/// must be). The card was read, nothing was written.
+fn refused_for_no_library<'s>(session: &'s mut Session, cards: &[&Path]) -> &'s Run {
+    let run = sync(session, cards);
+    assert!(matches!(run.end, RunEnd::Refused(SyncError::Plan(_))), "{run:?}");
+    run
+}
+
+/// Which syncs the session still names.
+fn named(session: &Session) -> Vec<usize> {
+    session.not_complete().map(|(i, _)| i).collect()
+}
+
+/// S032 (F07): the library was missing, the user made it, the same card
+/// then completed: every photo is on the drive, so nothing is left to warn
+/// of. The refusal stays in the record, as what it was. A photo taken since
+/// does not make it another card.
+#[test]
+fn a_refused_sync_stops_counting_once_its_card_completes_later() {
+    let dir = TempDir::new();
+    let (a, lib) = (dir.0.join("a"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"a raw")]);
+    let mut session = Session::new(&lib, None).unwrap();
+
+    refused_for_no_library(&mut session, &[&a]);
+    assert_eq!(session.verdict(), Verdict::Refused);
+    assert_eq!(named(&session), [0]);
+
+    fs::create_dir_all(&lib).unwrap();
+    put(&a, &[("DCIM/100_FUJI/DSCF0002.RAF", b"taken since")]);
+    assert!(report(sync(&mut session, &[&a])).is_complete());
+    assert_eq!(session.verdict(), Verdict::Complete);
+    assert!(named(&session).is_empty());
+    assert_eq!(session.runs()[0].verdict(), Verdict::Refused, "the record changed");
+}
+
+/// S032: A+B refused, A alone complete: B is still not on the drive. Each
+/// card may complete in its own later sync.
+#[test]
+fn a_refused_sync_of_two_cards_counts_until_each_completes() {
+    let dir = TempDir::new();
+    let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"a raw")]);
+    put(&b, &[("DCIM/100_FUJI/DSCF0002.RAF", b"b raw")]);
+    let mut session = Session::new(&lib, None).unwrap();
+
+    refused_for_no_library(&mut session, &[&a, &b]);
+    fs::create_dir_all(&lib).unwrap();
+    assert!(report(sync(&mut session, &[&a])).is_complete());
+    assert_eq!(session.verdict(), Verdict::Refused, "B was never synced");
+    assert_eq!(named(&session), [0]);
+
+    assert!(report(sync(&mut session, &[&b])).is_complete());
+    assert_eq!(session.verdict(), Verdict::Complete);
+}
+
+/// S032: a later sync of the card that was cancelled or failed did not
+/// complete it. A later complete one clears the refusal, never the failure.
+#[test]
+fn a_cancelled_or_failed_retry_does_not_clear_a_refused_sync() {
+    let dir = TempDir::new();
+    let (a, lib) = (dir.0.join("a"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"a raw")]);
+    let mut session = Session::new(&lib, None).unwrap();
+
+    refused_for_no_library(&mut session, &[&a]);
+    fs::create_dir_all(&lib).unwrap();
+    let cancel = Cancel::new();
+    cancel.cancel();
+    let cancelled = session.sync_scans(vec![scan_elsewhere(&a)], &cancel, &mut Log::default());
+    assert!(!report(cancelled).is_complete());
+    assert_eq!(session.verdict(), Verdict::NotComplete);
+    assert_eq!(named(&session), [0, 1]);
+
+    let folder = lib.join(date_command(T0));
+    put(&folder, &[("RAW/DSCF0001.RAF", b"another photo of that name")]);
+    let failed = report(sync(&mut session, &[&a]));
+    assert!(matches!(
+        outcome(failed, &a.join("DCIM/100_FUJI/DSCF0001.RAF")),
+        FileOutcome::Failed(FailReason::NameCollision { .. })
+    ));
+    assert_eq!(named(&session), [0, 1, 2]);
+
+    fs::remove_dir_all(&folder).unwrap();
+    assert!(report(sync(&mut session, &[&a])).is_complete());
+    assert_eq!(session.verdict(), Verdict::NotComplete, "a later sync hid a failure");
+    assert_eq!(named(&session), [1, 2]);
+}
+
+/// S032: one reader, so a swapped card comes back at the same path. A path
+/// says nothing of the card: the refused card's own files must have been in
+/// the sync that completed, or its photos may be nowhere.
+#[test]
+fn a_swapped_card_at_the_same_path_does_not_clear_a_refused_sync() {
+    let raf = "DCIM/100_FUJI/DSCF0001.RAF";
+    let swaps: [(&str, &dyn Fn(&Path)); 3] = [
+        ("other files", &|card| {
+            fs::remove_dir_all(card.join("DCIM")).unwrap();
+            put(card, &[("DCIM/100_FUJI/DSCF0777.RAF", b"another card")]);
+        }),
+        ("same name, other size", &|card| put(card, &[(raf, b"another size")])),
+        ("same name and size, other time", &|card| {
+            write_file(card, raf, b"a raw", at(T0 + DAY));
+        }),
+    ];
+    for (what, swap) in swaps {
+        let dir = TempDir::new();
+        let (a, lib) = (dir.0.join("a"), dir.0.join("lib"));
+        put(&a, &[(raf, b"a raw")]);
+        let mut session = Session::new(&lib, None).unwrap();
+        refused_for_no_library(&mut session, &[&a]);
+        fs::create_dir_all(&lib).unwrap();
+
+        swap(&a);
+        assert!(report(sync(&mut session, &[&a])).is_complete(), "{what}");
+        assert_eq!(session.verdict(), Verdict::Refused, "{what}");
+        assert_eq!(named(&session), [0], "{what}");
+    }
+}
+
+/// S032: a backup card holds the same photos, but it is not the refused
+/// card, and the sync of another card says nothing of it.
+#[test]
+fn another_card_does_not_clear_a_refused_sync_even_with_the_same_photos() {
+    let dir = TempDir::new();
+    let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
+    for card in [&a, &b] {
+        put(card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"backup")]);
+    }
+    let mut session = Session::new(&lib, None).unwrap();
+    refused_for_no_library(&mut session, &[&a]);
+    fs::create_dir_all(&lib).unwrap();
+    assert!(report(sync(&mut session, &[&b])).is_complete());
+    assert_eq!(session.verdict(), Verdict::Refused);
+    assert_eq!(named(&session), [0]);
+}
+
+/// S032: a refused sync that never read its card knows nothing of what was
+/// there, so nothing can match it. It keeps counting, also for the one card
+/// of two it could not read.
+#[test]
+fn a_card_the_refused_sync_could_not_read_stays_counted() {
+    let dir = TempDir::new();
+    let (a, gone, lib) = (dir.0.join("a"), dir.0.join("gone"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"a raw")]);
+    fs::create_dir_all(&lib).unwrap();
+    let mut session = Session::new(&lib, None).unwrap();
+
+    let refused = session.sync(&[a.clone(), gone.clone()], &Cancel::new(), &mut Log::default());
+    assert!(matches!(refused.end, RunEnd::Refused(SyncError::Scan(_))), "{refused:?}");
+    assert!(report(sync(&mut session, &[&a])).is_complete());
+    assert_eq!(session.verdict(), Verdict::Refused, "gone was never synced");
+
+    put(&gone, &[("DCIM/100_FUJI/DSCF0002.RAF", b"now here")]);
+    assert!(report(sync(&mut session, &[&gone])).is_complete());
+    assert_eq!(session.verdict(), Verdict::Refused, "nothing says it is the same card");
+    assert_eq!(named(&session), [0]);
+}
+
+/// S032: part of the card could not be read when it was refused, so what it
+/// held is not known: no later sync can be shown to hold all of it.
+#[cfg(unix)]
+#[test]
+fn a_refused_sync_that_read_only_part_of_its_card_stays_counted() {
+    let dir = TempDir::new();
+    let (a, lib) = (dir.0.join("a"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"a raw"), ("DCIM/101_FUJI/DSCF0002.RAF", b"more")]);
+    let mut session = Session::new(&lib, None).unwrap();
+    {
+        let _locked = common::Mode::set(&a.join("DCIM/101_FUJI"), 0o000);
+        refused_for_no_library(&mut session, &[&a]);
+    }
+    fs::create_dir_all(&lib).unwrap();
+    assert!(report(sync(&mut session, &[&a])).is_complete());
+    assert_eq!(session.verdict(), Verdict::Refused);
+}
+
+/// S032: only a later sync counts. The refusal came after the complete
+/// sync, and the card may hold new photos by then.
+#[test]
+fn a_complete_sync_before_the_refusal_does_not_clear_it() {
+    let dir = TempDir::new();
+    let (a, lib) = (dir.0.join("a"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"a raw")]);
+    fs::create_dir_all(&lib).unwrap();
+    let mut session = Session::new(&lib, None).unwrap();
+
+    assert!(report(sync(&mut session, &[&a])).is_complete());
+    fs::remove_dir_all(&lib).unwrap();
+    refused_for_no_library(&mut session, &[&a]);
+    assert_eq!(session.verdict(), Verdict::Refused);
+    assert_eq!(named(&session), [1]);
+}
+
+/// S032: a card given twice is read and refused, and nothing was written:
+/// the same card once then completes it.
+#[test]
+fn a_card_given_twice_then_once_completes() {
+    let dir = TempDir::new();
+    let (a, lib) = (dir.0.join("a"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"a raw")]);
+    fs::create_dir_all(&lib).unwrap();
+    let mut slash = a.clone().into_os_string();
+    slash.push("/");
+    let mut session = Session::new(&lib, None).unwrap();
+
+    let refused = sync(&mut session, &[&a, Path::new(&slash)]);
+    assert!(matches!(refused.end, RunEnd::Refused(SyncError::SourceTwice { .. })), "{refused:?}");
+    assert!(report(sync(&mut session, &[&a])).is_complete());
+    assert_eq!(session.verdict(), Verdict::Complete);
+}
+
+/// S032: the rule clears a sync that wrote nothing, and whose cards it read.
+/// A crash may have written, and a recorded refusal read no card.
+#[test]
+fn a_crash_or_a_recorded_refusal_is_never_cleared() {
+    let dir = TempDir::new();
+    let (a, lib) = (dir.0.join("a"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"a raw")]);
+    fs::create_dir_all(&lib).unwrap();
+    let mut session = Session::new(&lib, None).unwrap();
+
+    let twice = SyncError::SourceTwice { first: a.clone(), again: a.clone() };
+    session.record_refusal(std::slice::from_ref(&a), twice);
+    assert!(report(sync(&mut session, &[&a])).is_complete());
+    assert_eq!(session.verdict(), Verdict::Refused);
+    assert_eq!(named(&session), [0]);
+
+    session.record_crash(std::slice::from_ref(&a), "index out of bounds".into());
+    assert!(report(sync(&mut session, &[&a])).is_complete());
+    assert_eq!(session.verdict(), Verdict::NotComplete);
+    assert_eq!(named(&session), [0, 2]);
+}

@@ -78,7 +78,7 @@ pub fn run_loop<B: Backend>(
     mut next_key: impl FnMut(&App) -> io::Result<Option<Key>>,
     discover: impl Fn() -> Volumes,
 ) -> io::Result<App> {
-    let mut app = App::new();
+    let mut app = App::checking_library();
     let mut effects = vec![Effect::Discover];
     let mut from_worker: Option<mpsc::Receiver<Msg>> = None;
     loop {

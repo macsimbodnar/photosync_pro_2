@@ -394,7 +394,10 @@ fn s030_the_session_checks_the_library_before_its_cleanup() {
     session.sync_scans(vec![scan_card(&a, 1)], &Cancel::new(), &mut Log::default());
     assert!(last_report(&session).is_complete());
     assert!(temps_in(&lib).is_empty(), "the cleanup never ran");
-    assert_eq!(session.verdict(), Verdict::Refused, "a later sync hid the refusal");
+    // S032 (DEC-050): the same card completed, so the session is complete.
+    // The refusal stays in the record.
+    assert_eq!(session.runs()[0].verdict(), Verdict::Refused, "the record changed");
+    assert_eq!(session.verdict(), Verdict::Complete);
 }
 
 /// Two cards with a different photo of the same name (a counter reset),

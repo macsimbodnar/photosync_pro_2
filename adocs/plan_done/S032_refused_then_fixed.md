@@ -5,5 +5,5 @@ touches:    photosync-core session.rs verdict, crates/photosync app.rs, text.rs,
 excludes:   creating the library folder without the user asking
 closes:     2026-10-30_adversarial-F07
 paused_by:
-author:
-done:
+author:     Claude
+done:       2026-10-30 Claude. `cargo test --workspace` green (297 passed; 22 ignored: its wrappers run 21 on images, one is a helper), `scripts/test_exfat.sh` exit 0 (295 passed), no image left attached. The rule: `Session::completed_later`, DEC-050, agent's choice, not yet confirmed. Tests written first and seen failing: tests/session.rs (10 new), exfat_session.rs (3, CLI on images), app.rs (2, TUI model on images), tui/tests.rs (1, fresh drive). Six guards passed before the fix, as they should: they pin what must still warn; five mutants of the rule killed by hand (no listing check, no whole check, no path check, an earlier sync counts, any report counts). The one assert the step names changed: threads_tests.rs `s030_the_session_checks_the_library_before_its_cleanup`, last assert, now Complete, and it also asserts the run stays Refused; it still fails with the library check moved after the cleanup (M08, run by hand). tests/session.rs's refusal of a path that never completes is unchanged. No other test edited. New test added to the exFAT skip list, as it needs chmod. Found: 16 unit tests of app.rs and view.rs pin the old TUI order on made-up libraries, so the check lives behind `App::checking_library`, used by the real loop, not `App::new` (DEC-050 (7)).

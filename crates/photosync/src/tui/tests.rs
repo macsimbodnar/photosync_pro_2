@@ -179,6 +179,82 @@ fn refused_sync_shows_the_cli_sentence_and_exits_2() {
     assert_eq!(manifest(&dir.0), before, "something was written");
 }
 
+/// S032 (F07): on a fresh drive with no `<drive>/Photos`, the loop refuses
+/// at the check, before a session exists or a card is read, so the library
+/// can still be changed. Nothing is made on the drive. With the library
+/// fixed, the session starts, and the core has its say (same drive here).
+#[test]
+fn a_fresh_drive_is_refused_before_the_session_starts() {
+    let dir = TempDir::new();
+    let card = dir.0.join("CARD");
+    write_file(&card, "DCIM/100_FUJI/DSCF0001.RAF", b"raw", at(TAKEN));
+    let drive = dir.0.join("SSD");
+    fs::create_dir_all(drive.join("Lib")).unwrap();
+    let before = manifest(&dir.0);
+    let found = || Volumes {
+        sources: vec![card.clone()],
+        destinations: vec![drive.clone()],
+        failures: Vec::new(),
+    };
+    let to_check = || {
+        vec![
+            (Screen::Sources, vec![Key::Enter]),
+            (Screen::Drive, vec![Key::Enter]),
+            (Screen::Library, vec![Key::Enter]),
+            (Screen::Name, vec![Key::Enter]),
+            (Screen::Confirm, vec![Key::Enter]),
+        ]
+    };
+    let mut terminal = Terminal::new(TestBackend::new(500, 20)).unwrap();
+
+    let mut steps = to_check();
+    steps.push((Screen::Refused, vec![Key::Char('q')]));
+    let app = run_loop(&mut terminal, script(steps), found).unwrap();
+
+    assert!(!app.in_session(), "the session started: {app:?}");
+    assert_eq!(app.syncs(), 0);
+    let exit = app.exit();
+    assert_eq!(exit.code, EXIT_REFUSED);
+    let sentence = format!(
+        "The library folder {} does not exist.",
+        drive.join("Photos").display()
+    );
+    assert!(exit.message.unwrap().starts_with(&sentence));
+    assert_eq!(manifest(&dir.0), before, "something was written");
+
+    let mut library_keys = vec![Key::Backspace; "Photos".len()];
+    library_keys.extend(chars("Lib"));
+    library_keys.push(Key::Enter);
+    let mut steps = to_check();
+    steps.extend([
+        (Screen::Refused, vec![Key::Enter]),
+        (Screen::Confirm, vec![Key::Esc]),
+        (Screen::Name, vec![Key::Esc]),
+        (Screen::Library, library_keys),
+        (Screen::Name, vec![Key::Enter]),
+        (Screen::Confirm, vec![Key::Enter]),
+    ]);
+    let mut keys = script(steps);
+    let mut done = false;
+    let mut next_key = |app: &App| {
+        // The last refusal is the core's, in a session: then quit.
+        if app.screen() == Screen::Refused && app.in_session() {
+            done = true;
+        }
+        if done { Ok(Some(Key::Char('q'))) } else { keys(app) }
+    };
+    let app = run_loop(&mut terminal, &mut next_key, found).unwrap();
+
+    assert_eq!(app.syncs(), 1, "{app:?}");
+    let exit = app.exit();
+    assert!(
+        exit.message
+            .unwrap()
+            .starts_with(&format!("The library {} is on the same drive", drive.join("Lib").display()))
+    );
+    assert_eq!(manifest(&dir.0), before, "something was written");
+}
+
 /// The exFAT card and drive images.
 fn mounts() -> (PathBuf, PathBuf) {
     (

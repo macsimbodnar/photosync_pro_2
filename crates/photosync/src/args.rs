@@ -11,8 +11,9 @@ pub const EXIT_OK: u8 = 0;
 /// The sync ran, but not every file is known to be on the drive: some
 /// failed or were cancelled, or the scan could not read part of a card.
 pub const EXIT_INCOMPLETE: u8 = 1;
-/// Nothing was copied: a usage error, or the sync was refused before it
-/// started (also clap's own code for a usage error).
+/// A usage error (also clap's own code for one), or a sync refused before it
+/// copied anything, whose cards no later sync completed. Another card of the
+/// session may have been copied.
 pub const EXIT_REFUSED: u8 = 2;
 
 /// The exit code for a session's verdict: the worst of its syncs.

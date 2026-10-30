@@ -24,7 +24,7 @@ pub use copy::{
     Copied, CopyError, CopyOutcome, FailReason, Failed, Fallback, FolderError, SyncFolder,
     TempCleanup, UnflushedFallback, copy_plan, remove_stale_temps, sync_folder,
 };
-pub use plan::{Duplicate, PlanError, Planned, Skipped, SyncPlan, plan_sync};
+pub use plan::{Duplicate, PlanError, Planned, Skipped, SyncPlan, check_library_found, plan_sync};
 pub use progress::{Cancel, Counts, Event, EventKind, Monitor, Phase, Progress, SourceProgress, eta};
 pub use report::{
     Bucket, FileOutcome, FileReport, Report, ReportError, SourceReport, Tally, Unreadable,

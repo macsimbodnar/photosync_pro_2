@@ -336,6 +336,8 @@ mod tests {
                 "tui::tests::tui_sync_on_exfat_end_to_end",
                 "text::tests::a_session_names_the_card_a_file_was_copied_from_its_twin_for",
                 "app::tests::the_result_box_names_the_card_a_file_was_copied_from_its_twin_for",
+                "app::tests::a_refused_sync_then_the_same_card_complete_exits_0",
+                "app::tests::a_refused_sync_of_two_cards_keeps_the_card_not_completed",
             ],
         );
     }
