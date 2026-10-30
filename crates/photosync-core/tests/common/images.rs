@@ -10,12 +10,15 @@
 //! longer than that test, whatever happens to it:
 //! - a panic detaches them (`Drop`);
 //! - a kill or a Ctrl-C of the test binary detaches them (the watchdog);
-//! - every command has a time limit, as macOS's disk-image service can hang.
+//! - every command has a time limit, the watchdog's too, as macOS's disk-image
+//!   service can hang. A watchdog that gives up says so in `watchdog.log` in
+//!   the temp folder, and leaves the folder.
 
 #![allow(dead_code)]
 
 use std::fs::{self, File};
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
@@ -54,7 +57,8 @@ const IMAGES: [(&str, &str, &str, &str); 5] = [
 /// terminal does not end it too.
 const WATCHDOG: &str = r#"
 work=$1
-shift
+limit=$2
+shift 2
 group=
 while read -r word value; do
     case $word in
@@ -63,25 +67,67 @@ while read -r word value; do
     esac
 done
 [ -n "$group" ] && kill -9 "-$group" 2>/dev/null
+
+# To a file: its stderr is /dev/null, as it can outlive what reads the binary's.
+say() {
+    echo "$*" >>"$work/watchdog.log"
+}
+
+kill_tree() {
+    for pid in $(pgrep -P "$1"); do
+        kill_tree "$pid"
+    done
+    kill -9 "$1" 2>/dev/null
+}
+
+# Runs "$@" within the limit (macOS has no `timeout`), its output in $out: a
+# pipe could stay open after it ends, in a helper it started. Its status.
+out=$work/watchdog.out
+limited() {
+    "$@" >"$out" 2>/dev/null </dev/null &
+    running=$!
+    ( sleep "$limit"; kill_tree "$running" ) </dev/null >/dev/null 2>&1 &
+    watcher=$!
+    wait "$running"
+    status=$?
+    kill_tree "$watcher"
+    wait "$watcher" 2>/dev/null
+    # 137: killed with -9, and only the watcher does that here.
+    [ "$status" -eq 137 ] && say "$* did not end in ${limit}s and was killed."
+    return "$status"
+}
+
+# Whole-disk devices of attached images under $work, from `hdiutil info`.
+mine() {
+    awk -v dir="$work/" '
+        /^image-path/ { sub(/^image-path *: */, ""); mine = (index($0, dir) == 1); next }
+        mine && /^\/dev\/disk[0-9]+[ \t]/ { print $1; mine = 0 }
+    ' "$out"
+}
+
 for point in "$@"; do
-    hdiutil detach "$point" -quiet 2>/dev/null ||
-        hdiutil detach "$point" -force -quiet 2>/dev/null
+    limited hdiutil detach "$point" -quiet ||
+        limited hdiutil detach "$point" -force -quiet
 done
 # Attached but not mounted: an attach killed midway.
-for dev in $(hdiutil info | awk -v dir="$work/" '
-    /^image-path/ { sub(/^image-path *: */, ""); mine = (index($0, dir) == 1); next }
-    mine && /^\/dev\/disk[0-9]+[ \t]/ { print $1; mine = 0 }
-'); do
-    hdiutil detach "$dev" -force -quiet 2>/dev/null
-done
-# Removed only if nothing is mounted under it: rm through a live mount would
-# delete inside the image.
-if mounts=$(mount); then
-    case $mounts in
+if limited hdiutil info; then
+    for dev in $(mine); do
+        limited hdiutil detach "$dev" -force -quiet
+    done
+fi
+# Removed only if both show nothing left: rm through a live mount would delete
+# inside the image. A check that fails or hangs counts as something left.
+if limited hdiutil info && [ -z "$(mine)" ] && limited mount; then
+    case $(cat "$out") in
         *" on $work/"*) ;;
-        *) rm -rf "$work" ;;
+        *)
+            rm -rf "$work"
+            exit 0
+            ;;
     esac
 fi
+say "left $work in place. Detach by hand: hdiutil detach <each> -force; rm -rf '$work'." \
+    "macOS's disk-image service may be hung: see 'hdiutil info'; a restart clears it."
 "#;
 
 /// A command running with its output in a file: a pipe could stay open
@@ -187,6 +233,29 @@ pub fn attached_under(dir: &Path, log_dir: &Path) -> Result<Vec<String>, String>
     Ok(devices)
 }
 
+/// `Err` naming what is missing, before anything is made. Without these
+/// nothing was attached, so a failure to detach would be a false alarm.
+fn check_tools() -> Result<(), String> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let on_path = |tool: &&str| {
+        std::env::split_paths(&path).any(|dir| {
+            fs::metadata(dir.join(tool))
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+    };
+    let missing: Vec<&str> = ["hdiutil", "mount"]
+        .into_iter()
+        .filter(|tool| !on_path(tool))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "The image tests need {} on PATH, which is {path:?}.",
+        missing.join(" and ")
+    ))
+}
+
 /// The images under one temp folder, mounted side by side, as `/Volumes`
 /// has them. Detached on drop, on a panic too; call `detach` to see a
 /// failure to detach as a failed test.
@@ -201,6 +270,7 @@ impl Images {
     /// The temp dir's image and those of `vars`, all exFAT, with `DCIM` at
     /// the top of the card. Nothing is left attached on an `Err`.
     pub fn mount(vars: &[&str]) -> Result<Images, String> {
+        check_tools()?;
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let work = std::env::temp_dir().join(format!(
             "photosync-images-{}-{}",
@@ -408,11 +478,22 @@ impl Drop for Images {
     }
 }
 
-fn start_watchdog(work: &Path) -> Result<(Child, ChildStdin), String> {
-    let mut child = Command::new("sh")
-        .args(["-c", WATCHDOG, "sh"])
+/// The watchdog, not started. Each command it runs gets `limit`, whole seconds.
+pub fn watchdog_command(work: &Path, points: &[PathBuf], limit: Duration) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", WATCHDOG, "sh"])
         .arg(work)
-        .args(IMAGES.iter().map(|(_, _, _, point)| work.join(point)))
+        .arg(limit.as_secs().to_string())
+        .args(points);
+    cmd
+}
+
+fn start_watchdog(work: &Path) -> Result<(Child, ChildStdin), String> {
+    let points: Vec<PathBuf> = IMAGES
+        .iter()
+        .map(|(_, _, _, point)| work.join(point))
+        .collect();
+    let mut child = watchdog_command(work, &points, DETACH_LIMIT)
         .process_group(0)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())

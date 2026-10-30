@@ -67,6 +67,7 @@ Why: one line.
 - DEC-048 2026-10-30 — the end of a report counts the problem lines above the duplicates (S040)
 - DEC-049 2026-10-30 — the gate mounts its own images and runs the real syncs (S029)
 - DEC-050 2026-10-30 — a refused sync whose cards completed later stops counting; the TUI checks the library first (S032)
+- DEC-051 2026-10-30 — the images' watchdog has time limits and says when it gives up (S041)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1252,3 +1253,31 @@ tests could move to real temp folders, and `App::new` could then always check.
 Why: F07: on the expected first run, every photo on the drive still ended in "do
 not format", which teaches the user to ignore that warning. The prime rule keeps
 every case where a card cannot be shown to have completed.
+
+## DEC-051  2026-10-30  the images' watchdog has time limits and says when it gives up (S041)
+Tags: tests, gate
+Decision: agent's pick in S041, not yet confirmed by the user. Makes DEC-049 (4)
+true of the watchdog.
+(1) Every command the watchdog runs has 30 s, by a watcher in `sh` as macOS has no
+`timeout`: `hdiutil` as DEC-049 (4) has it, and `mount` too at no extra cost. Past
+that its process tree is killed. Each of 5 mount points gets 30 s then -force 30 s
+even after a hang, so a full hang ends in about 6 minutes, not sooner. Why: a detach
+that hangs may be one image's; a later one can still work.
+(2) It says so in `watchdog.log` in the temp folder, not on stderr: it can outlive
+what reads the test binary's stderr, and holding that pipe would block `cargo test`.
+Cost: nobody sees it unless they look in the folder, and `hdiutil info` shows what is
+attached.
+(3) The folder is removed only if `hdiutil info` and `mount` both show nothing left,
+checked after the detaches. It used to look at `mount` only, so a failing `hdiutil info`
+removed the file of an image still attached. A check that fails or hangs now keeps the
+folder.
+(4) `Images::mount` looks for `hdiutil` and `mount` on PATH before it makes anything. So
+a run without them names them, with no "FAILED to detach" and no temp folder. An unset
+PATH counts as both missing, though a spawn would search a default path: rare, and the
+message says what it saw.
+(5) The README's Linux block uses `rmdir` on lost+found, not `rm -rf`: if that folder is
+not empty something is wrong, and it should fail loudly.
+(6) `scripts/test_exfat.sh` skips the 3 new tests, like the others in `test_images.rs`.
+That file is outside S041's `touches`, and the skip is needed.
+Why: S029's fast check: the README and DEC-049 (4) claimed a limit on every hdiutil
+call, and the watchdog had none.

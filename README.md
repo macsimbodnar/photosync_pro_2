@@ -211,6 +211,7 @@ for n in mnt card lib twin_a twin_b; do
     mkfs.ext4 -q "$work/$n.img"
     mkdir "$work/$n"
     sudo mount -o loop "$work/$n.img" "$work/$n"
+    sudo rmdir "$work/$n/lost+found"  # mkfs.ext4's, root-only: the tests walk these folders
     sudo chown "$USER" "$work/$n"
 done
 mkdir "$work/card/DCIM"
@@ -260,7 +261,10 @@ The images are detached on a failure, a panic, a kill or a Ctrl-C. Every
 `hdiutil` call and each test run has a time limit (macOS's disk-image service
 has hung on a test image), so a hang fails with a message saying so. If a detach
 fails, the failure names what is still attached and how to detach it, and the
-temp dir stays.
+temp dir stays. After a kill or a Ctrl-C nothing is left to print that, so
+the watchdog that detaches writes it to `watchdog.log` in the temp dir
+(`photosync-images-*`). Without `hdiutil` or `mount` on `PATH`, the failure says
+that and nothing is made.
 
 ### exFAT (macOS)
 

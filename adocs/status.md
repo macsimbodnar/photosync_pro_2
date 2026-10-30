@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-30, by Claude (S032 done)
+Updated: 2026-10-30, by Claude (S041 done)
 
-- Last done: S032  refused then fixed is not NOT COMPLETE (F07)
+- Last done: S041  image harness keeps its promises (S029 fast check)
 - In progress: none
-- Next: S041  image harness keeps its promises; then the rest of plan.md's Open list
+- Next: S031  too long a name is refused (F06); then the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
@@ -16,7 +16,7 @@ Updated: 2026-10-30, by Claude (S032 done)
     DEC-005 (folder date = earliest new file), DEC-026 to DEC-028,
     DEC-030 to DEC-032, DEC-034, DEC-035 (1)-(3), DEC-036 to DEC-040,
     DEC-042, DEC-043, DEC-044, DEC-045, DEC-046, DEC-047, DEC-048, DEC-049,
-    DEC-050.
+    DEC-050, DEC-051.
     Each says "not yet confirmed by the user" in decisions.md.
   - The GUI no longer waits for S025 (user, 2026-10-30: do all that needs no
     input or hardware). The audit re-runs after the GUI.
@@ -39,7 +39,8 @@ Updated: 2026-10-30, by Claude (S032 done)
   - macOS's disk-image service hung once on a test image (2026-10-28); the
     script now also detaches images attached but not mounted. Since S029
     every hdiutil call and test run has a time limit, in the script and in
-    the images plain `cargo test` mounts (DEC-049 (4)).
+    the images plain `cargo test` mounts (DEC-049 (4)), and since S041 in their
+    watchdog too (DEC-051).
   - 16 unit tests of `app.rs` and `tui/view.rs` drive `App::new` on made-up
     libraries, so the TUI's library check is on only in `App::checking_library`
     (DEC-050 (7)). Moving them to real temp folders would let `App::new` check
