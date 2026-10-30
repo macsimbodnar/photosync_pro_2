@@ -231,6 +231,11 @@ picks. It is simple to use.
   read as local time.
 - `<name>` is the optional name the user gives the sync, e.g. "Tirana":
   `2026-10-28 - Tirana/RAW/DSCF1234.RAF`. With no name: `2026-10-28/RAW/...`.
+- A name that cannot be a folder name is refused before any card is read
+  (exit 2), never changed. On every platform: blank, any of
+  `/ \ : * ? " < > |`, a control character or Unicode noncharacter, an ending
+  space or dot, or `<date> - <name>` over 255 bytes (a name over 242), and any
+  name the library's filesystem finds too long on a lookup (DEC-053).
 - If that folder already exists, new files are added to it (name collisions
   as below).
 - A session or `<TYPE>` folder that is a symlink is never followed: every
@@ -308,7 +313,9 @@ picks. It is simple to use.
   leaves its sync "complete". A report with no problem has no such line
   (DEC-048). Files already on
   the drive are counted, not listed. The CLI's report names the library and
-  the session folder. After several syncs in a session, the report ends
+  the session folder, and only one that is there as a real folder when the
+  report is made: one never made, as every file failed, shows "none (not made,
+  or no longer there)" (DEC-053). After several syncs in a session, the report ends
   with the totals of all of them and the session's result.
 - The report is never built from inputs that would make it wrong: a source
   given twice (in any spelling), or a plan or copy that is not of these

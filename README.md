@@ -95,7 +95,10 @@ same drive as a source. Photos already anywhere in the library are
 skipped. A photo that changed on the card after it was compared with the
 library fails, and so does its copy on the other card. A file that reads as
 more or fewer bytes than the scan listed fails too, and nothing is placed. A `--name` that
-cannot be a folder name is refused before any card is read. Ctrl-C cancels
+cannot be a folder name is refused before any card is read (exit 2): over 242 bytes, too long
+for the drive, ending in a space or a dot, or with any of `/ \ : * ? " < > |` or a control
+character, on every drive, as a drive moves between computers. A report names the
+folder only if it is there. Ctrl-C cancels
 between chunks and still prints the report; a second Ctrl-C quits at once.
 photosync refuses to run as root.
 
@@ -290,7 +293,8 @@ cards on the twin images (below) to that drive at once, one thread per card.
 session, one of them failing, typed at its prompt on a pseudo-terminal, and
 refused syncs fixed, half fixed and answered with a swapped card.
 The script also mounts an HFS+ image and runs the sync name tests in
-`tests/copy_engine.rs` on it; HFS+, like exFAT, lists a name decomposed.
+`tests/copy_engine.rs` on it; HFS+, like exFAT, lists a name decomposed, and
+counts a name's length that way, so a name can be too long only there.
 The binary's unit tests `text::tests::a_session_names_the_card_a_file_was_copied_from_its_twin_for`
 and `app::tests::the_result_box_names_the_card_a_file_was_copied_from_its_twin_for`
 run a session whose first sync copies a photo from its twin (the planned

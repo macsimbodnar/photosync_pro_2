@@ -526,3 +526,34 @@ fn ctrl_c_at_the_prompt_ends_the_session_with_its_summary() {
     assert!(stdout.starts_with("Session of 2 syncs\n"), "{stdout}");
     drop(pty);
 }
+
+/// F06: a name that cannot be a folder name is a usage error, exit 2, before
+/// any card is read: the card here does not exist, and is never complained of.
+#[test]
+fn a_name_that_cannot_be_a_folder_name_is_refused_before_any_card_is_read() {
+    let dir = TempDir::new();
+    let library = dir.0.join("library");
+    fs::create_dir_all(&library).unwrap();
+    let long = "a".repeat(300);
+    for name in [long.as_str(), "x".repeat(243).as_str(), "a:b", "Tirana."] {
+        let run = photosync([
+            "sync",
+            "--source",
+            dir.0.join("no-card").to_str().unwrap(),
+            "--dest",
+            library.to_str().unwrap(),
+            "--name",
+            name,
+        ]);
+        assert_eq!(run.code, 2, "{run:?}");
+        assert_eq!(run.stdout, "", "{run:?}");
+        assert!(
+            run.stderr.starts_with(&format!("The name {name:?} cannot be a folder name.")),
+            "{run:?}"
+        );
+        assert!(run.stderr.contains("242 bytes"), "{run:?}");
+        assert!(run.stderr.contains("Nothing was copied."), "{run:?}");
+        assert!(!run.stderr.contains("no-card"), "{run:?}");
+    }
+    assert!(manifest(&library).is_empty());
+}

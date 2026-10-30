@@ -66,6 +66,10 @@ hfs_tests=(
     name_in_another_spelling_reuses_a_folder_only_if_the_filesystem_resolves_it
     only_the_folder_the_name_resolves_to_is_reused
     name_too_long_for_a_lookup_reuses_nothing_and_is_not_an_error
+    the_longest_name_that_fits_copies_and_one_byte_more_is_refused
+    a_name_the_filesystem_finds_too_long_is_refused
+    a_name_with_a_character_some_drive_refuses_or_changes_is_refused
+    a_name_with_other_characters_is_kept_as_typed
 )
 
 if [[ "$(uname)" != "Darwin" ]]; then
@@ -232,7 +236,7 @@ TMPDIR="$mnt" PHOTOSYNC_TEST_CARD="$card" PHOTOSYNC_TEST_LIBRARY="$library" \
 # To a file, not `| tee`: a pipeline would run `with_limit` in a subshell, out
 # of the cleanup's reach.
 hfs_ok=1
-TMPDIR="$hfs" with_limit "$tests_limit" cargo test --manifest-path "$repo/Cargo.toml" \
+TMPDIR="$hfs" PHOTOSYNC_TEST_ON_HFS=1 with_limit "$tests_limit" cargo test --manifest-path "$repo/Cargo.toml" \
     -p photosync-core --test copy_engine --no-fail-fast -- --exact "${hfs_tests[@]}" \
     >"$work/hfs.log" 2>&1 || hfs_ok=0
 cat "$work/hfs.log"

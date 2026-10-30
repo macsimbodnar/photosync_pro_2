@@ -42,12 +42,19 @@ impl SyncFolder {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Whether the folder is there now, as a real folder. It is fixed before
+    /// it is made, and may never be made: a report must not name it then.
+    pub fn there(&self) -> io::Result<bool> {
+        Ok(lookup(&self.path)?.is_some_and(|meta| meta.is_dir()))
+    }
 }
 
 /// Why the session folder cannot be fixed.
 #[derive(Debug)]
 pub enum FolderError {
-    /// Empty, or holds `/` or NUL, so it is not one folder name.
+    /// Not one folder name on every drive, or too long for this one
+    /// (`check_name`, `check_name_fits`).
     InvalidName(String),
     /// The library could not be listed, or a file's mtime has no local date.
     Io(ScanError),
@@ -100,9 +107,43 @@ pub fn sync_folder(plan: &SyncPlan, name: Option<&str>) -> Result<Option<SyncFol
     Ok(Some(SyncFolder { library: library.clone(), path: library.join(folder) }))
 }
 
-/// A sync name must be one folder name: not blank, no `/`, no NUL.
+/// The longest sync name, in bytes: `YYYY-MM-DD - <name>` must fit the 255
+/// bytes of a folder name, measured on APFS, exFAT, HFS+ and FAT32 (DEC-053).
+pub const MAX_NAME_BYTES: usize = 255 - "YYYY-MM-DD - ".len();
+
+/// A sync name must be one folder name on every drive, as a drive moves
+/// between computers: not blank, none of the FAT family's characters, no
+/// control character or Unicode noncharacter, no ending a drive would drop or
+/// change (DEC-053). `/` and NUL are of those too.
 pub(crate) fn check_name(name: &str) -> Result<(), FolderError> {
-    if name.trim().is_empty() || name.contains(['/', '\0']) {
+    if name.trim().is_empty()
+        || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
+        || name.chars().any(|c| c.is_control() || is_noncharacter(c))
+        || name.ends_with([' ', '.'])
+    {
+        return Err(FolderError::InvalidName(name.to_string()));
+    }
+    Ok(())
+}
+
+/// APFS refuses these; exFAT and HFS+ on macOS store some under another name.
+fn is_noncharacter(c: char) -> bool {
+    let c = u32::from(c);
+    (0xfdd0..=0xfdef).contains(&c) || c & 0xfffe == 0xfffe
+}
+
+/// Whether the name fits a folder name in `library`, for a session to refuse
+/// it before any card is read. Over the limit on any drive, or by the
+/// filesystem's own count: HFS+ counts a name decomposed, so one under the
+/// limit may not fit, and a lookup says so without writing anything. Any other
+/// answer says nothing about the name, and each sync checks the library.
+pub(crate) fn check_name_fits(library: &Path, name: &str) -> Result<(), FolderError> {
+    let too_long = name.len() > MAX_NAME_BYTES
+        || matches!(
+            fs::symlink_metadata(library.join(format!("0000-00-00 - {name}"))),
+            Err(e) if e.kind() == io::ErrorKind::InvalidFilename
+        );
+    if too_long {
         return Err(FolderError::InvalidName(name.to_string()));
     }
     Ok(())

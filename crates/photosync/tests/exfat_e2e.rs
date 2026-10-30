@@ -523,6 +523,34 @@ fn the_last_lines_point_back_at_problems_above_the_duplicates() {
     );
 }
 
+/// F06: every file failed and no folder was made, so the report does not name
+/// one as if the photos were there. A plain file holds its place, which any
+/// filesystem refuses to make a folder of.
+#[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
+fn the_report_names_no_folder_that_was_not_made() {
+    let dir = TempDir::new();
+    let card = dir.0.join("card");
+    let library = common::OnDrive::new(&common::test_drive(), "s031-folder");
+    write_file(&card, "DCIM/100_FUJI/DSCF0001.RAF", b"raw", at(TAKEN));
+    let folder = library.0.join(format!("{} - Never", common::date_command(TAKEN)));
+    fs::write(&folder, b"in the way").unwrap();
+
+    let run = sync(&[&card], &library.0, "Never");
+
+    assert_eq!(run.code, 1, "{run:?}");
+    assert!(
+        run.stdout.contains("\nFolder  none (not made, or no longer there)\n"),
+        "{run:?}"
+    );
+    assert!(
+        !run.stdout.contains(&format!("Folder  {}", folder.display())),
+        "{run:?}"
+    );
+    assert!(run.stdout.contains("Result: NOT COMPLETE: 1 failed"), "{run:?}");
+    assert_eq!(fs::read(&folder).unwrap(), b"in the way");
+}
+
 /// S040: a library problem alone leaves "all on the drive" and exit 0, so
 /// the line above the result is the only sign of it at the end.
 #[test]

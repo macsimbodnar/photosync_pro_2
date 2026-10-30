@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use photosync_core::{
     CopyError, Counts, Event, EventKind, FailReason, FileOutcome, FileReport, FolderError,
-    MediaType, Phase, PlanError, Progress, Report, Run, RunEnd, ScanError, Session, SourceReport,
-    SourceScan, SyncFolder, Tally, TempCleanup, Verdict,
+    MAX_NAME_BYTES, MediaType, Phase, PlanError, Progress, Report, Run, RunEnd, ScanError, Session,
+    SourceReport, SourceScan, SyncFolder, Tally, TempCleanup, Verdict,
 };
 
 use crate::flow::{SyncError, Watch};
@@ -217,17 +217,23 @@ pub fn complete(totals: &Tally, sources: &[SourceReport]) -> bool {
 /// library and folder under its title, so the report says where the
 /// photos went.
 pub fn report_in(report: &Report, library: &Path, folder: Option<&SyncFolder>) -> String {
-    let folder = folder.map_or_else(
-        || "none (nothing to copy)".to_string(),
-        |f| f.path().display().to_string(),
-    );
     report_with(
         report,
-        vec![
-            format!("Library {}", library.display()),
-            format!("Folder  {folder}"),
-        ],
+        vec![format!("Library {}", library.display()), folder_line(folder)],
     )
+}
+
+/// Names the session's folder only if it is there: it is fixed before it is
+/// made, and if every file failed, or was cancelled, it may never be (F06).
+fn folder_line(folder: Option<&SyncFolder>) -> String {
+    let Some(folder) = folder else {
+        return "Folder  none (nothing to copy)".to_string();
+    };
+    match folder.there() {
+        Ok(true) => format!("Folder  {}", folder.path().display()),
+        Ok(false) => "Folder  none (not made, or no longer there)".to_string(),
+        Err(e) => format!("Folder  unknown: cannot check {}: {e}", folder.path().display()),
+    }
 }
 
 fn report_with(report: &Report, header: Vec<String>) -> String {
@@ -360,13 +366,9 @@ fn held_duplicates(sources: &[SourceReport]) -> Vec<String> {
 }
 
 fn library_and_folder(session: &Session) -> Vec<String> {
-    let folder = session.folder().map_or_else(
-        || "none (nothing to copy)".to_string(),
-        |f| f.path().display().to_string(),
-    );
     vec![
         format!("Library {}", session.library().display()),
-        format!("Folder  {folder}"),
+        folder_line(session.folder()),
     ]
 }
 
@@ -1050,8 +1052,10 @@ pub fn refusal(err: &SyncError) -> String {
         ),
         SyncError::Plan(e) => plan_refusal(e),
         SyncError::Folder(FolderError::InvalidName(name)) => format!(
-            "The name {name:?} cannot be a folder name. Use a name that is not empty \
-             and has no \"/\". Nothing was copied."
+            "The name {name:?} cannot be a folder name. Use a name that is not empty, \
+             is at most {MAX_NAME_BYTES} bytes long (fewer on some drives if it has accents), \
+             has none of / \\ : * ? \" < > | and no control character, and does not end in \
+             a space or a dot. Nothing was copied."
         ),
         SyncError::Folder(FolderError::Io(e)) => format!(
             "Cannot read {}: {}. Nothing was copied. Check the drive, then run the sync again.",

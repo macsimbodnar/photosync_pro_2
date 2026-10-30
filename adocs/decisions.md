@@ -69,6 +69,7 @@ Why: one line.
 - DEC-050 2026-10-30 — a refused sync whose cards completed later stops counting; the TUI checks the library first (S032)
 - DEC-051 2026-10-30 — the images' watchdog has time limits and says when it gives up (S041)
 - DEC-052 2026-10-30 — TUI: cards changed after a refusal before the session are not remembered
+- DEC-053 2026-10-30 — which sync names are refused, the same on every platform; the Folder line (S031)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1293,3 +1294,37 @@ without naming that card (S032 fast check).
 Why: no card was read and no sentence said it was safe, so this equals
 unpicking a card before starting. Remembering picks would warn about a card
 the user dropped on purpose.
+
+## DEC-053  2026-10-30  which sync names are refused, the same on every platform; the Folder line (S031)
+Tags: layout, cli, tui, report
+Decision: the agent's choice, not yet confirmed by the user. (1) The same
+characters are refused on every platform and drive, as a drive moves between
+computers: `/ \ : * ? " < > |`, control characters, Unicode noncharacters, and a
+name ending in a space or a dot. Measured by hand on macOS images (mkdir, then a
+file inside): APFS, exFAT, HFS+ and FAT32 all took every one of those characters,
+`:` included, and the endings, so no drive measured needed the refusal; it is for
+the other computer. On exFAT and HFS+ a noncharacter U+FFFE or U+FFFF comes back
+renamed (`%EF%BF%BF`); APFS refuses noncharacters. Not measured: Linux exFAT, where an
+agent's recollection of the kernel says it refuses the FAT family and drops a trailing
+dot; Windows. Check in S025. Rejected: refusing per drive, as a trip could then
+be named on one drive and not on its backup; only what a Mac refuses, as the name
+would then fail or change on Linux. A folder an older run made with such a name is no
+longer reused by name: the sync is refused, and with another name files already
+synced are still skipped by hash.
+(2) `<date> - <name>` over 255 bytes is refused, so a name over 242 bytes, measured:
+255 fits on all four, 256 gives ENAMETOOLONG. The rule is in `Session::new`, as
+`name_too_long_for_a_lookup_reuses_nothing_and_is_not_an_error` holds `sync_folder` to
+"no such folder"; that test stays as it was. Every front-end goes through a session.
+(3) A session also looks up `<library>/0000-00-00 - <name>` and refuses on
+ENAMETOOLONG: HFS+ counts decomposed UTF-16, so 100 U+0390 (213 bytes in all) fit
+APFS and exFAT, not HFS+. The lookup reads only. Rejected: a folder made and removed
+to ask, as a sync writes nothing before it plans.
+(4) What this still lets through: APFS refuses code points Unicode has not assigned
+(U+0378 measured). Knowing them needs a table or a crate and goes stale. Such a name, or
+a library path too long as a whole, fails each file, exit 1, NOT COMPLETE: late, but true.
+(5) The report's Folder line reads the drive when it is rendered, through
+`SyncFolder::there` (lstat, a real folder only): otherwise "none (not made, or no
+longer there)", as a folder is fixed before it is made. "Unknown: cannot check" if
+the lookup itself fails.
+Why: refusing before a card is read costs a retyped name; a name that fails or changes
+later costs a failed sync or a folder that is not what the report says.

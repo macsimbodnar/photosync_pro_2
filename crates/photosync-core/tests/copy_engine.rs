@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use photosync_core::{
-    CopyError, CopyOutcome, FailReason, FileOutcome, FolderError, Monitor, Report, SyncFolder,
-    SyncPlan, copy_plan, plan_sync, remove_stale_temps, sync_folder,
+    CopyError, CopyOutcome, FailReason, FileOutcome, FolderError, Monitor, Report, Session,
+    SyncFolder, SyncPlan, copy_plan, plan_sync, remove_stale_temps, sync_folder,
 };
 
 mod common;
@@ -211,8 +211,8 @@ fn a_symlink_with_the_name_does_not_make_its_target_the_folder() {
     );
 }
 
-/// Too long for the filesystem is an answer, "no such folder", not an error:
-/// S031 refuses such a name, and until then it fails as it did.
+/// Too long for the filesystem is an answer, "no such folder", not an error.
+/// A session refuses such a name first (S031); this is `sync_folder` alone.
 #[test]
 fn name_too_long_for_a_lookup_reuses_nothing_and_is_not_an_error() {
     let dir = TempDir::new();
@@ -271,6 +271,129 @@ fn sync_name_that_is_not_one_folder_name_is_refused() {
             "{name:?}"
         );
     }
+}
+
+/// S031: `<date> - <name>` must fit one folder name, 255 bytes on each
+/// filesystem measured (DEC-053). The longest copies for real, so a limit set
+/// too high could not pass where this runs on a real image.
+#[test]
+fn the_longest_name_that_fits_copies_and_one_byte_more_is_refused() {
+    let dir = TempDir::new();
+    let card = dir.0.join("card");
+    put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    for (i, name) in ["x".repeat(242), "\u{e9}".repeat(121)].iter().enumerate() {
+        let lib = dir.0.join(format!("lib{i}"));
+        fs::create_dir_all(&lib).unwrap();
+        assert!(Session::new(&lib, Some(name)).is_ok(), "{name}");
+        let (_, outcome) = sync(&card, &lib, Some(name));
+        assert_eq!(outcome.copied.len(), 1, "{name}: {:?}", outcome.failed);
+        assert!(outcome.copied[0].to.is_file(), "{name}");
+    }
+    let lib = dir.0.join("lib");
+    fs::create_dir_all(&lib).unwrap();
+    for name in ["x".repeat(243), "\u{e9}".repeat(121) + "x", "x".repeat(300)] {
+        match Session::new(&lib, Some(&name)) {
+            Err(FolderError::InvalidName(n)) => assert_eq!(n, name),
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+}
+
+/// S031: these fit in bytes, but HFS+ counts a name decomposed and in UTF-16:
+/// U+0390 is 2 bytes and 3 units. Only the filesystem knows, so the session
+/// refuses exactly when the filesystem would. The script says when it runs
+/// this on HFS+, so the refusing side cannot go untested unseen.
+#[test]
+fn a_name_the_filesystem_finds_too_long_is_refused() {
+    let dir = TempDir::new();
+    let lib = dir.0.join("lib");
+    fs::create_dir_all(&lib).unwrap();
+    let name = "\u{390}".repeat(100);
+    let made = fs::create_dir(lib.join(format!("2026-01-01 - {name}")));
+    let too_long = match made {
+        Ok(()) => {
+            fs::remove_dir(lib.join(format!("2026-01-01 - {name}"))).unwrap();
+            false
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidFilename => true,
+        Err(e) => panic!("{e}"),
+    };
+    if std::env::var_os("PHOTOSYNC_TEST_ON_HFS").is_some() {
+        assert!(too_long, "HFS+ took a name of 313 units");
+    }
+    let refused = matches!(Session::new(&lib, Some(&name)), Err(FolderError::InvalidName(_)));
+    assert_eq!(refused, too_long);
+}
+
+/// S031: refused on every platform, whatever this drive would take (DEC-053).
+#[test]
+fn a_name_with_a_character_some_drive_refuses_or_changes_is_refused() {
+    let dir = TempDir::new();
+    let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+    put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    fs::create_dir_all(&lib).unwrap();
+    let plan = plan(&card, &lib);
+    for name in [
+        "a:b", "a\\b", "a*b", "a?b", "a\"b", "a<b", "a>b", "a|b", // the FAT family
+        "a\tb", "a\nb", "a\u{1}b", "a\u{7f}b", "a\u{85}b", // control characters
+        "a\u{fdd0}b", "a\u{fffe}b", "a\u{ffff}b", "a\u{1fffe}b", "a\u{10ffff}b", // noncharacters
+        "Tirana ", "Tirana.", "...", // Linux exFAT and Windows would drop the ending
+    ] {
+        match Session::new(&lib, Some(name)) {
+            Err(FolderError::InvalidName(n)) => assert_eq!(n, name),
+            other => panic!("{name:?}: {other:?}"),
+        }
+        assert!(
+            matches!(sync_folder(&plan, Some(name)), Err(FolderError::InvalidName(n)) if n == name),
+            "{name:?}"
+        );
+    }
+}
+
+/// S031: the refusal is no wider than it says. Each makes a real folder.
+#[test]
+fn a_name_with_other_characters_is_kept_as_typed() {
+    let dir = TempDir::new();
+    let card = dir.0.join("card");
+    put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    for (i, name) in
+        [" Rome & Naples, 2026 (#1)", "a.b", ".hidden", "Tiran\u{eb}", "\u{65e5}\u{672c}", "\u{1f600}", "it's"]
+            .iter()
+            .enumerate()
+    {
+        let lib = dir.0.join(format!("lib{i}"));
+        fs::create_dir_all(&lib).unwrap();
+        assert!(Session::new(&lib, Some(name)).is_ok(), "{name:?}");
+        let (_, outcome) = sync(&card, &lib, Some(name));
+        assert_eq!(outcome.copied.len(), 1, "{name:?}: {:?}", outcome.failed);
+        assert!(outcome.copied[0].to.is_file(), "{name:?}");
+    }
+}
+
+/// S031: a report names the folder only if this says it is there.
+#[cfg(unix)]
+#[test]
+fn a_folder_is_there_only_when_it_is_a_real_folder() {
+    let dir = TempDir::new();
+    let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+    put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    fs::create_dir_all(&lib).unwrap();
+    let folder = folder(&plan(&card, &lib), Some("Tirana"));
+
+    assert!(!folder.there().unwrap(), "not made yet");
+    fs::write(folder.path(), b"a file").unwrap();
+    assert!(!folder.there().unwrap(), "a file");
+    fs::remove_file(folder.path()).unwrap();
+    std::os::unix::fs::symlink(&dir.0, folder.path()).unwrap();
+    assert!(!folder.there().unwrap(), "a symlink is never a session folder");
+    fs::remove_file(folder.path()).unwrap();
+    fs::create_dir(folder.path()).unwrap();
+    assert!(folder.there().unwrap(), "a folder");
+
+    // Says nothing either way: not a no.
+    fs::remove_dir_all(&lib).unwrap();
+    fs::write(&lib, b"a file where the library was").unwrap();
+    assert!(folder.there().is_err());
 }
 
 #[test]

@@ -1684,6 +1684,33 @@ mod tests {
         );
     }
 
+    /// F06: too long a name, or a character a drive refuses, is refused like
+    /// any other bad name, and can be fixed by editing it.
+    #[test]
+    fn a_name_too_long_or_with_a_refused_character_can_still_be_fixed() {
+        let mut app = app(&["/V/CARD"], &["/V/SSD"]);
+        keys(&mut app, &[Key::Enter, Key::Enter, Key::Enter]);
+        for name in ["x".repeat(243), "a:b".to_string()] {
+            typed(&mut app, &name);
+            keys(&mut app, &[Key::Enter]);
+            assert!(app.update(Msg::Key(Key::Enter)).is_none(), "{name}: started");
+            assert_eq!(app.screen(), Screen::Refused, "{name}");
+            assert!(!app.in_session(), "{name}");
+            let exit = app.exit();
+            assert_eq!(exit.code, EXIT_REFUSED, "{name}");
+            assert!(exit.message.unwrap().contains("cannot be a folder name"), "{name}");
+
+            keys(&mut app, &[Key::Enter, Key::Esc]);
+            assert_eq!(app.screen(), Screen::Name, "{name}");
+            for _ in name.chars() {
+                keys(&mut app, &[Key::Backspace]);
+            }
+        }
+        typed(&mut app, &"x".repeat(242));
+        keys(&mut app, &[Key::Enter]);
+        assert_eq!(start(&mut app).name().as_deref(), Some("x".repeat(242).as_str()));
+    }
+
     /// A name that cannot be a folder name is refused before any card is
     /// read, and opens no session: going back, the name can be fixed.
     #[test]

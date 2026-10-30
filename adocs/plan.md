@@ -17,14 +17,13 @@ not change the order.
 
 ## Open
 
-1. S031  too long a name is refused (F06)
-2. S034  cleanup leaves live temps (F09)
-3. S033  collision result names the way out (F08)
-4. S035  CLI bytes per source (F10)
-5. S037  TUI report cuts long lines (found in S028)
-6. S036  plan the GUI: confirm iced, layout, steps
-7. S025  first run on Linux: build, tests, hand checks (waits for the user)
-8. S017  hardware hand checks on Mac (waits for the user)
+1. S034  cleanup leaves live temps (F09)
+2. S033  collision result names the way out (F08)
+3. S035  CLI bytes per source (F10)
+4. S037  TUI report cuts long lines (found in S028)
+5. S036  plan the GUI: confirm iced, layout, steps
+6. S025  first run on Linux: build, tests, hand checks (waits for the user)
+7. S017  hardware hand checks on Mac (waits for the user)
 
 Later, not yet steps: re-run the adversarial audit after the GUI, covering
 it too; the audit loop stops when a run reports no high and no medium.
@@ -33,8 +32,8 @@ it too; the audit loop stops when a run reports no high and no medium.
 
 Last five; the full record is `plan_done/`.
 
+- S031  too long a name is refused (F06)
 - S042  refused screen offers only keys that work (S032 fast check)
 - S041  image harness keeps its promises (S029 fast check)
 - S032  refused then fixed is not NOT COMPLETE (F07)
 - S029  the gate runs a real sync (F04)
-- S040  the result points back at problems above duplicates (S039 fast check)

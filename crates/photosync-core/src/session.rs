@@ -14,6 +14,7 @@ use std::time::SystemTime;
 
 use crate::copy::{
     CopyError, CopyOutcome, FolderError, SyncFolder, TempCleanup, Threads, check_name,
+    check_name_fits,
     copy_files, recheck_library, remove_stale_temps, sync_folder,
 };
 use crate::plan::{PlanError, plan_in_session};
@@ -182,6 +183,7 @@ impl Session {
     pub fn new(library: &Path, name: Option<&str>) -> Result<Session, FolderError> {
         if let Some(name) = name {
             check_name(name)?;
+            check_name_fits(library, name)?;
         }
         Ok(Session {
             library: library.to_path_buf(),
