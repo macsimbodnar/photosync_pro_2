@@ -220,7 +220,8 @@ pub struct Fallback {
     pub original: SourceFile,
     pub error: io::Error,
     /// The twins tried before `copied`, in plan order, and why each failed:
-    /// a read error, or content not as planned (`SourceChanged`).
+    /// a read error, or content not as planned (`SourceChanged`,
+    /// `SizeChanged`).
     pub tried: Vec<Failed>,
     /// The twin whose bytes are on the drive now.
     pub copied: Copied,
@@ -267,6 +268,9 @@ pub enum FailReason {
     /// The source file's content is not what planning read: it changed
     /// since, so what planning compared it with says nothing about it.
     SourceChanged,
+    /// The source read as more or fewer bytes than the scan listed. The
+    /// read-back cannot see this: it compares the copy with what was read.
+    SizeChanged { scanned: u64, read: u64 },
     /// INV-10 checked again before making a folder, and the library is no
     /// longer where it was planned (DEC-027).
     Library(CopyError),
@@ -291,6 +295,10 @@ impl fmt::Display for FailReason {
             ),
             FailReason::Mismatch => write!(f, "copy does not match the source"),
             FailReason::SourceChanged => write!(f, "the file changed on the source since it was planned"),
+            FailReason::SizeChanged { scanned, read } => write!(
+                f,
+                "read {read} bytes, the scan listed {scanned}: the file changed on the source, or the source is failing"
+            ),
             FailReason::Library(e) => write!(f, "library check failed: {e}"),
             FailReason::Unsupported => write!(f, "not a supported file"),
         }
@@ -765,7 +773,9 @@ impl<'p, 's, 'm, 'a> Copier<'p, 's, 'm, 'a> {
             self.shared.progress(|t| t.reread_of(source));
             match self.copy_file(twin, planned.hash, planned.source) {
                 Ok(to) => return Ok(Some(TwinCopy::Copied(tried, Copied { file: twin.clone(), to }))),
-                Err(Stop::Failed(reason @ (FailReason::Read(_) | FailReason::SourceChanged))) => {
+                Err(Stop::Failed(
+                    reason @ (FailReason::Read(_) | FailReason::SourceChanged | FailReason::SizeChanged { .. }),
+                )) => {
                     tried.push(Failed { file: twin.clone(), reason });
                 }
                 // Its bytes are on the drive under the final name: the
@@ -879,8 +889,9 @@ fn temp_name(name: &OsStr) -> OsString {
     temp
 }
 
-/// Streams the source into `out` while hashing what was read, checks that
-/// against `expected` if planning hashed the file, flushes file and folder,
+/// Streams the source into `out` while hashing what was read, checks its
+/// length against the scan and its hash against `expected` if planning
+/// hashed the file, flushes file and folder,
 /// then checks the copy's hash against what was read (INV-3). The card is
 /// read once. A cancel (or a panic in another copy thread) is checked
 /// before each read; each chunk counts under `source`.
@@ -896,6 +907,7 @@ fn fill_and_verify(
     let mut src = File::open(&file.path).map_err(FailReason::Read)?;
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0; CHUNK];
+    let mut total = 0;
     loop {
         if shared.halted() {
             return Err(Stop::Cancelled);
@@ -906,10 +918,16 @@ fn fill_and_verify(
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(FailReason::Read(e).into()),
         };
+        total += n as u64;
         hasher.update(&buf[..n]);
         out.write_all(&buf[..n]).map_err(write_error(temp))?;
         at_stage(Stage::Written, temp);
         shared.progress(|t| t.bytes_of(Some(source), n as u64));
+    }
+    // Before the hash check: planning may have hashed the short file too, so
+    // the hash can agree. A short read gives no error (DEC-042).
+    if total != file.size {
+        return Err(FailReason::SizeChanged { scanned: file.size, read: total }.into());
     }
     let read = hasher.finalize();
     if expected.is_some_and(|planned| planned != read) {
@@ -2012,6 +2030,49 @@ mod tests {
         assert!(matches!(entry(&report, &raf(&cards[2])), FileOutcome::Failed(FailReason::SourceChanged)));
         assert!(matches!(entry(&report, &raf(&cards[3])), FileOutcome::Copied { .. }));
         assert!(!report.is_complete(), "the changed card's bytes are not on the drive");
+    }
+
+    /// F07, audit 2026-10-30 F01: a twin that reads short is passed for the
+    /// next, and fails: its bytes are not the ones on the drive.
+    #[test]
+    fn f07_a_twin_that_reads_short_is_passed_for_the_next() {
+        use crate::{FileOutcome, Report};
+        let dir = TempDir::new();
+        let (cards, lib, bytes) = backup_cards(&dir.0, 3);
+        let short = CHUNK as u64 + 1;
+        let scans = on_own_cards(&cards);
+        let plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
+        let shrunk = raf(&cards[1]);
+        File::options().write(true).open(&shrunk).unwrap().set_len(short).unwrap();
+        let folder = sync_folder(&plan, None).unwrap().unwrap();
+        let written = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = written.clone();
+        set_hook(move |stage, _| {
+            if stage == Stage::Written {
+                count.set(count.get() + 1);
+                if count.get() == 1 {
+                    FAULT.with(|f| f.set(Some(Fault::Read)));
+                }
+            }
+        });
+        let outcome = copy_plan(&plan, &folder, &mut Monitor::default());
+        clear_hook();
+        FAULT.with(|f| f.set(None));
+        let outcome = outcome.unwrap();
+
+        let target = folder.path().join("RAW/DSCF0001.RAF");
+        let [fallback] = &outcome.fallbacks[..] else { panic!("{outcome:?}") };
+        let [tried] = &fallback.tried[..] else { panic!("{:?}", fallback.tried) };
+        assert_eq!(tried.file.path, shrunk);
+        let size = bytes.len() as u64;
+        assert!(matches!(tried.reason, FailReason::SizeChanged { scanned, read } if scanned == size && read == short));
+        assert_eq!(fallback.copied.file.path, raf(&cards[2]));
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        assert!(temps_under(&lib).is_empty());
+
+        let report = Report::new(scans, plan, outcome).unwrap();
+        assert!(matches!(entry(&report, &shrunk), FileOutcome::Failed(FailReason::SizeChanged { .. })));
+        assert!(!report.is_complete(), "the short card's bytes are not on the drive");
     }
 
     /// F07: only a read of the card is retried on a twin. A failure on the

@@ -58,6 +58,7 @@ Why: one line.
 - DEC-039 2026-10-28 — S024: device rule in planning, one-sync result names unread cards, twin images
 - DEC-040 2026-10-29 — S019: several cards copied at once, one thread per card
 - DEC-041 2026-10-29 — the TUI shows the app as "phoosync pro 2"
+- DEC-042 2026-10-30 — a file that reads another length than scanned fails (S026)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -978,3 +979,24 @@ Decision: the user's call. The TUI's title and text name the app "phoosync
 pro 2", a joke name, spelling intended. The binary, crates, `--help`,
 `--version` and the docs stay `photosync` for now.
 Why: the user wants the joke name in the UI only.
+
+## DEC-042  2026-10-30  a file that reads another length than scanned fails (S026)
+Tags: copy, report, safety, api
+Decision: agent's pick in S026, not yet confirmed by the user.
+(1) The copy compares the bytes read with the scanned size, for every file,
+before the hash check and the flush. Any difference fails with the new
+`FailReason::SizeChanged { scanned, read }`. Rejected: reusing
+`SourceChanged`: its text says "since it was planned", which is wrong for a
+file shrunk before planning, and the two counts tell a bad card from an edit.
+(2) A file that grew fails the same way, as the plan compared it by its old
+size and the report counts that size. Rejected: copying what is there now.
+The length is checked after the read, not during it: a file that keeps
+growing ends in a write error at worst, and its temp is removed.
+(3) A wrong length is not a read error, so the planned file does not fall
+back to its twins, as `SourceChanged` does not (DEC-036): safe, as it fails
+and the sync is not complete, but a re-sync is needed even with a good twin.
+A twin that reads another length is passed for the next, and fails.
+(4) The read-time check stands alone: it does not stat the file. A stat could
+agree while the read came up short.
+Why: a short read gives no error, and neither the read-back nor a planning
+hash taken after the shrink can see it, so the size is the only witness.

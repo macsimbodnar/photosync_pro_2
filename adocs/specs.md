@@ -30,7 +30,9 @@ stays listed as retired.
   hash. Copies are written under a temporary name and moved into place only
   after that check, by a rename that fails if the target exists. A file
   that planning hashed must also read as that hash when copied: one that
-  changed since fails, and so do its duplicates. One that cannot be read
+  changed since fails, and so do its duplicates. Any file that reads as
+  more or fewer bytes than the scan listed fails the same way, before the
+  rename, hashed or not (DEC-042). One that cannot be read
   is copied from its first twin (same name, size and planning hash, on
   another device than its source, so never the same card, even given as
   two sources) that reads as that hash; a twin

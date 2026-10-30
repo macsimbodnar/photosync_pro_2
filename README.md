@@ -79,7 +79,8 @@ are one card, is a duplicate of the first, and fails with it. A copy from the ot
 folder flush failed is "in place, flush not confirmed". The library folder must exist. It is never on a card, nor on the
 same drive as a source. Photos already anywhere in the library are
 skipped. A photo that changed on the card after it was compared with the
-library fails, and so does its copy on the other card. A `--name` that
+library fails, and so does its copy on the other card. A file that reads as
+more or fewer bytes than the scan listed fails too, and nothing is placed. A `--name` that
 cannot be a folder name is refused before any card is read. Ctrl-C cancels
 between chunks and still prints the report; a second Ctrl-C quits at once.
 photosync refuses to run as root.

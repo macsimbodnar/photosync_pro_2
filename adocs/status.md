@@ -4,17 +4,18 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-30, by Claude (audit 2026-10-30 triaged)
+Updated: 2026-10-30, by Claude (S026 done)
 
-- Last done: S019  copy several cards at once, one thread per card
+- Last done: S026  short read fails, never copied (F01)
 - In progress: none
-- Next: S026  short read fails; then the rest of plan.md's Open list
+- Next: S028  report shows duplicates and the card (F03); then the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
   - Decisions the agents picked that the user has not confirmed yet:
     DEC-005 (folder date = earliest new file), DEC-026 to DEC-028,
-    DEC-030 to DEC-032, DEC-034, DEC-035 (1)-(3), DEC-036 to DEC-040.
+    DEC-030 to DEC-032, DEC-034, DEC-035 (1)-(3), DEC-036 to DEC-040,
+    DEC-042.
     Each says "not yet confirmed by the user" in decisions.md.
   - The GUI no longer waits for S025 (user, 2026-10-30: do all that needs no
     input or hardware). The audit re-runs after the GUI.

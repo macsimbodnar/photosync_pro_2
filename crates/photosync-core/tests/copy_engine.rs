@@ -12,7 +12,7 @@ use photosync_core::{
 };
 
 mod common;
-use common::{TempDir, at, date_command, manifest, scan_elsewhere, write_file};
+use common::{TempDir, at, date_command, manifest, scan_card, scan_elsewhere, write_file};
 #[cfg(unix)]
 use common::Mode;
 
@@ -432,6 +432,125 @@ fn symlinked_session_or_type_folder_is_refused_never_followed() {
         "{failed}"
     );
     assert_eq!(manifest(&outside), Default::default());
+}
+
+/// One file changes length after the scan, a healthy one stays. The changed
+/// one fails before the rename, and the report counts only the healthy one.
+fn file_resized_after_the_scan_fails(new_len: u64) {
+    const SCANNED: u64 = 3000;
+    let dir = TempDir::new();
+    let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+    let resized = card.join("DCIM/100_FUJI/DSCF0001.RAF");
+    put(&card, &[
+        ("DCIM/100_FUJI/DSCF0001.RAF", &[7; SCANNED as usize]),
+        ("DCIM/100_FUJI/DSCF0002.RAF", b"healthy"),
+    ]);
+    fs::create_dir_all(&lib).unwrap();
+    let scans = vec![scan_elsewhere(&card)];
+    fs::File::options().write(true).open(&resized).unwrap().set_len(new_len).unwrap();
+    let plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
+    assert!(!plan.to_copy[0].is_hashed(), "this path has no planning hash to catch it");
+
+    let outcome = copy_plan(&plan, &folder(&plan, None), &mut Monitor::default()).unwrap();
+
+    let [failed] = &outcome.failed[..] else { panic!("{:?}", outcome.failed) };
+    assert_eq!(failed.file.path, resized);
+    assert!(
+        matches!(failed.reason, FailReason::SizeChanged { scanned: SCANNED, read } if read == new_len),
+        "{:?}",
+        failed.reason
+    );
+    let text = failed.reason.to_string();
+    assert!(text.contains(&new_len.to_string()) && text.contains("3000"), "{text}");
+    assert!(temps_under(&lib).is_empty());
+    let on_drive: Vec<PathBuf> = manifest(&lib)
+        .into_iter()
+        .filter(|(_, (_, bytes))| bytes.is_some())
+        .map(|(path, _)| path)
+        .collect();
+    assert_eq!(on_drive, copied_to(&outcome), "only the healthy file is on the drive");
+
+    let report = Report::new(scans, plan, outcome).unwrap();
+    assert!(!report.is_complete());
+    let totals = report.totals();
+    assert_eq!((totals.copied.files, totals.copied.bytes), (1, b"healthy".len() as u64));
+    assert_eq!((totals.failed.files, totals.failed.bytes), (1, SCANNED));
+}
+
+/// 2026-10-30 audit F01: a short read gives no error, and the read-back
+/// agrees with it, so nothing else stops it.
+#[test]
+fn a_file_that_reads_shorter_than_scanned_fails() {
+    file_resized_after_the_scan_fails(1024);
+}
+
+#[test]
+fn a_file_that_reads_empty_fails() {
+    file_resized_after_the_scan_fails(0);
+}
+
+/// Bytes the scan did not see: the plan compared the file by its old size.
+#[test]
+fn a_file_that_reads_longer_than_scanned_fails() {
+    file_resized_after_the_scan_fails(4000);
+}
+
+/// Shrunk before planning, so planning hashes the short bytes and the copy
+/// reads as that hash. Only the size shows it, and its duplicate fails too.
+#[test]
+fn a_short_read_that_matches_the_planning_hash_still_fails() {
+    let dir = TempDir::new();
+    let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
+    for card in [&a, &b] {
+        put(card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"backup raw")]);
+    }
+    fs::create_dir_all(&lib).unwrap();
+    let scans = vec![scan_elsewhere(&a), scan_elsewhere(&b)];
+    for card in [&a, &b] {
+        let file = card.join("DCIM/100_FUJI/DSCF0001.RAF");
+        fs::File::options().write(true).open(file).unwrap().set_len(4).unwrap();
+    }
+    let plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
+    assert!(plan.to_copy[0].is_hashed());
+    assert_eq!(plan.duplicates.len(), 1);
+
+    let outcome = copy_plan(&plan, &folder(&plan, None), &mut Monitor::default()).unwrap();
+
+    assert!(outcome.copied.is_empty(), "{:?}", outcome.copied);
+    let [failed] = &outcome.failed[..] else { panic!("{:?}", outcome.failed) };
+    assert!(matches!(failed.reason, FailReason::SizeChanged { scanned: 10, read: 4 }), "{:?}", failed.reason);
+    assert!(manifest(&lib).values().all(|(_, bytes)| bytes.is_none()), "a file was placed");
+    let report = Report::new(scans, plan, outcome).unwrap();
+    let twin = &report.sources()[1].files[0].outcome;
+    assert!(matches!(twin, FileOutcome::DuplicateOfFailed { .. }), "{twin:?}");
+    assert!(!report.is_complete());
+}
+
+/// DEC-042: a wrong size is not a read error, so it does not fall back to
+/// the twin, as a file that read otherwise does not (DEC-036).
+#[test]
+fn a_short_read_after_planning_does_not_fall_back_to_the_twin() {
+    let dir = TempDir::new();
+    let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
+    for card in [&a, &b] {
+        put(card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"backup raw")]);
+    }
+    fs::create_dir_all(&lib).unwrap();
+    let scans = vec![scan_card(&a, 1), scan_card(&b, 2)];
+    let plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
+    assert_eq!(plan.to_copy[0].twins().len(), 1);
+    let file = a.join("DCIM/100_FUJI/DSCF0001.RAF");
+    fs::File::options().write(true).open(file).unwrap().set_len(4).unwrap();
+
+    let outcome = copy_plan(&plan, &folder(&plan, None), &mut Monitor::default()).unwrap();
+
+    assert!(outcome.fallbacks.is_empty(), "{:?}", outcome.fallbacks);
+    assert!(outcome.copied.is_empty(), "{:?}", outcome.copied);
+    let [failed] = &outcome.failed[..] else { panic!("{:?}", outcome.failed) };
+    assert!(matches!(failed.reason, FailReason::SizeChanged { scanned: 10, read: 4 }), "{:?}", failed.reason);
+    assert!(manifest(&lib).values().all(|(_, bytes)| bytes.is_none()), "a file was placed");
+    let report = Report::new(scans, plan, outcome).unwrap();
+    assert!(!report.is_complete());
 }
 
 /// S014 fast check: the copy is checked against the hash planning took. A
