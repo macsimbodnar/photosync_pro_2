@@ -43,6 +43,7 @@ skip=(
     volume::tests::read_only_volume_is_not_a_destination                      # unit
     volume::tests::volume_whose_dcim_cannot_be_checked_is_a_failure_not_a_destination
     plan::tests::inv10_library_whose_volume_top_cannot_be_checked_is_refused   # unit
+    copy::tests::a_fallback_that_cannot_lock_the_folder_renames_nothing        # unit
 )
 
 # These mount images of their own, which plain `cargo test` needs and this
@@ -58,6 +59,9 @@ skip+=(
     mounts_on_the_path_it_is_given                              # test_images
     missing_tools_are_named_and_nothing_is_left                 # test_images
 )
+
+# A helper: only the two-process tests that start it give it what it needs.
+skip+=(copy::tests::fallback_writer)
 
 # Run on HFS+ too, by exact name, and counted: a misspelt name would run
 # nothing and pass.

@@ -14,6 +14,16 @@ use photosync_core::{SourceScan, scan_source};
 #[cfg(unix)]
 pub mod images;
 
+/// Starts `command` with its output thrown away. Here, not in a unit test: the
+/// INV-8 test forbids naming the standard streams under `src`, tests included.
+pub fn quiet_child(mut command: std::process::Command) -> std::process::Child {
+    command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
 /// A device id no real volume has: not a sign-extended 32-bit macOS
 /// `dev_t`, and a Linux major number far beyond any real one.
 pub const OTHER_DEVICE: u64 = 0xdead_beef_dead_beef;

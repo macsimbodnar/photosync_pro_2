@@ -5,5 +5,5 @@ touches:    photosync-core copy.rs, tests, scripts/test_exfat.sh, specs, decisio
 excludes:   a lock across the whole sync; two sessions in one process
 closes:
 paused_by:
-author:
-done:
+author:     Claude
+done:       2026-10-30 Claude. Race shown first: on exFAT images two real processes replaced photos, both said copied, 3 of 3 runs; forced in copy::tests too. Now flock on the folder holds check and rename (DEC-055); no lock file, so nothing to count or clean. Measured on exFAT, HFS+, FAT32, APFS images: flock works on all; only exFAT reaches the fallback. cargo test --workspace 317 passed; scripts/test_exfat.sh 320 passed, no image left. Mutants, on a copy: lock removed fails 3 core tests and the exFAT e2e; errors swallowed, released before rename, locked on every path each fail; no wait limit hangs (killed by hand after the limit). Linux not run: S025. Existing tests unchanged.

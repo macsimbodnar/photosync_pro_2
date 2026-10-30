@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::hash::{CHUNK, Hash, hash_file};
 use crate::plan::{Planned, SyncPlan};
@@ -1089,9 +1089,10 @@ pub(crate) fn c_path(path: &Path) -> io::Result<std::ffi::CString> {
 /// Renames `from` to `to`, failing with `AlreadyExists` if `to` exists. The
 /// OS checks and renames in one step, so no other writer can slip in between
 /// (DEC-008). `std::fs::rename` would replace `to`. Where the filesystem has
-/// no such rename (exFAT), it checks and renames instead (DEC-018). Either
-/// way it holds the lock of `to`'s folder, so this process's renames into
-/// one folder never overlap (DEC-008).
+/// no such rename (exFAT), it checks and renames under a lock other photosync
+/// processes honour too (DEC-018, DEC-055). Either way it holds the lock of
+/// `to`'s folder, so this process's renames into one folder never overlap
+/// (DEC-008).
 fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     rename_noreplace_with(rename_excl, from, to)
 }
@@ -1114,7 +1115,7 @@ fn rename_noreplace_with(
         // Only this errno: any other error may mean the rename half-ran or
         // the target is unusable, and falling back could hide it.
         Err(e) if EXCL_UNSUPPORTED.is_some_and(|code| e.raw_os_error() == Some(code)) => {
-            rename_checked(from, to)
+            rename_checked(folder, from, to)
         }
         result => result,
     };
@@ -1122,17 +1123,65 @@ fn rename_noreplace_with(
     renamed
 }
 
-/// Checks that `to` is free, then renames. The caller holds the lock of
-/// `to`'s folder, so photosync's own threads never race on a name. Another
-/// program could still create `to` in between; DEC-018 accepts that for
-/// filesystems without a no-replace rename.
-fn rename_checked(from: &Path, to: &Path) -> io::Result<()> {
+/// Checks that `to` is free, then renames, for filesystems without a no-replace
+/// rename. The caller holds the lock of `to`'s folder, for this process's
+/// threads; `hold_folder` keeps other photosync processes out. If it cannot,
+/// nothing is renamed: the copy fails and is reported. Another program could
+/// still create `to` in between; DEC-018 accepts that.
+fn rename_checked(folder: &Path, from: &Path, to: &Path) -> io::Result<()> {
+    let _held = hold_folder(folder, FOLDER_HOLD_WAIT)?;
     match fs::symlink_metadata(to) {
         Ok(_) => return Err(io::Error::new(io::ErrorKind::AlreadyExists, "target exists")),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
+    at_fallback_checked();
     fs::rename(from, to)
+}
+
+/// Far above one check and rename, even on a slow drive. A holder stopped by
+/// hand must fail this copy, which a later sync redoes, not hang this sync.
+const FOLDER_HOLD_WAIT: Duration = Duration::from_secs(60);
+
+/// Takes the kernel's lock on `folder` itself, until the file returned is
+/// dropped. On the folder, so no lock file is ever left on the drive (INV-9),
+/// and the kernel drops it when a process dies, so a crash leaves nothing stuck
+/// (DEC-055). Fails if another process holds it for `wait`, as polling, unlike
+/// a blocking `flock`, cannot hang.
+fn hold_folder(folder: &Path, wait: Duration) -> io::Result<File> {
+    let held = File::open(folder)?;
+    let start = Instant::now();
+    loop {
+        match try_flock(&held) {
+            Ok(()) => return Ok(held),
+            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {}
+            Err(e) => return Err(e),
+        }
+        if start.elapsed() >= wait {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "another photosync process holds the lock of this folder",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(unix)]
+fn try_flock(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: plain call on a descriptor `file` keeps open.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Never reached here: `EXCL_UNSUPPORTED` is `None`, so no fallback runs.
+#[cfg(not(unix))]
+fn try_flock(_: &File) -> io::Result<()> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "no lock across processes on this platform"))
 }
 
 /// One lock per target folder for this process, keyed by its canonical path,
@@ -1262,6 +1311,23 @@ thread_local! {
     static SHARED_HOOK: std::cell::RefCell<Option<SharedHook>> = const { std::cell::RefCell::new(None) };
 }
 
+// TEST ONLY: runs when the fallback found the final name free and has not
+// renamed yet. Apart from `Stage`: tests list a copy's stages, the same on
+// every filesystem, and only exFAT passes here.
+#[cfg(test)]
+thread_local! {
+    static FALLBACK_CHECKED: std::cell::RefCell<Option<Box<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+}
+
+fn at_fallback_checked() {
+    #[cfg(test)]
+    FALLBACK_CHECKED.with(|hook| {
+        if let Some(hook) = hook.borrow().as_ref() {
+            hook();
+        }
+    });
+}
+
 fn at_stage(stage: Stage, path: &Path) {
     #[cfg(test)]
     {
@@ -1371,7 +1437,7 @@ mod threads_tests;
 
 #[cfg(test)]
 mod tests {
-    use crate::common::{TempDir, at, date_command, scan_card, scan_elsewhere, write_file};
+    use crate::common::{Mode, TempDir, at, date_command, quiet_child, scan_card, scan_elsewhere, write_file};
     use super::*;
     use crate::plan::plan_sync;
     use std::sync::Barrier;
@@ -1898,6 +1964,189 @@ mod tests {
 
         drop(held);
         worker.join().unwrap().unwrap();
+        assert_eq!(fs::read(&to).unwrap(), b"new");
+    }
+
+    /// A fallback writer in a process of its own, killed if the test ends first.
+    struct Writer(std::process::Child);
+
+    impl Writer {
+        fn start(race: &Path, writer: &str) -> Writer {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--ignored", "--exact", "copy::tests::fallback_writer"])
+                .env("PHOTOSYNC_TEST_RACE", race)
+                .env("PHOTOSYNC_TEST_WRITER", writer);
+            Writer(quiet_child(command))
+        }
+    }
+
+    impl Drop for Writer {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Waits for `mark` to exist, at most `limit`.
+    fn wait_for_mark(mark: &Path, limit: std::time::Duration) -> bool {
+        let start = std::time::Instant::now();
+        while !mark.exists() {
+            if start.elapsed() > limit {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        true
+    }
+
+    /// Run by the tests below, as a process: threads share a lock that two
+    /// processes do not. Renames `<race>/<writer>.temp` onto
+    /// `<race>/folder/DSCF0001.RAF` by the fallback and stops after the check:
+    /// writers `0` and `1` until the other has checked too, or a while, which
+    /// holds the window open if nothing keeps them apart; `doomed` until killed.
+    /// Marks and the result go in `<race>`, outside the folder renamed into.
+    #[test]
+    #[ignore = "a helper of the tests of two processes below"]
+    fn fallback_writer() {
+        let race = PathBuf::from(std::env::var_os("PHOTOSYNC_TEST_RACE").expect("only the tests below run this"));
+        let me = std::env::var("PHOTOSYNC_TEST_WRITER").unwrap();
+        let other = if me == "0" { "1" } else { "0" };
+        let forever = std::time::Duration::from_secs(120);
+        let (hook_race, hook_me, hook_other) = (race.clone(), me.clone(), other);
+        FALLBACK_CHECKED.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move || {
+                fs::write(hook_race.join(format!("checked-{hook_me}")), b"").unwrap();
+                if hook_me == "doomed" {
+                    std::thread::sleep(forever);
+                    panic!("nobody killed this writer");
+                }
+                wait_for_mark(&hook_race.join(format!("checked-{hook_other}")), std::time::Duration::from_secs(2));
+            }));
+        });
+        if me != "doomed" {
+            // Both past their start before either checks.
+            fs::write(race.join(format!("ready-{me}")), b"").unwrap();
+            assert!(wait_for_mark(&race.join(format!("ready-{other}")), forever));
+        }
+        let result = rename_noreplace_with(
+            excl_unsupported,
+            &race.join(format!("{me}.temp")),
+            &race.join("folder/DSCF0001.RAF"),
+        );
+        let written = format!("{:?}", result.map_err(|e| e.kind()));
+        fs::write(race.join(format!("result-{me}")), written).unwrap();
+    }
+
+    /// S043: the race itself, in two processes, with the window between check
+    /// and rename held open. One file, one "already exists", and the name is
+    /// the winner's. The folder holds nothing else: the lock leaves no file.
+    #[test]
+    fn inv2_two_processes_on_the_fallback_give_one_file_and_one_collision() {
+        let dir = TempDir::new();
+        fs::create_dir(dir.0.join("folder")).unwrap();
+        for w in ["0", "1"] {
+            fs::write(dir.0.join(format!("{w}.temp")), format!("writer {w}")).unwrap();
+        }
+        let mut writers = [Writer::start(&dir.0, "0"), Writer::start(&dir.0, "1")];
+        for writer in &mut writers {
+            assert!(writer.0.wait().unwrap().success());
+        }
+
+        let result = |w: &str| fs::read_to_string(dir.0.join(format!("result-{w}"))).unwrap();
+        let results = [result("0"), result("1")];
+        let Some(winner) = results.iter().position(|r| r == "Ok(())") else {
+            panic!("no writer renamed: {results:?}");
+        };
+        let loser = 1 - winner;
+        assert_eq!(results[loser], "Err(AlreadyExists)", "both report a copy: {results:?}");
+        let target = dir.0.join("folder/DSCF0001.RAF");
+        assert_eq!(fs::read(&target).unwrap(), format!("writer {winner}").as_bytes());
+        assert!(!dir.0.join(format!("{winner}.temp")).exists());
+        assert_eq!(
+            fs::read(dir.0.join(format!("{loser}.temp"))).unwrap(),
+            format!("writer {loser}").as_bytes()
+        );
+        assert!(!dir.0.join(format!("checked-{loser}")).exists(), "the loser checked inside the winner's lock");
+        let names: Vec<_> = fs::read_dir(dir.0.join("folder")).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, [OsString::from("DSCF0001.RAF")]);
+    }
+
+    /// S043: a crash leaves nothing stuck. A process killed inside the window,
+    /// lock held, frees the name's folder at once. Its temp stays for a cleanup.
+    #[test]
+    fn a_process_killed_holding_the_fallback_lock_leaves_it_free() {
+        let dir = TempDir::new();
+        let folder = dir.0.join("folder");
+        fs::create_dir(&folder).unwrap();
+        fs::write(dir.0.join("doomed.temp"), b"doomed").unwrap();
+        fs::write(dir.0.join("mine.temp"), b"mine").unwrap();
+
+        let doomed = Writer::start(&dir.0, "doomed");
+        assert!(wait_for_mark(&dir.0.join("checked-doomed"), std::time::Duration::from_secs(60)));
+        let err = hold_folder(&folder, Duration::from_millis(50)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut, "the writer holds no lock in its window");
+        drop(doomed);
+
+        let start = Instant::now();
+        let target = folder.join("DSCF0001.RAF");
+        rename_noreplace_with(excl_unsupported, &dir.0.join("mine.temp"), &target).unwrap();
+        assert!(start.elapsed() < FOLDER_HOLD_WAIT / 2);
+        assert_eq!(fs::read(&target).unwrap(), b"mine");
+        assert_eq!(fs::read(dir.0.join("doomed.temp")).unwrap(), b"doomed");
+    }
+
+    /// A lock held by another description (another process, in real use) stops
+    /// the wait at its limit, with an error that is no name collision, and the
+    /// lock is free again once dropped.
+    #[test]
+    fn a_folder_lock_held_past_the_limit_is_an_error_not_a_hang() {
+        let dir = TempDir::new();
+        let held = hold_folder(&dir.0, Duration::ZERO).unwrap();
+
+        let err = hold_folder(&dir.0, Duration::from_millis(50)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert_ne!(err.kind(), io::ErrorKind::AlreadyExists);
+
+        drop(held);
+        hold_folder(&dir.0, Duration::ZERO).unwrap();
+    }
+
+    /// Where the lock cannot be taken, nothing is renamed: going on unguarded
+    /// is the race itself. A folder not readable is one way to fail it.
+    #[test]
+    fn a_fallback_that_cannot_lock_the_folder_renames_nothing() {
+        let dir = TempDir::new();
+        let folder = dir.0.join("folder");
+        fs::create_dir(&folder).unwrap();
+        let (from, to) = (dir.0.join("from"), folder.join("to"));
+        fs::write(&from, b"new").unwrap();
+        let mode = Mode::set(&folder, 0o300);
+
+        let err = rename_noreplace_with(excl_unsupported, &from, &to).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fs::symlink_metadata(&to).unwrap_err().kind(), io::ErrorKind::NotFound);
+        drop(mode);
+        assert_eq!(fs::read(&from).unwrap(), b"new");
+    }
+
+    /// The lock across processes is the fallback's alone: a real no-replace
+    /// rename needs none, so one held elsewhere does not stop it.
+    #[test]
+    fn a_supported_rename_takes_no_lock_across_processes() {
+        fn supported(from: &Path, to: &Path) -> io::Result<()> {
+            fs::rename(from, to)
+        }
+        let dir = TempDir::new();
+        let (from, to) = (dir.0.join("from"), dir.0.join("to"));
+        fs::write(&from, b"new").unwrap();
+        let _held = hold_folder(&dir.0, Duration::ZERO).unwrap();
+
+        let start = Instant::now();
+        rename_noreplace_with(supported, &from, &to).unwrap();
+
+        assert!(start.elapsed() < FOLDER_HOLD_WAIT / 2);
         assert_eq!(fs::read(&to).unwrap(), b"new");
     }
 

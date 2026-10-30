@@ -253,6 +253,13 @@ picks. It is simple to use.
   folder already holds a different file with the same name (counter wrap or
   reset), the new file is not copied. It is reported as failed with reason
   "name collision". The user can re-sync it under another name (DEC-013).
+- Two photosync processes on one library keep this too. Where the filesystem
+  has no rename that refuses a taken name (exFAT), the check and rename hold a
+  kernel lock (`flock`) on the target folder, so their different photos of one
+  name give one copy and one name collision. No lock file is written (INV-9),
+  and a process that dies drops its lock. A lock that cannot be taken, or that
+  another process holds for over a minute, fails that copy with the reason,
+  and nothing is renamed (DEC-055).
 
 ### Already-synced detection
 

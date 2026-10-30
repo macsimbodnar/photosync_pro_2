@@ -33,6 +33,7 @@ fn ignored_image_tests_pass_on_real_mounts() {
             "two_cards_on_two_devices_copy_at_once",
             "a_second_process_leaves_the_live_temp_of_the_first",
             "a_temp_of_a_killed_process_goes_with_the_next_sync",
+            "two_processes_copying_one_name_give_one_file_and_one_collision",
         ],
     );
 }
@@ -821,4 +822,71 @@ fn a_temp_of_a_killed_process_goes_with_the_next_sync() {
         assert_eq!(&fs::read(folder.join("VIDEO").join(name)).unwrap(), bytes, "{name}");
     }
     assert!(!manifest(&library.0).keys().any(|p| is_temp(p)), "a temp stayed");
+}
+
+/// S043, on the real thing: two terminals, two cards, each photo of one name
+/// on both, each pair of different bytes, one library on exFAT at once. Whether
+/// a given pair meets in the window between check and rename is chance, so
+/// many pairs. Each name must end as one file, and the process that reports a
+/// collision for it must be the one whose bytes are not there. A photo replaced
+/// by the other process shows as two copied and no collision.
+#[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
+fn two_processes_copying_one_name_give_one_file_and_one_collision() {
+    const PHOTOS: usize = 40;
+    let drive = common::test_drive();
+    let dir = TempDir::new();
+    let cards = [dir.0.join("a"), dir.0.join("b")];
+    let bytes = |card: usize, photo: usize| vec![(card * 100 + photo) as u8; 8 << 10];
+    let name = |photo: usize| format!("DSCF5{photo:03}.RAF");
+    for (c, card) in cards.iter().enumerate() {
+        for photo in 0..PHOTOS {
+            let path = format!("DCIM/100_FUJI/{}", name(photo));
+            write_file(card, &path, &bytes(c, photo), at(TAKEN));
+        }
+    }
+    for round in 0..3 {
+        let library = common::OnDrive::new(&drive, &format!("s043-{round}"));
+        let mut syncs = [
+            Running::start(&cards[0], &library.0, dir.0.join("a.log")),
+            Running::start(&cards[1], &library.0, dir.0.join("b.log")),
+        ];
+        let runs = [syncs[0].finish(), syncs[1].finish()];
+
+        let folder = library.0.join(format!("{} - Two", date_command(TAKEN)));
+        for (c, (code, output)) in runs.iter().enumerate() {
+            // A path follows: the table of totals has a row of this word too.
+            let failed = output.matches("  failed      /").count();
+            let collided = output.matches(": name collision with ").count();
+            assert_eq!(failed, collided, "a failure that is no collision: {output}");
+            assert_eq!(*code, i32::from(failed > 0), "{output}");
+            assert!(output.contains(cards[c].to_str().unwrap()), "{output}");
+        }
+        for photo in 0..PHOTOS {
+            let line = |c: usize| {
+                let source = cards[c].join("DCIM/100_FUJI").join(name(photo));
+                format!("{}: name collision with ", source.display())
+            };
+            let lost = [runs[0].1.contains(&line(0)), runs[1].1.contains(&line(1))];
+            let on_drive = fs::read(folder.join("RAW").join(name(photo))).unwrap();
+            let kept = match lost {
+                [false, true] => 0,
+                [true, false] => 1,
+                _ => panic!(
+                    "round {round}, {}: collisions {lost:?}, so {}:\n{}\n{}",
+                    name(photo),
+                    if lost[0] { "both refused" } else { "both report it copied, one replaced" },
+                    runs[0].1,
+                    runs[1].1
+                ),
+            };
+            assert_eq!(on_drive, bytes(kept, photo), "round {round}, {}", name(photo));
+        }
+        let files: Vec<_> = manifest(&library.0)
+            .into_iter()
+            .filter(|(_, (_, bytes))| bytes.is_some())
+            .map(|(path, _)| path)
+            .collect();
+        assert_eq!(files.len(), PHOTOS, "{files:?}");
+    }
 }

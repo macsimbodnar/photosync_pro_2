@@ -71,6 +71,7 @@ Why: one line.
 - DEC-052 2026-10-30 — TUI: cards changed after a refusal before the session are not remembered
 - DEC-053 2026-10-30 — which sync names are refused, the same on every platform; the Folder line (S031)
 - DEC-054 2026-10-30 — stale temps: the pid in the name decides (S034)
+- DEC-055 2026-10-30 — the exFAT fallback holds a kernel lock on the folder, across processes (S043)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -253,6 +254,8 @@ crash leaves a partial file there, which breaks INV-7).
 Why: exFAT is the common format for a Mac + Linux drive. The remaining race
 exists only against another program creating the same name in the same
 instant, and every copy is still hash-verified.
+Amended by DEC-055: "in-app" was wrong for two photosync processes; the check
+and rename now also hold a lock across processes.
 
 ## DEC-019  2026-10-28  exFAT fallback details left open by DEC-018
 Tags: safety, filesystems, tests
@@ -1359,8 +1362,46 @@ copy the same way.
 processes copying different names. Not covered: DEC-018's fallback check and rename,
 where the lock is per process, so on exFAT two photosync processes writing one final
 name in the same instant could replace one with the other. Parked for the user.
+Closed by DEC-055.
 (7) Test fixtures that named pids 1, 5, 12 and 77 now name the test's own pid. Those
 pids may be alive, and then a test that a temp goes, or stays for another reason,
 would fail or prove nothing. What the tests assert did not change.
 Why: a pid is enough to tell a live temp from a stale one, needs no new state on the
 drive (INV-9), and every doubt keeps the file.
+
+## DEC-055  2026-10-30  the exFAT fallback holds a kernel lock on the folder, across processes (S043)
+Tags: safety, copy, filesystems
+Decision: agent's pick in S043, not yet confirmed by the user. Amends DEC-018.
+(1) The race is real. On exFAT images, two photosync processes copying 40 photos of
+one name each replaced photos and both said copied, in 3 of 3 runs, and more surely in
+a test that holds the window open. DEC-054 (6) called it not reproduced.
+(2) The fallback's check and rename hold `flock(LOCK_EX)` on the target folder itself.
+Rejected: a lock file. It would be a new file on the drive (INV-9) that the scan and
+the cleanup must learn to skip. With the folder, nothing is left to count or clean.
+The per-process folder lock stays, first: DEC-008 needs it on every path.
+(3) Only the fallback takes it. Where the no-replace rename works the OS already
+refuses, so that path is unchanged and a held lock does not stop it.
+(4) Measured on images on macOS, 2026-10-30: `flock` on a folder and on a file excludes
+another process, and is dropped when its holder is killed, on exFAT, HFS+, FAT32 and
+APFS. `renamex_np(RENAME_EXCL)` says ENOTSUP on exFAT only; on HFS+ and FAT32 it refuses
+a taken name with EEXIST. So on a Mac only exFAT reaches the fallback. Linux not run.
+(5) It polls `LOCK_NB` for at most 60 seconds, then fails that copy, reported as a
+write error, and a later sync redoes it. Rejected: a blocking `flock`, as a holder
+stopped by hand would hang the sync past any cancel. The limit is far above one check
+and rename. Two processes on one name wait for each other only that long.
+(6) A lock that cannot be taken, by any error, fails the copy and renames nothing,
+rather than go unguarded. So a filesystem with neither a no-replace rename nor `flock`
+on a folder fails every copy, which loses nothing. Rejected: refusing such a drive up
+front, as no drive in scope is known to be one. From an agent's recollection, not a
+run: Linux NFS may be one. Check Linux exFAT in S025.
+(7) Limits. The lock binds photosync processes on one computer. Another program can
+still create the name in the window, as DEC-018 accepts, and so can another computer
+on a network share.
+(8) Tests. Two real processes, each the test binary running a helper test, hold the
+window open by a test-only hook: a fixed outcome, not chance. The hook is apart from
+`Stage`, as tests list a copy's stages and they must read the same on every filesystem.
+The spawn with its output thrown away is in `tests/common`, as the INV-8 test forbids
+naming the standard streams under `src`. The test on the real binary depends on chance
+for the window, and catches the race only because the pairs are many.
+Why: the kernel drops the lock when a process dies, so a crash leaves nothing stuck, and
+no new file goes on the drive. Every doubt fails a copy that a later sync can redo.

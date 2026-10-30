@@ -201,7 +201,9 @@ Linux is built in but not yet verified on a real machine. What is known:
   offered as a destination until you own it: `sudo chown $USER <mountpoint>`.
 - The no-replace rename is `renameat2(RENAME_NOREPLACE)`. On a file system
   that lacks it (EINVAL, e.g. some exFAT drivers), photosync falls back to a
-  locked check + rename (DEC-018); any other error fails the copy.
+  check + rename under a lock that other photosync processes honour (DEC-018,
+  DEC-055); any other error fails the copy, and so does a lock it cannot take.
+  That lock (`flock` on the folder) has been measured on macOS only.
 - `scripts/test_exfat.sh` is macOS-only (hdiutil), and so are the images
   plain `cargo test` mounts for itself. On Linux, `cargo test --workspace`
   shows the tests that need real mounts as `ignored`: no successful sync is
@@ -290,6 +292,8 @@ cancelled and a full sync there, then the same card again as the next
 card of the session, with scripted keys on ratatui's `TestBackend`.
 `tests/exfat_e2e.rs`'s `two_cards_on_two_devices_copy_at_once` syncs two
 cards on the twin images (below) to that drive at once, one thread per card.
+`two_processes_copying_one_name_give_one_file_and_one_collision` runs two
+photosync processes on one library at once, each photo's name on both cards.
 `tests/exfat_session.rs` runs `sync --one-by-one` over five cards in one
 session, one of them failing, typed at its prompt on a pseudo-terminal, and
 refused syncs fixed, half fixed and answered with a swapped card.

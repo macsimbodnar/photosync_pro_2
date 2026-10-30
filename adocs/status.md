@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-30, by Claude (S034 done)
+Updated: 2026-10-30, by Claude (S043 done)
 
-- Last done: S034  cleanup leaves live temps (F09)
+- Last done: S043  no-replace fallback holds across processes (found in S034)
 - In progress: none
-- Next: S043  no-replace fallback holds across processes; then the rest of plan.md's Open list
+- Next: S033  collision result names the way out (F08)
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
@@ -16,7 +16,7 @@ Updated: 2026-10-30, by Claude (S034 done)
     DEC-005 (folder date = earliest new file), DEC-026 to DEC-028,
     DEC-030 to DEC-032, DEC-034, DEC-035 (1)-(3), DEC-036 to DEC-040,
     DEC-042, DEC-043, DEC-044, DEC-045, DEC-046, DEC-047, DEC-048, DEC-049,
-    DEC-050, DEC-051, DEC-052, DEC-053, DEC-054.
+    DEC-050, DEC-051, DEC-052, DEC-053, DEC-054, DEC-055.
     Each says "not yet confirmed by the user" in decisions.md.
   - The GUI no longer waits for S025 (user, 2026-10-30: do all that needs no
     input or hardware). The audit re-runs after the GUI.
@@ -27,7 +27,8 @@ Updated: 2026-10-30, by Claude (S034 done)
     can pass falsely.
   - Linux exFAT: `canonicalize` keeps the case it is given, so two library
     spellings that differ only in case get two fallback locks (S013 fast
-    check). Fold the case or key by inode there; check in S025.
+    check). Fold the case or key by inode there; check in S025. DEC-055's `flock`
+    is on the folder itself, so it may cover this already: an agent's guess, not run.
   - Linux exFAT: what DEC-044 says of it comes from an agent's recollection of the kernel's fs/exfat (source not read), not
     a run. Check in S025: a folder a Mac made and an accented name typed on
     Linux are expected to give two folders.
@@ -37,11 +38,10 @@ Updated: 2026-10-30, by Claude (S034 done)
   - A freshly formatted card without `DCIM` looks like any USB drive and is
     offered as a destination (S007 fast check). Telling them apart needs
     DiskArbitration (Mac) or udev (Linux).
-  - exFAT, two photosync processes at once: DEC-018's fallback lock is per
-    process, so two writing one final name in the same instant could replace
-    one with the other, and both report copied. Not reproduced; different names
-    are proved safe (DEC-054 (6)). For the user to weigh: a lock across
-    processes, or the specs saying one process per library on such a drive.
+  - Linux exFAT: DEC-055's `flock` on a folder was measured on macOS only. Check
+    in S025 that two processes exclude each other there. On a Linux drive with
+    neither a no-replace rename nor that lock (NFS, from an agent's recollection,
+    not a run), every copy fails and is reported.
   - Two sessions on one library in one process at once would still take each
     other's temps: that copy fails and is reported (DEC-054 (2)). No front-end
     does this; a GUI must not, or needs a list of temps in flight.
