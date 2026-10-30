@@ -59,6 +59,7 @@ Why: one line.
 - DEC-040 2026-10-29 — S019: several cards copied at once, one thread per card
 - DEC-041 2026-10-29 — the TUI shows the app as "phoosync pro 2"
 - DEC-042 2026-10-30 — a file that reads another length than scanned fails (S026)
+- DEC-043 2026-10-30 — how the report shows duplicates and names the card (S028)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1000,3 +1001,26 @@ A twin that reads another length is passed for the next, and fails.
 agree while the read came up short.
 Why: a short read gives no error, and neither the read-back nor a planning
 hash taken after the shrink can see it, so the size is the only witness.
+
+## DEC-043  2026-10-30  how the report shows duplicates and names the card (S028)
+Tags: report, cli, tui
+Decision: agent's pick in S028, not yet confirmed by the user.
+(1) Each duplicate in session gets its own line, as specs Sources and INV-6
+ask, listed after the failed and unreadable lines: a backup card lists every
+photo, and what went wrong must not get lost among them. Rejected: one count
+per card, shorter, but it does not list the extra copies.
+(2) A count line splits the skipped by reason, only when a source has
+duplicates: with none, the skipped are all on the drive and the result says
+"already there". Files already on the drive get no line of their own: a
+re-run would list the whole card. A file copied from its twin counts as a
+duplicate (INV-6) and keeps its "read error" line.
+(3) The line gives the file under `DCIM` and only the card of the original,
+to fit 80 columns, as the TUI's report cuts long lines. It says "on drive
+from", not "copied from": an earlier card's file may have been found on the
+drive.
+(4) The card is the path above the file's last `DCIM`. The outcome holds a
+path, not its source, and the source may be of an earlier sync; no core change
+this way. A path without `DCIM` is shown whole. A `DCIM` folder inside a
+card's `DCIM` would show that folder as the card: its path still leads there.
+Why: the report must say why a card's file was skipped and which card's file
+is on the drive, without burying a failure.

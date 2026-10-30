@@ -435,3 +435,62 @@ fn two_cards_on_two_devices_copy_at_once() {
         b"a raw three"
     );
 }
+
+/// F03, specs, Sources: with a backup of a card's RAF on a second card, and
+/// a JPEG twice on the first, the report shows "duplicate in session" apart
+/// from "already on drive" for each card and names the card on the drive.
+/// A re-run of the first card alone: what is on the drive is "already on
+/// drive", and only the second of the JPEGs stays a duplicate, of the first.
+#[test]
+fn the_report_shows_duplicates_and_names_the_card() {
+    let test = "the_report_shows_duplicates_and_names_the_card";
+    let (Some(drive), Some((twin_a, twin_b))) =
+        (common::test_drive(test), common::twin_cards(test))
+    else {
+        return;
+    };
+    let (a, b) = (
+        common::OnDrive::new(&twin_a, "s028-a"),
+        common::OnDrive::new(&twin_b, "s028-b"),
+    );
+    let library = common::OnDrive::new(&drive, "s028-lib");
+    write_file(&a.0, "DCIM/100_FUJI/DSCF0001.RAF", b"backed up", at(TAKEN));
+    write_file(&a.0, "DCIM/100_FUJI/DSCF0002.JPG", b"twice", at(TAKEN));
+    write_file(&a.0, "DCIM/101_FUJI/DSCF0002.JPG", b"twice", at(TAKEN));
+    write_file(&b.0, "DCIM/100_FUJI/DSCF0001.RAF", b"backed up", at(TAKEN));
+
+    let run = sync(&[&a.0, &b.0], &library.0, "Dup");
+    assert_eq!(run.code, 0, "{run:?}");
+    let want = [
+        "  of the skipped, 0 already on drive, 1 duplicate in session".to_string(),
+        format!(
+            "  duplicate in session  101_FUJI/DSCF0002.JPG, on drive from {}",
+            a.0.display()
+        ),
+        format!(
+            "  duplicate in session  100_FUJI/DSCF0001.RAF, on drive from {}",
+            a.0.display()
+        ),
+    ];
+    for part in &want {
+        assert!(run.stdout.contains(part.as_str()), "{part}\n{run:?}");
+    }
+    // One count line for each card, and each file in its own card's section.
+    assert_eq!(run.stdout.matches(want[0].as_str()).count(), 2, "{run:?}");
+    let of_b = run
+        .stdout
+        .find(&format!("Source {}", b.0.display()))
+        .expect("no section for the second card");
+    assert!(run.stdout[..of_b].contains(&want[1]), "{run:?}");
+    assert!(run.stdout[of_b..].contains(&want[2]), "{run:?}");
+
+    let again = sync(&[&a.0], &library.0, "Dup");
+    assert_eq!(again.code, 0, "{again:?}");
+    for part in [
+        "  of the skipped, 2 already on drive, 1 duplicate in session",
+        want[1].as_str(),
+    ] {
+        assert!(again.stdout.contains(part), "{part}\n{again:?}");
+    }
+    assert!(!again.stdout.contains("100_FUJI/DSCF0001.RAF"), "{again:?}");
+}

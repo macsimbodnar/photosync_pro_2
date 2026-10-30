@@ -1,0 +1,9 @@
+id:         S028
+goal:       the report shows 'duplicate in session' apart from 'already on drive' and names the card copied from
+accepts:    failing test first; CLI and TUI text show both kinds apart per source and name the card whose file was copied (FileOutcome::DuplicateInSession { of }), within the line-width rules; the text test that pins the omission (text.rs problem_line, asserted None) is the one test that changes, because the specs say otherwise: note this in the stamp; exFAT e2e asserts the sentence with two cards; suite and script pass
+touches:    crates/photosync text.rs, tui/view.rs, tests, README
+excludes:   core changes unless the data is missing
+closes:     2026-10-30_adversarial-F03
+paused_by:
+author:     Claude
+done:       2026-10-30, Claude. cargo test --workspace 264 passed, 0 failed; scripts/test_exfat.sh exit 0, 246 passed, 0 failed, 18 skipped by name, no image left attached; clippy --all-targets clean. Failing first: 4 text and TUI tests, and the exFAT e2e, seen failing before the fix. Proofs: text::tests a_source_shows_both_kinds_of_skipped_and_names_the_card, the_card_of_a_duplicate_is_above_its_last_dcim_and_a_path_without_one_is_kept_whole, a_source_without_duplicates_has_no_duplicate_lines; tui::view::tests report_screen_shows_duplicates_and_the_card_at_80_columns; exfat_e2e the_report_shows_duplicates_and_names_the_card (two cards, then a re-run). One existing test changed, the one the step names, as the specs say otherwise: text.rs every_file_that_is_not_ok_has_a_line_with_its_reason no longer asserts None for DuplicateInSession and pins its line instead. No core change. DEC-043, not yet confirmed by the user. Specs Report and README updated. Discovered: the TUI's report cuts every long line, a failed file's reason included: new step S037.

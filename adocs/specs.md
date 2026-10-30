@@ -269,7 +269,10 @@ picks. It is simple to use.
   failed with a reason (name collisions and copies in place not flushed
   included),
   cancelled, ignored types, and the entries the scan could not read. Totals
-  per source and per type (INV-6). The CLI's report names the library and
+  per source and per type (INV-6). A source with duplicates counts its
+  skipped by reason, and lists each duplicate in session, after what went
+  wrong, with the card it is on the drive from (DEC-043). Files already on
+  the drive are counted, not listed. The CLI's report names the library and
   the session folder. After several syncs in a session, the report ends
   with the totals of all of them and the session's result.
 - The report is never built from inputs that would make it wrong: a source

@@ -519,6 +519,50 @@ mod tests {
         }
     }
 
+    /// The report body neither wraps nor scrolls sideways: at the width of
+    /// a plain terminal, the two kinds of skipped and the card must fit.
+    #[test]
+    fn report_screen_shows_duplicates_and_the_card_at_80_columns() {
+        let file = |path: &str| SourceFile {
+            path: PathBuf::from(path),
+            media_type: Some(MediaType::Raw),
+            size: 10,
+            modified: std::time::UNIX_EPOCH,
+        };
+        let source = SourceReport {
+            root: PathBuf::from("/Volumes/NO NAME"),
+            files: vec![
+                FileReport {
+                    file: file("/Volumes/NO NAME/DCIM/100_FUJI/DSCF0001.RAF"),
+                    outcome: FileOutcome::AlreadySynced {
+                        library_file: PathBuf::from("/l/DSCF0001.RAF"),
+                    },
+                },
+                FileReport {
+                    file: file("/Volumes/NO NAME/DCIM/100_FUJI/DSCF0002.RAF"),
+                    outcome: FileOutcome::DuplicateInSession {
+                        of: PathBuf::from("/Volumes/UNTITLED/DCIM/100_FUJI/DSCF0002.RAF"),
+                    },
+                },
+            ],
+            unreadable: Vec::new(),
+        };
+        let lines = text::source_section(&source);
+        let result = text::result_line(&source.totals(), std::slice::from_ref(&source));
+        let app = App::with_outcome_for_test(Outcome::Report {
+            lines,
+            result,
+            complete: true,
+        });
+        let screen = draw(&app, 80, 24);
+        for part in [
+            "  of the skipped, 1 already on drive, 1 duplicate in session",
+            "  duplicate in session  100_FUJI/DSCF0002.RAF, on drive from /Volumes/UNTITLED",
+        ] {
+            assert!(has(&screen, part), "{part}: {screen:#?}");
+        }
+    }
+
     #[test]
     fn refused_screen_shows_the_sentence() {
         let app = App::with_outcome_for_test(Outcome::Refused {

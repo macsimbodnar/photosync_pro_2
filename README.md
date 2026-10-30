@@ -110,7 +110,15 @@ Result: all 3 photos or videos on the drive (3 copied, 0 already there).
 Every file that was not copied or skipped gets its own line with the
 reason, and so does one copied from its twin ("read error ... copied from
 its twin ..."); a copy whose folder flush failed shows as "in place, flush not
-confirmed". On a terminal the progress line is cut to its width. A closed
+confirmed". A card with duplicates splits its skipped by reason, and lists
+each duplicate after those lines, with the card it is on the drive from:
+
+```text
+  of the skipped, 0 already on drive, 1 duplicate in session
+  duplicate in session  100_FUJI/DSCF0001.RAF, on drive from /Volumes/CARD1
+```
+
+Files already on the drive are counted, not listed. On a terminal the progress line is cut to its width. A closed
 stdout (e.g. `| head`) does not stop the sync: photosync says on stderr that
 the report could not be written and keeps the exit code.
 

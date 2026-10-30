@@ -495,10 +495,19 @@ pub fn session_message(session: &Session) -> Option<String> {
 pub fn source_section(source: &SourceReport) -> Vec<String> {
     let mut out = vec![format!("Source {}", source.root.display())];
     out.extend(table(&source.by_type(), &source.totals()));
+    out.extend(skipped_kinds_line(source));
     if let Some(line) = ignored_line(source) {
         out.push(line);
     }
-    out.extend(source.files.iter().filter_map(problem_line));
+    let is_duplicate =
+        |e: &&FileReport| matches!(e.outcome, FileOutcome::DuplicateInSession { .. });
+    out.extend(
+        source
+            .files
+            .iter()
+            .filter(|e| !is_duplicate(e))
+            .filter_map(problem_line),
+    );
     for u in &source.unreadable {
         let unknown = if u.contents_unknown {
             " (contents unknown)"
@@ -511,7 +520,43 @@ pub fn source_section(source: &SourceReport) -> Vec<String> {
             u.error.source
         ));
     }
+    // Last: a backup card lists every photo here, and what went wrong must
+    // not get lost among them.
+    out.extend(
+        source
+            .files
+            .iter()
+            .filter(is_duplicate)
+            .filter_map(problem_line),
+    );
     out
+}
+
+/// The table's skipped, split by reason, when there are two to tell apart.
+/// A file copied from its twin is a duplicate in session too (INV-6).
+fn skipped_kinds_line(source: &SourceReport) -> Option<String> {
+    let count =
+        |kind: fn(&FileOutcome) -> bool| source.files.iter().filter(|e| kind(&e.outcome)).count();
+    let already = count(|o| matches!(o, FileOutcome::AlreadySynced { .. }));
+    let duplicates = count(|o| {
+        matches!(
+            o,
+            FileOutcome::DuplicateInSession { .. } | FileOutcome::DuplicateUnread { .. }
+        )
+    });
+    (duplicates > 0).then(|| {
+        format!("  of the skipped, {already} already on drive, {duplicates} duplicate in session")
+    })
+}
+
+/// A file's path split at its last `DCIM`: the card above it, and the rest.
+/// The last, so a card itself named `DCIM` is still that card. `FileOutcome`
+/// holds a path and not its source, and the source may be of an earlier sync.
+fn on_card(path: &Path) -> Option<(&Path, &Path)> {
+    let dcim = path
+        .ancestors()
+        .find(|a| a.file_name() == Some("DCIM".as_ref()))?;
+    Some((dcim.parent()?, path.strip_prefix(dcim).ok()?))
 }
 
 fn table(by_type: &BTreeMap<MediaType, Tally>, totals: &Tally) -> Vec<String> {
@@ -588,16 +633,30 @@ fn ignored_line(source: &SourceReport) -> Option<String> {
     })
 }
 
-/// One line for a file that is not copied or skipped, with its reason, and
-/// for one skipped because its card could not be read (its twin was
-/// copied); `None` for one that is OK.
+/// One line for a file that is not copied or skipped, with its reason, for
+/// one skipped because its card could not be read (its twin was copied), and
+/// for a duplicate in session, naming the card whose file is on the drive;
+/// `None` for one that is OK.
 pub fn problem_line(entry: &FileReport) -> Option<String> {
     let path = entry.file.path.display();
     Some(match &entry.outcome {
-        FileOutcome::Copied { .. }
-        | FileOutcome::AlreadySynced { .. }
-        | FileOutcome::DuplicateInSession { .. }
-        | FileOutcome::Ignored => return None,
+        FileOutcome::Copied { .. } | FileOutcome::AlreadySynced { .. } | FileOutcome::Ignored => {
+            return None;
+        }
+        // Short, as the TUI's report cuts a line at the terminal's width:
+        // the file under its card, whose section this line is in, and only
+        // the card it is on the drive from. "From", not "copied from": an
+        // earlier card's file may have been found on the drive.
+        FileOutcome::DuplicateInSession { of } => {
+            let file =
+                on_card(&entry.file.path).map_or(entry.file.path.as_path(), |(_, rest)| rest);
+            let card = on_card(of).map_or(of.as_path(), |(card, _)| card);
+            format!(
+                "  duplicate in session  {}, on drive from {}",
+                file.display(),
+                card.display()
+            )
+        }
         FileOutcome::DuplicateUnread { of, error } => format!(
             "  read error  {path}: {error}; copied from its twin {}",
             of.display()
@@ -1063,18 +1122,18 @@ mod tests {
                     library_file: PathBuf::from("/l/B.RAF"),
                 },
             ),
-            entry(
-                "/c/DCIM/C.RAF",
-                FileOutcome::DuplicateInSession {
-                    of: PathBuf::from("/d/C.RAF"),
-                },
-            ),
             entry("/c/DCIM/x.txt", FileOutcome::Ignored),
         ];
         for e in &ok {
             assert_eq!(problem_line(e), None, "{e:?}");
         }
         let line = |outcome| problem_line(&entry("/c/DCIM/D.RAF", outcome)).unwrap();
+        assert_eq!(
+            line(FileOutcome::DuplicateInSession {
+                of: PathBuf::from("/d/DCIM/D.RAF")
+            }),
+            "  duplicate in session  D.RAF, on drive from /d"
+        );
         assert_eq!(
             line(FileOutcome::Failed(FailReason::NameCollision {
                 existing: PathBuf::from("/l/D.RAF")
@@ -1097,6 +1156,109 @@ mod tests {
                 of: PathBuf::from("/d/D.RAF")
             }),
             "  cancelled   /c/DCIM/D.RAF: same as /d/D.RAF, which was cancelled"
+        );
+    }
+
+    /// INV-6 and specs, Sources: each kind of skipped has its own reason
+    /// per source, and a duplicate names the card whose file is on the
+    /// drive. A backup card lists every photo as a duplicate, so they come
+    /// after what went wrong, not mixed in with it.
+    #[test]
+    fn a_source_shows_both_kinds_of_skipped_and_names_the_card() {
+        let duplicate = |path: &str, of: &str| {
+            entry(
+                path,
+                FileOutcome::DuplicateInSession {
+                    of: PathBuf::from(of),
+                },
+            )
+        };
+        let source = SourceReport {
+            root: PathBuf::from("/V/B"),
+            files: vec![
+                entry(
+                    "/V/B/DCIM/100_FUJI/A.RAF",
+                    FileOutcome::AlreadySynced {
+                        library_file: PathBuf::from("/l/A.RAF"),
+                    },
+                ),
+                duplicate("/V/B/DCIM/100_FUJI/B.RAF", "/V/A/DCIM/100_FUJI/B.RAF"),
+                entry(
+                    "/V/B/DCIM/100_FUJI/C.RAF",
+                    FileOutcome::Failed(FailReason::Read(eio())),
+                ),
+                // The same photo twice on one card names that card.
+                duplicate("/V/B/DCIM/101_FUJI/B.RAF", "/V/B/DCIM/100_FUJI/D.RAF"),
+                entry(
+                    "/V/B/DCIM/101_FUJI/E.RAF",
+                    FileOutcome::DuplicateUnread {
+                        of: PathBuf::from("/V/A/DCIM/100_FUJI/E.RAF"),
+                        error: eio(),
+                    },
+                ),
+            ],
+            unreadable: Vec::new(),
+        };
+
+        let lines = source_section(&source);
+        let at = |part: &str| {
+            lines
+                .iter()
+                .position(|l| l.contains(part))
+                .unwrap_or_else(|| panic!("{part}: {lines:#?}"))
+        };
+        // Adds up to the table's skipped: a read error's file is a
+        // duplicate in session too (INV-6).
+        at("  of the skipped, 1 already on drive, 3 duplicate in session");
+        let first = at("  duplicate in session  100_FUJI/B.RAF, on drive from /V/A");
+        at("  duplicate in session  101_FUJI/B.RAF, on drive from /V/B");
+        assert!(
+            at("  failed      /V/B/DCIM/100_FUJI/C.RAF") < first,
+            "{lines:#?}"
+        );
+        assert!(
+            at("  read error  /V/B/DCIM/101_FUJI/E.RAF") < first,
+            "{lines:#?}"
+        );
+    }
+
+    /// A source with nothing but "already on drive" keeps its short report:
+    /// the result already says "already there".
+    #[test]
+    fn a_source_without_duplicates_has_no_duplicate_lines() {
+        let source = SourceReport {
+            root: PathBuf::from("/c"),
+            files: vec![entry(
+                "/c/DCIM/A.RAF",
+                FileOutcome::AlreadySynced {
+                    library_file: PathBuf::from("/l/A.RAF"),
+                },
+            )],
+            unreadable: Vec::new(),
+        };
+        let text = source_section(&source).join("\n");
+        assert!(!text.contains("duplicate"), "{text}");
+    }
+
+    /// A card named `DCIM` is still that card, not the folder above it.
+    #[test]
+    fn the_card_of_a_duplicate_is_above_its_last_dcim_and_a_path_without_one_is_kept_whole() {
+        let line = |of: &str| {
+            problem_line(&entry(
+                "/V/B/DCIM/100_FUJI/B.RAF",
+                FileOutcome::DuplicateInSession {
+                    of: PathBuf::from(of),
+                },
+            ))
+            .unwrap()
+        };
+        assert_eq!(
+            line("/Volumes/DCIM/DCIM/100_FUJI/B.RAF"),
+            "  duplicate in session  100_FUJI/B.RAF, on drive from /Volumes/DCIM"
+        );
+        assert_eq!(
+            line("/somewhere/B.RAF"),
+            "  duplicate in session  100_FUJI/B.RAF, on drive from /somewhere/B.RAF"
         );
     }
 
