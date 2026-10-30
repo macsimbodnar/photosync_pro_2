@@ -4,18 +4,20 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-29, by Claude (docs tidied before the Linux run)
+Updated: 2026-10-30, by Claude (audit 2026-10-30 triaged)
 
 - Last done: S019  copy several cards at once, one thread per card
 - In progress: none
-- Next: S025  first run on Linux (the user, with a drive and SD cards)
-- Blocked: S017 (Mac hardware checks) waits for the user (DEC-029)
+- Next: S026  short read fails; then the rest of plan.md's Open list
+- Waiting for the user: S025 (Linux), S017 (Mac hardware)
+- Blocked: none
 - Parked:
   - Decisions the agents picked that the user has not confirmed yet:
     DEC-005 (folder date = earliest new file), DEC-026 to DEC-028,
     DEC-030 to DEC-032, DEC-034, DEC-035 (1)-(3), DEC-036 to DEC-040.
     Each says "not yet confirmed by the user" in decisions.md.
-  - After S025: re-run the full adversarial audit, then plan the GUI.
+  - The GUI no longer waits for S025 (user, 2026-10-30: do all that needs no
+    input or hardware). The audit re-runs after the GUI.
   - The camera's PTP mode (USB without card-reader mode) is unsupported
     (DEC-004). Revisit if card-reader mode proves unreliable.
   - The permission-based tests assume a non-root user: run as root (e.g.

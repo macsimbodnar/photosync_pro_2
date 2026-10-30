@@ -17,13 +17,22 @@ not change the order.
 
 ## Open
 
-1. S025  first run on Linux: build, tests, hand checks (user, 2026-10-29)
-2. S017  hardware hand checks on Mac (waits for the user)
+1. S026  short read fails, never copied (F01)
+2. S028  report shows duplicates and the card (F03)
+3. S027  name reuse across Unicode forms (F02)
+4. S030  tests kill the surviving mutants (F05)
+5. S029  the gate runs a real sync (F04)
+6. S032  refused then fixed is not NOT COMPLETE (F07)
+7. S031  too long a name is refused (F06)
+8. S034  cleanup leaves live temps (F09)
+9. S033  collision result names the way out (F08)
+10. S035  CLI bytes per source (F10)
+11. S036  plan the GUI: confirm iced, layout, steps
+12. S025  first run on Linux: build, tests, hand checks (waits for the user)
+13. S017  hardware hand checks on Mac (waits for the user)
 
-Later, not yet steps: a full adversarial audit (re-run of 2026-10-28;
-closes the planned findings), then plan the native GUI (iced) over the
-reusable app/worker/flow/text layer, then Mac .app and Linux AppImage
-packaging.
+Later, not yet steps: re-run the adversarial audit after the GUI, covering
+it too; the audit loop stops when a run reports no high and no medium.
 
 ## Done recently
 

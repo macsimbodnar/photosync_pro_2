@@ -14,7 +14,7 @@ toolchain is at `~/.cargo/bin` and is not on the default PATH.
 
 ## 2026-10-28_adversarial-F01  High  Dedup by camera name breaks INV-4 for every file renamed on collision
 
-Status: planned
+Status: closed
 
 **Evidence**: `adocs/specs.md` Layout: "If the target folder already holds a
 different file with the same name (the counter wraps at `DSCF9999`), the new
@@ -54,7 +54,7 @@ second run.
 
 ## 2026-10-28_adversarial-F02  High  "Renamed into place" replaces an existing file; no-overwrite rename is not required, planned, or tested
 
-Status: planned
+Status: closed
 
 **Evidence**: INV-3: "renamed into place only after that check". The Layout
 collision rule is a check followed by a later rename. On Unix, Rust's
@@ -88,7 +88,7 @@ appears before the rename, and the existing file must survive.
 
 ## 2026-10-28_adversarial-F03  High  Nothing stops the destination from being a source, or the library from sitting inside one
 
-Status: planned
+Status: closed
 
 **Evidence**: S007 lists "destination drives" and sources from the same mount
 roots (`/Volumes`, `/media/$USER`, `/run/media/$USER`). No line in
@@ -108,7 +108,7 @@ overlapping source and library paths. Put it in S004 or S007 accepts.
 
 ## 2026-10-28_adversarial-F04  Medium  "One folder per sync, dated by earliest new file" cannot hold for one-by-one sessions or re-runs after interruption
 
-Status: planned
+Status: closed
 
 **Evidence**: Layout: "One sync puts all its new files in one folder" and
 "`<date>` is ... the earliest capture date among the new files". Sources:
@@ -133,7 +133,7 @@ for the one-by-one and interrupted re-run cases.
 
 ## 2026-10-28_adversarial-F05  Medium  Temp files left by an interruption cannot be cleaned up under INV-2, and nothing plans for them
 
-Status: planned
+Status: closed
 
 **Evidence**: INV-3 writes copies "under a temporary name". INV-7 only
 requires "no partial file under a final name". INV-2: "Every file present on
@@ -155,7 +155,7 @@ tool's own temp files, which the tool may delete. Add a test to S004 accepts.
 
 ## 2026-10-28_adversarial-F06  Medium  Verify-then-rename without fsync does not make a copy safe from an unplug
 
-Status: planned
+Status: closed
 
 **Evidence**: INV-3 checks "the destination copy's hash", and INV-7 covers
 "unplugging a device". Neither the specs nor S004 requires the data to be
@@ -177,7 +177,7 @@ Note in S004 accepts that the unplug case is checked by hand.
 
 ## 2026-10-28_adversarial-F07  Medium  "Copied once" across sources defeats backup mode when the chosen copy fails
 
-Status: planned
+Status: closed
 
 **Evidence**: Sources: "backup (identical cards) ... A file found on two
 sources in one session is copied once". S003: "a file present on two sources
@@ -197,7 +197,7 @@ S010.
 
 ## 2026-10-28_adversarial-F08  Medium  INV-1 (prime directive, source side) is tested only for the scan, not for copy, cancel, or sessions
 
-Status: planned
+Status: closed
 
 **Evidence**: Only S002 accepts names INV-1 ("the scan leaves the source
 manifest unchanged"). S004 lists "INV-2, INV-3, INV-4, INV-5 and INV-7", and
@@ -250,7 +250,7 @@ copied again. The user may expect them to be skipped.
 
 ## 2026-10-28_adversarial-F11  Low  INV-8's "never writes to stdout or stderr" has no checkable test planned
 
-Status: planned
+Status: closed
 
 **Evidence**: S001 checks only for a dependency on
 "clap/ratatui/crossterm/iced", not egui (proposed in DEC-002) or logging
