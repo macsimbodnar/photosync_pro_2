@@ -237,7 +237,8 @@ picks. It is simple to use.
   space or dot, or `<date> - <name>` over 255 bytes (a name over 242), and any
   name the library's filesystem finds too long on a lookup (DEC-053). A library
   whose path with that folder in it is over the system's limit is refused the
-  same way, and the sentence blames the path, not the name (DEC-056).
+  same way, as is a name over a drive's shorter limit on one name. The lookup
+  cannot tell these two apart, so the sentence names both (DEC-056).
 - If that folder already exists, new files are added to it (name collisions
   as below).
 - A session or `<TYPE>` folder that is a symlink is never followed: every
@@ -295,7 +296,9 @@ picks. It is simple to use.
 
 ### Progress
 
-- Shows files and bytes done out of the total, per source and overall.
+- Shows files and bytes done out of the total, per source and overall. The
+  CLI's one line gives way first: past the terminal's width, each source's
+  bytes go, whole, and the rest stays (DEC-058).
 - Shows an estimate of the time remaining.
 - With several cards at once, several files are in flight, at most one per
   card. Each progress event is a whole snapshot: the cards' counts add up

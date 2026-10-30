@@ -72,8 +72,9 @@ Why: one line.
 - DEC-053 2026-10-30 — which sync names are refused, the same on every platform; the Folder line (S031)
 - DEC-054 2026-10-30 — stale temps: the pid in the name decides (S034)
 - DEC-055 2026-10-30 — the exFAT fallback holds a kernel lock on the folder, across processes (S043)
-- DEC-056 2026-10-30 — one sentence for the way out of a name collision; a path too long is not the name's fault (S033)
+- DEC-056 2026-10-30 — one sentence for the way out of a name collision; too long in any spelling has its own sentence (S033, S035)
 - DEC-057 2026-10-30 — a cancel ends the wait for the folder's lock; one timeout fails the folder for the run (S044)
+- DEC-058 2026-10-30 — the CLI's line: each source's bytes in its bracket, dropped whole by the cut; the TUI's line stays (S035)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1412,7 +1413,7 @@ no new file goes on the drive. Every doubt fails a copy that a later sync can re
 Amended by DEC-057: (5)'s limit stands, but a cancel ends the wait, and one timeout ends
 the waiting for that folder for the run.
 
-## DEC-056  2026-10-30  one sentence for the way out of a name collision; a path too long is not the name's fault (S033)
+## DEC-056  2026-10-30  one sentence for the way out of a name collision; too long in any spelling has its own sentence (S033, S035)
 Tags: report, cli, tui, layout
 Decision: the agent's choice, not yet confirmed by the user. (1) With a collision among
 the failures, the result says: "After a name collision, fix any other cause, then start
@@ -1425,11 +1426,15 @@ those up. It stays short as the TUI's result box holds three rows: it fits at 80
 result says the same of its syncs. A failed duplicate of a collided file adds nothing: its
 original is in the report. Rejected: a wording per front-end.
 (2) A lookup's ENAMETOOLONG in `check_name_fits` is told apart by asking again with plain
-ASCII of the same length: too long as well means the path is at fault
-(`FolderError::PathTooLong`, its own sentence), and otherwise the name (`InvalidName`, as
-an HFS+ name is). It reads only and needs no unsafe code, and the kernel judges the same
-path, symlinks in it included. Rejected: comparing with `PATH_MAX`, a second copy of the
-kernel's rule; `fstatat` on the library, as it needs the library open and unsafe code.
+ASCII of the same length: too long as well gives `FolderError::PathTooLong`, its own
+sentence, and otherwise the name's own spelling is at fault (`InvalidName`, as an HFS+ name
+is). Corrected in S035: too long as well does not prove the path is at fault. It is that, or
+a drive with a shorter limit on one name (eCryptfs, 143 bytes: from general knowledge, not
+run). The answer cannot tell them apart, so the sentence names both: "Use a shorter name"
+works for either, and a library nearer the top only if the path is long. It reads only and
+needs no unsafe code, and the kernel judges the same path, symlinks in it included.
+Rejected: comparing with `PATH_MAX`, a second copy of the kernel's rule; `fstatat` on the
+library, as it needs the library open and unsafe code.
 (3) Measured on macOS: a library that takes the session folder but not `<TYPE>/<file>`
 under it, or a sync with no name, is not refused: each file fails, exit 1, with the reason.
 Refusing it would mean guessing the longest temp name. True, if late.
@@ -1468,3 +1473,24 @@ real exFAT path runs the same code under `scripts/test_exfat.sh`. The holder is 
 from S043, reached by a symlink as it locks a fixed folder name.
 Why: a user's cancel must not wait a minute, and a card should not be read in full, one
 photo a minute, only to fail the same way. Every failure here is one a later sync redoes.
+
+## DEC-058  2026-10-30  the CLI's line: each source's bytes in its bracket, dropped whole by the cut; the TUI's line stays (S035)
+Tags: progress, cli, tui
+Decision: the agent's choice, not yet confirmed by the user. Adds to DEC-030 (8).
+(1) With several sources the CLI's line ends `[CARD 1/3, 25.0 MB of 90.0 MB; CARD2 0/1,
+0 B of 10.0 MB]`, in the card's own place, so a name is not said twice. One source gets no
+bracket, as before: its bytes are the overall bytes.
+(2) Over the width, every source's bytes go at once, back to `[CARD 1/3, CARD2 0/1]`, then
+the end of that is cut as before. Rejected: a plain cut, which can leave `of 9` for `of 90.0
+MB`; dropping one card's bytes at a time, as the point is to compare the cards.
+", cancelled" stays over the bytes, as it says more. A log and an unknown width keep the
+whole line (DEC-030 (8)).
+(3) `progress_line` stays as it was and the TUI keeps using it: the TUI lists each source's
+bytes under that line already. The step excludes TUI changes.
+(4) Two existing tests changed their expected text, as this format is the change asked for:
+`progress_of_two_cards_at_once_shows_each_card` and `two_cards_on_two_devices_copy_at_once`.
+Each now holds more than before. The first takes all after the `[`, so it could stay only if
+a log showed no bytes. The second could stay with the bytes after the bracket, which says
+each name twice and so fits fewer terminals.
+Why: which card is slow shows in bytes (F10), but a line that wraps cannot be rewritten in
+place, so the bytes are what a narrow terminal can spare.

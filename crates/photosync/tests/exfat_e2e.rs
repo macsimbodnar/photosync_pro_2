@@ -412,7 +412,8 @@ fn two_cards_on_two_devices_copy_at_once() {
     assert_eq!(on_drive, want, "each photo once");
     let name = |d: &common::OnDrive| d.0.file_name().unwrap().to_string_lossy().into_owned();
     let line = format!(
-        "copying 3/3 files, 6.3 MB of 6.3 MB (100%), ETA 0s [{} 2/2, {} 1/1]",
+        "copying 3/3 files, 6.3 MB of 6.3 MB (100%), ETA 0s \
+         [{} 2/2, 3.1 MB of 3.1 MB; {} 1/1, 3.1 MB of 3.1 MB]",
         name(&a),
         name(&b)
     );

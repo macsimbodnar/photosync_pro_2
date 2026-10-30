@@ -10,7 +10,7 @@ use std::time::Duration;
 use photosync_core::{
     CopyError, Counts, Event, EventKind, FailReason, FileOutcome, FileReport, FolderError,
     MAX_NAME_BYTES, MediaType, Phase, PlanError, Progress, Report, Run, RunEnd, ScanError, Session,
-    SourceReport, SourceScan, SyncFolder, Tally, TempCleanup, Verdict,
+    SourceProgress, SourceReport, SourceScan, SyncFolder, Tally, TempCleanup, Verdict,
 };
 
 use crate::flow::{SyncError, Watch};
@@ -59,9 +59,23 @@ fn name_of(root: &Path) -> String {
     )
 }
 
-/// One line: files and bytes done out of the total, overall and, with
-/// several sources, per source, and the ETA.
+/// One line: files and bytes done out of the total and the ETA, and with
+/// several sources each one's files. The TUI lists each one's bytes itself,
+/// under this line (`per_source`).
 pub fn progress_line(p: &Progress) -> String {
+    let mut line = overall(p);
+    if p.sources.len() > 1 {
+        let each: Vec<String> = p.sources.iter().map(source_files).collect();
+        line.push_str(&format!(" [{}]", each.join(", ")));
+    }
+    line
+}
+
+fn source_files(s: &SourceProgress) -> String {
+    format!("{} {}/{}", name_of(&s.root), s.done.files, s.total.files)
+}
+
+fn overall(p: &Progress) -> String {
     let label = match p.phase {
         Phase::Planning => "comparing with library",
         Phase::Copying => "copying",
@@ -71,22 +85,41 @@ pub fn progress_line(p: &Progress) -> String {
         total => u128::from(p.done.bytes) * 100 / u128::from(total),
     };
     let eta = p.eta.map_or_else(|| "--".to_string(), duration);
-    let mut line = format!(
+    format!(
         "{label} {}/{} files, {} of {} ({percent}%), ETA {eta}",
         p.done.files,
         p.total.files,
         size(p.done.bytes),
         size(p.total.bytes)
-    );
-    if p.sources.len() > 1 {
-        let each: Vec<String> = p
-            .sources
-            .iter()
-            .map(|s| format!("{} {}/{}", name_of(&s.root), s.done.files, s.total.files))
-            .collect();
-        line.push_str(&format!(" [{}]", each.join(", ")));
+    )
+}
+
+/// The CLI's line: `progress_line` with each source's bytes too, unless that
+/// goes over `fit` columns. Those go first, whole: half a size misleads, and
+/// one card's bytes without the other's cannot compare them (DEC-058).
+fn cli_line(p: &Progress, end: &str, fit: Option<usize>) -> String {
+    let short = format!("{}{end}", progress_line(p));
+    if p.sources.len() < 2 {
+        return short;
     }
-    line
+    let each: Vec<String> = p
+        .sources
+        .iter()
+        .map(|s| {
+            format!(
+                "{}, {} of {}",
+                source_files(s),
+                size(s.done.bytes),
+                size(s.total.bytes)
+            )
+        })
+        .collect();
+    let long = format!("{} [{}]{end}", overall(p), each.join("; "));
+    if fit.is_some_and(|fit| long.chars().count() > fit) {
+        short
+    } else {
+        long
+    }
 }
 
 /// Turns progress events into text, throttled by the events' own clock:
@@ -141,14 +174,14 @@ impl ProgressText {
             return None;
         }
         self.last = Some(p.elapsed);
-        let mut line = progress_line(p);
-        if event.kind == EventKind::Cancelled {
-            line.push_str(", cancelled");
-        }
-        if let (true, Some(width)) = (self.in_place, self.width.and_then(|w| w())) {
-            // One column spare: a line that fills the last column leaves
-            // some terminals' cursor on the next row.
-            line = line.chars().take(width.saturating_sub(1)).collect();
+        let width = self.width.filter(|_| self.in_place).and_then(|w| w());
+        // One column spare: a line that fills the last column leaves
+        // some terminals' cursor on the next row.
+        let fit = width.map(|w| w.saturating_sub(1));
+        let cancelled = event.kind == EventKind::Cancelled;
+        let mut line = cli_line(p, if cancelled { ", cancelled" } else { "" }, fit);
+        if let Some(fit) = fit {
+            line = line.chars().take(fit).collect();
         }
         Some(match (self.in_place, end) {
             (true, false) => format!("\r\x1b[K{line}"),
@@ -1085,9 +1118,9 @@ pub fn refusal(err: &SyncError) -> String {
              a space or a dot. Nothing was copied."
         ),
         SyncError::Folder(FolderError::PathTooLong { library, name }) => format!(
-            "With the name {name:?}, the path of a folder in the library {} is too long for \
-             this computer. Use a shorter name, or a library folder nearer the top of the \
-             drive. Nothing was copied.",
+            "A folder named {name:?} in the library {} is too long for this drive or this \
+             computer: its own name or its whole path. Use a shorter name, or, if the path \
+             is long, a library folder nearer the top of the drive. Nothing was copied.",
             p(library)
         ),
         SyncError::Folder(FolderError::Io(e)) => format!(
@@ -1353,10 +1386,10 @@ mod tests {
         assert_eq!(
             each,
             [
-                "[CARD 0/2, CARD2 0/2]\n",
-                "[CARD 0/2, CARD2 1/2]\n",
-                "[CARD 1/2, CARD2 1/2]\n",
-                "[CARD 2/2, CARD2 2/2]\n"
+                "[CARD 0/2, 0 B of 20 B; CARD2 0/2, 0 B of 20 B]\n",
+                "[CARD 0/2, 0 B of 20 B; CARD2 1/2, 0 B of 20 B]\n",
+                "[CARD 1/2, 0 B of 20 B; CARD2 1/2, 0 B of 20 B]\n",
+                "[CARD 2/2, 0 B of 20 B; CARD2 2/2, 0 B of 20 B]\n"
             ]
         );
     }
@@ -1405,6 +1438,108 @@ mod tests {
             end.event(&done).unwrap(),
             format!("\r\x1b[K{}\n", &full[..9])
         );
+    }
+
+    /// F10: two cards, so each shows its bytes too, as specs Progress says.
+    fn two_cards_event(kind: EventKind) -> Event {
+        let mut p = progress(Phase::Copying, (1, 25_000_000), (4, 100_000_000), 10_000);
+        p.sources[0].total = Counts {
+            files: 3,
+            bytes: 90_000_000,
+        };
+        p.sources.push(SourceProgress {
+            root: PathBuf::from("/Volumes/CARD2"),
+            done: Counts::default(),
+            total: Counts {
+                files: 1,
+                bytes: 10_000_000,
+            },
+        });
+        Event { kind, progress: p }
+    }
+
+    const TWO_CARDS_HEAD: &str = "copying 1/4 files, 25.0 MB of 100.0 MB (25%), ETA 30s ";
+    const TWO_CARDS_FILES: &str = "[CARD 1/3, CARD2 0/1]";
+    const TWO_CARDS_BYTES: &str = "[CARD 1/3, 25.0 MB of 90.0 MB; CARD2 0/1, 0 B of 10.0 MB]";
+
+    /// A log is never cut, and neither is a terminal of unknown width.
+    #[test]
+    fn progress_gives_files_and_bytes_per_source() {
+        let whole = format!("{TWO_CARDS_HEAD}{TWO_CARDS_BYTES}");
+        let mut log = ProgressText::new(false).cut_to(|| Some(20));
+        assert_eq!(
+            log.event(&two_cards_event(EventKind::Started)).unwrap(),
+            format!("{whole}\n")
+        );
+        let mut unknown = ProgressText::new(true).cut_to(|| None);
+        assert_eq!(
+            unknown.event(&two_cards_event(EventKind::Started)).unwrap(),
+            format!("\r\x1b[K{whole}")
+        );
+    }
+
+    /// One source's bytes are the overall bytes: saying them twice adds nothing.
+    #[test]
+    fn progress_of_one_source_has_no_per_source_part() {
+        let mut text = ProgressText::new(false);
+        let ev = Event {
+            kind: EventKind::Started,
+            progress: progress(Phase::Copying, (1, 25_000_000), (4, 100_000_000), 0),
+        };
+        assert_eq!(
+            text.event(&ev).unwrap(),
+            "copying 1/4 files, 25.0 MB of 100.0 MB (25%), ETA 30s\n"
+        );
+    }
+
+    /// One column stays spare. The bytes go whole at the first column they
+    /// do not fit, so the files per source and all before them stay.
+    #[test]
+    fn the_cut_drops_per_source_bytes_first() {
+        let cut = |width: fn() -> Option<usize>, kind| {
+            ProgressText::new(true)
+                .cut_to(width)
+                .event(&two_cards_event(kind))
+                .unwrap()
+        };
+        let whole = format!("{TWO_CARDS_HEAD}{TWO_CARDS_BYTES}");
+        let short = format!("{TWO_CARDS_HEAD}{TWO_CARDS_FILES}");
+        assert_eq!((whole.len(), short.len()), (111, 75));
+
+        assert_eq!(
+            cut(|| Some(112), EventKind::Started),
+            format!("\r\x1b[K{whole}")
+        );
+        assert_eq!(
+            cut(|| Some(111), EventKind::Started),
+            format!("\r\x1b[K{short}")
+        );
+        assert_eq!(
+            cut(|| Some(76), EventKind::Started),
+            format!("\r\x1b[K{short}")
+        );
+        // Under the short line, its end goes as before.
+        assert_eq!(
+            cut(|| Some(75), EventKind::Started),
+            format!("\r\x1b[K{}", &short[..74])
+        );
+    }
+
+    /// "cancelled" is what the line came to say: the bytes go before it does.
+    #[test]
+    fn the_cut_keeps_cancelled_over_per_source_bytes() {
+        let cut = |width: fn() -> Option<usize>| {
+            ProgressText::new(true)
+                .cut_to(width)
+                .event(&two_cards_event(EventKind::Cancelled))
+                .unwrap()
+        };
+        let whole = format!("{TWO_CARDS_HEAD}{TWO_CARDS_BYTES}, cancelled");
+        let short = format!("{TWO_CARDS_HEAD}{TWO_CARDS_FILES}, cancelled");
+        assert_eq!((whole.len(), short.len()), (122, 86));
+        assert_eq!(cut(|| Some(123)), format!("\r\x1b[K{whole}\n"));
+        assert_eq!(cut(|| Some(122)), format!("\r\x1b[K{short}\n"));
+        assert_eq!(cut(|| Some(87)), format!("\r\x1b[K{short}\n"));
     }
 
     #[test]
@@ -2287,6 +2422,25 @@ mod tests {
             "Result: NOT COMPLETE: 1 failed, 0 cancelled, 0 unreadable. Do not format the \
              card. Fix the cause and run the same sync again: files already on the drive \
              are skipped."
+        );
+    }
+
+    /// The same answer comes from a whole path over the system's limit and
+    /// from a drive with a short limit on one name (eCryptfs), and the probe
+    /// cannot tell them apart. So the sentence holds for both, and sends only
+    /// a long path to move the library (DEC-056).
+    #[test]
+    fn a_path_too_long_refusal_is_true_for_either_cause() {
+        let text = refusal(&SyncError::Folder(FolderError::PathTooLong {
+            library: PathBuf::from("/Volumes/SSD/Photos"),
+            name: "Tirana".to_string(),
+        }));
+        assert_eq!(
+            text,
+            "A folder named \"Tirana\" in the library /Volumes/SSD/Photos is too long for \
+             this drive or this computer: its own name or its whole path. Use a shorter \
+             name, or, if the path is long, a library folder nearer the top of the drive. \
+             Nothing was copied."
         );
     }
 

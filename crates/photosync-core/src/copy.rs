@@ -56,8 +56,9 @@ pub enum FolderError {
     /// Not one folder name on every drive, or too long for this one
     /// (`check_name`, `check_name_fits`).
     InvalidName(String),
-    /// The name fits, but the library's path with that folder in it is over
-    /// the system's limit: another name of this length would be refused too.
+    /// Plain ASCII of this length is refused there too: the library's path
+    /// with that folder in it is over the system's limit, or the drive's limit
+    /// on one name is short (eCryptfs, 143 bytes). The probe cannot tell which.
     PathTooLong { library: PathBuf, name: String },
     /// The library could not be listed, or a file's mtime has no local date.
     Io(ScanError),
@@ -68,7 +69,11 @@ impl fmt::Display for FolderError {
         match self {
             FolderError::InvalidName(name) => write!(f, "invalid sync name {name:?}"),
             FolderError::PathTooLong { library, name } => {
-                write!(f, "path too long for sync name {name:?} in {}", library.display())
+                write!(
+                    f,
+                    "folder name or path too long for sync name {name:?} in {}",
+                    library.display()
+                )
             }
             FolderError::Io(e) => e.fmt(f),
         }
@@ -157,9 +162,10 @@ pub(crate) fn check_name_fits(library: &Path, name: &str) -> Result<(), FolderEr
     if !too_long(&folder) {
         return Ok(());
     }
-    // The same error comes from a whole path over the system's limit. Plain
-    // ASCII of the same length fits every drive, so if that is too long as
-    // well, the path is at fault and not this name (DEC-056).
+    // The same error comes from a whole path over the system's limit, or from
+    // a drive whose limit on one name is short (eCryptfs). If plain ASCII of
+    // the same length is too long as well, it is one of those, not how this
+    // name is counted. Which one, the answer does not say (DEC-056).
     if too_long(&"0".repeat(folder.len())) {
         return Err(FolderError::PathTooLong {
             library: library.to_path_buf(),

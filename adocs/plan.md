@@ -17,8 +17,8 @@ not change the order.
 
 ## Open
 
-1. S035  CLI bytes per source (F10)
-2. S037  TUI report cuts long lines (found in S028)
+1. S037  TUI report cuts long lines (found in S028)
+2. S045  watchdog test fails now and then: a race (found in S035)
 3. S036  plan the GUI: confirm iced, layout, steps
 4. S025  first run on Linux: build, tests, hand checks (waits for the user)
 5. S017  hardware hand checks on Mac (waits for the user)
@@ -30,8 +30,8 @@ it too; the audit loop stops when a run reports no high and no medium.
 
 Last five; the full record is `plan_done/`.
 
+- S035  CLI bytes per source (F10)
 - S044  cancel is heard during the lock wait (S043 fast check)
 - S033  collision result names the way out (F08)
 - S043  no-replace fallback holds across processes (found in S034)
 - S034  cleanup leaves live temps (F09)
-- S031  too long a name is refused (F06)

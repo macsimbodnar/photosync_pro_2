@@ -81,7 +81,7 @@ folder that has it, whatever its date; the filesystem decides what is the
 same name, so "Tiranë" finds its folder on an exFAT or HFS+ drive, where
 macOS lists it decomposed, and "tirana" finds "Tirana" on a
 case-insensitive drive. The progress line
-counts each card, and a cancel stops them all. Two cards' different photos
+gives each card's files and bytes, and a cancel stops them all. Two cards' different photos
 of the same name give one copy and one name collision, never an overwrite. A photo on two cards
 (backup slots) is copied once; the other card's copy is a "duplicate in
 session". If one card cannot be read, the photo is copied from the other,
@@ -98,7 +98,7 @@ more or fewer bytes than the scan listed fails too, and nothing is placed. A `--
 cannot be a folder name is refused before any card is read (exit 2): over 242 bytes, too long
 for the drive, ending in a space or a dot, or with any of `/ \ : * ? " < > |` or a control
 character, on every drive, as a drive moves between computers. So is one that takes the path
-to the folder over the system's limit, in a very deep library. A report names the
+to the folder over the system's limit, in a very deep library, or one over a shorter limit a drive has on one name. A report names the
 folder only if it is there. Ctrl-C cancels
 between chunks and still prints the report; a second Ctrl-C quits at once.
 photosync refuses to run as root.
@@ -143,7 +143,7 @@ report as its sync ends, so with `--one-by-one` this holds within each report,
 not across them. A report with problem lines above its duplicates says how many
 right above its result ("2 problem lines above the duplicates: read them."), so
 `| tail` shows it, and after several syncs the summary says how many its reports
-hold. Files already on the drive are counted, not listed. On a terminal the progress line is cut to its width. A closed
+hold. Files already on the drive are counted, not listed. On a terminal the progress line is cut to its width, and each card's bytes go first. A closed
 stdout (e.g. `| head`) does not stop the sync: photosync says on stderr that
 the report could not be written and keeps the exit code.
 

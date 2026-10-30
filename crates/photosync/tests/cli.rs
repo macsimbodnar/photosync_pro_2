@@ -528,7 +528,7 @@ fn ctrl_c_at_the_prompt_ends_the_session_with_its_summary() {
 }
 
 /// A very deep library takes no folder with a short name in it: the sentence
-/// blames the path, as no shorter name rule was broken (DEC-056).
+/// names the path as a cause, as no name rule was broken (DEC-056).
 #[test]
 fn a_library_too_deep_for_the_folder_is_refused_for_its_path() {
     let dir = TempDir::new();

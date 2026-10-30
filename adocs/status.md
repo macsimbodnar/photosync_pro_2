@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-30, by Claude (S044 done)
+Updated: 2026-10-30, by Claude (S035 done)
 
-- Last done: S044  cancel is heard during the lock wait (S043 fast check)
+- Last done: S035  CLI bytes per source (F10)
 - In progress: none
-- Next: S035  CLI bytes per source (F10); then the rest of plan.md's Open list
+- Next: S037  TUI report cuts long lines (found in S028); then the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
@@ -16,7 +16,8 @@ Updated: 2026-10-30, by Claude (S044 done)
     DEC-005 (folder date = earliest new file), DEC-026 to DEC-028,
     DEC-030 to DEC-032, DEC-034, DEC-035 (1)-(3), DEC-036 to DEC-040,
     DEC-042, DEC-043, DEC-044, DEC-045, DEC-046, DEC-047, DEC-048, DEC-049,
-    DEC-050, DEC-051, DEC-052, DEC-053, DEC-054, DEC-055, DEC-056, DEC-057.
+    DEC-050, DEC-051, DEC-052, DEC-053, DEC-054, DEC-055, DEC-056, DEC-057,
+    DEC-058.
     Each says "not yet confirmed by the user" in decisions.md.
   - The GUI no longer waits for S025 (user, 2026-10-30: do all that needs no
     input or hardware). The audit re-runs after the GUI.
