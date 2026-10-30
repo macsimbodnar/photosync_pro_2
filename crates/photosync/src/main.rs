@@ -325,6 +325,21 @@ mod tests {
         assert_eq!(out, b"Report\n");
     }
 
+    /// F04: the tests in `src` that need real mounts, in the plain gate.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ignored_image_tests_pass_on_real_mounts() {
+        use crate::common::images::{CARD, LIBRARY, TWIN_A, TWIN_B, ignored_tests_pass_on_images};
+        ignored_tests_pass_on_images(
+            &[CARD, LIBRARY, TWIN_A, TWIN_B],
+            &[
+                "tui::tests::tui_sync_on_exfat_end_to_end",
+                "text::tests::a_session_names_the_card_a_file_was_copied_from_its_twin_for",
+                "app::tests::the_result_box_names_the_card_a_file_was_copied_from_its_twin_for",
+            ],
+        );
+    }
+
     /// S030 (M13): root gets the refusal whatever the command, and the same
     /// command as another user runs. No command last: past a removed guard
     /// it would open the TUI, so it is reached only if the others held.

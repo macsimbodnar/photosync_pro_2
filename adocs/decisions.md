@@ -65,6 +65,7 @@ Why: one line.
 - DEC-046 2026-10-30 — duplicates wait until after every failure and the library (S039)
 - DEC-047 2026-10-30 — how tests see a real flush; root guard outside main (S030)
 - DEC-048 2026-10-30 — the end of a report counts the problem lines above the duplicates (S040)
+- DEC-049 2026-10-30 — the gate mounts its own images and runs the real syncs (S029)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1154,3 +1155,49 @@ refused and crashed ends. Rejected: a core API to build a `Report` or a session
 from parts, as a report must never be built from unchecked inputs.
 Why: the prime rule; a problem must not go unread because a list of safe photos
 pushed it off the screen.
+
+## DEC-049  2026-10-30  the gate mounts its own images and runs the real syncs (S029)
+Tags: tests, gate, rules
+Decision: agent's pick in S029, not yet confirmed by the user.
+(1) A test that needs real mounts is `#[ignore]`d. One plain test in each test
+binary with such tests, `ignored_image_tests_pass_on_real_mounts` (macOS only),
+mounts images in a temp dir and runs its own binary again with `--ignored`, with
+the variables and TMPDIR set. It passes only if every test `--list --ignored`
+names passed, and each wrapper also names the tests that must be in the list.
+Rejected: nested `cargo test` (it would have to repeat the profile and flags,
+and shares the build folder); images mounted lazily in the same process (a
+static has no `Drop`, and setting TMPDIR for tests already running is unsafe);
+any seam in the binary (DEC-027).
+(2) Run without its variables, an image test now fails instead of returning.
+So 16 tests can no longer pass with nothing checked, and `--include-ignored`
+outside the images fails loudly.
+(3) On macOS there is no opt-out: if `hdiutil` fails, the gate fails. Safest for
+the prime rule; the cost is that `cargo test` cannot pass where disk images
+cannot mount (a sandbox, for one).
+(4) Images are never left attached: `Drop` on a panic; a watchdog `sh` on a kill
+or Ctrl-C of the test binary, as nothing runs in-process then; each command has
+a time limit, and past it its process group is killed. The limits: hdiutil
+create and attach 120 s, detach 30 s then -force 30 s, a binary's image tests
+300 s. They end a hang; a slow machine must not fail on them. A folder is removed
+only when `mount` and `hdiutil info` show nothing left, the script's rule.
+(5) Each binary mounts its own images, only those it needs: 15 attaches a run,
+and 3 more by the helper's own tests in `tests/test_images.rs`, about 40 s added to
+the gate. Rejected: one shared set, since `exfat_session` must not run beside
+`exfat_e2e`, which counts the card's files, and sharing needs a fixture that
+outlives a test binary.
+(6) `scripts/test_exfat.sh` stays: it runs the same tests with `--include-ignored`
+and the whole suite on exFAT, and HFS+. It leaves out the tests that mount their
+own. It gets time limits by bash (macOS has no `timeout`): hdiutil 120 s, each
+cargo run 1200 s with its build. Its HFS+ run now prints when it ends, not live,
+so the cleanup can reach it.
+(7) Linux: the visible skip is `#[ignore]`, and the equivalent is ext4 loop
+mounts and `--ignored`, in the README and S025. Ext4 rather than exFAT: it needs
+no extra tools and has permission bits. Not run yet: there is no Linux here.
+(8) TESTS rule, proposed wording, for the user to take or change (the rule itself
+is not edited): "TESTS: `cargo test --workspace` and `scripts/test_exfat.sh` are
+green before a step is marked done (on Linux, where the script cannot run, also
+the README's `--ignored` run on loop mounts); a defect gets a failing test before
+its fix." Why both: the plain run has permission bits and the script has exFAT's
+and HFS+'s behaviour, and each skips what the other needs.
+Why: the prime rule; a step could be stamped done with the copy path, the
+closed-stdout rule or the worst-outcome exit code broken (F04, M29).

@@ -11,6 +11,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use photosync_core::{SourceScan, scan_source};
 
+#[cfg(unix)]
+pub mod images;
+
 /// A device id no real volume has: not a sign-extended 32-bit macOS
 /// `dev_t`, and a Linux major number far beyond any real one.
 pub const OTHER_DEVICE: u64 = 0xdead_beef_dead_beef;

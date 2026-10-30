@@ -815,16 +815,14 @@ mod tests {
     /// result stays last. The library is off the images, as chmod does
     /// nothing on exFAT.
     #[test]
+    #[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
     fn duplicates_never_bury_a_failure_or_a_library_problem_in_the_tui() {
         use crate::common::{OnDrive, disk_of_the_binary, lock_in_library, test_drive};
         struct Quiet;
         impl flow::Watch for Quiet {}
         const TAKEN: u64 = 1_700_000_000;
 
-        let test = "duplicates_never_bury_a_failure_or_a_library_problem_in_the_tui";
-        if test_drive(test).is_none() {
-            return;
-        }
+        test_drive();
         let dir = TempDir::new();
         let library = OnDrive::new(&disk_of_the_binary(), "s039-app");
         let card = |name: &str| dir.0.join(name);
@@ -1472,19 +1470,12 @@ mod tests {
     /// read, and the report keeps that sync's own result. Real syncs, so on
     /// the drive image.
     #[test]
+    #[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
     fn the_result_box_names_the_card_a_file_was_copied_from_its_twin_for() {
         use crate::common::{LoseOnCopy, OnDrive, test_drive, twin_cards};
 
-        let Some(drive) =
-            test_drive("the_result_box_names_the_card_a_file_was_copied_from_its_twin_for")
-        else {
-            return;
-        };
-        let Some((card_a, card_b)) =
-            twin_cards("the_result_box_names_the_card_a_file_was_copied_from_its_twin_for")
-        else {
-            return;
-        };
+        let drive = test_drive();
+        let (card_a, card_b) = twin_cards();
         // Given to the app as its drive, so the default library is in it.
         let ours = OnDrive::new(&drive, "S023-app");
         std::fs::create_dir(ours.0.join("Photos")).unwrap();

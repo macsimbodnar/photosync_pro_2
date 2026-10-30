@@ -1,9 +1,10 @@
-//! The binary end to end on real mounts. `scripts/test_exfat.sh` mounts
-//! three exFAT images side by side: the temp dir (TMPDIR), a stand-in card
-//! with `DCIM` at its top (`PHOTOSYNC_TEST_CARD`) and a library drive
-//! (`PHOTOSYNC_TEST_LIBRARY`). Three devices, so strict INV-10 lets a sync
-//! through, as with a real card and drive. Without the variables, nothing
-//! is checked and each test says so.
+//! The binary end to end on real mounts: exFAT images side by side for the
+//! temp dir (TMPDIR), a stand-in card with `DCIM` at its top
+//! (`PHOTOSYNC_TEST_CARD`) and a library drive (`PHOTOSYNC_TEST_LIBRARY`).
+//! Three devices, so strict INV-10 lets a sync through, as with a real card
+//! and drive. On macOS `ignored_image_tests_pass_on_real_mounts` below mounts
+//! them and runs these tests, and so does `scripts/test_exfat.sh`. Without
+//! the variables each test fails: none passes with nothing checked.
 
 #![cfg(unix)]
 
@@ -17,32 +18,39 @@ use common::{TempDir, at, date_command, manifest, photosync, write_file};
 
 const TAKEN: u64 = 1_700_000_000;
 
-/// The card and library mounts, resolved, or `None` outside the script.
-fn mounts(test: &str) -> Option<(PathBuf, PathBuf)> {
-    let (Some(card), Some(library)) = (
-        std::env::var_os("PHOTOSYNC_TEST_CARD"),
-        std::env::var_os("PHOTOSYNC_TEST_LIBRARY"),
-    ) else {
-        eprintln!(
-            "SKIPPED {test}: PHOTOSYNC_TEST_CARD or PHOTOSYNC_TEST_LIBRARY is not set \
-                   (scripts/test_exfat.sh sets them)"
-        );
-        return None;
-    };
-    let card = fs::canonicalize(card).unwrap();
-    let library = fs::canonicalize(library).unwrap();
+/// F04: the gate itself proves a successful sync through the binary, and
+/// the closed-stdout rule.
+#[cfg(target_os = "macos")]
+#[test]
+fn ignored_image_tests_pass_on_real_mounts() {
+    use common::images::{CARD, LIBRARY, TWIN_A, TWIN_B, ignored_tests_pass_on_images};
+    ignored_tests_pass_on_images(
+        &[CARD, LIBRARY, TWIN_A, TWIN_B],
+        &[
+            "sync_from_a_mounted_card_to_a_drive_end_to_end",
+            "closed_stdout_never_panics_and_keeps_the_exit_code",
+            "sources_and_drives_list_the_mounted_card_and_drives",
+            "two_cards_on_two_devices_copy_at_once",
+        ],
+    );
+}
+
+/// The card and library mounts, resolved.
+fn mounts() -> (PathBuf, PathBuf) {
+    let card = common::image_path(common::images::CARD);
+    let library = common::image_path(common::images::LIBRARY);
     assert!(
         card.join("DCIM").is_dir(),
         "{} has no DCIM folder",
         card.display()
     );
-    // The script mounts both in one folder, which stands in for /Volumes.
+    // Both are mounted in one folder, which stands in for /Volumes.
     assert_eq!(
         card.parent(),
         library.parent(),
         "card and library are not side by side"
     );
-    Some((card, library))
+    (card, library)
 }
 
 fn device(path: &Path) -> u64 {
@@ -64,11 +72,9 @@ fn sync(sources: &[&Path], library: &Path, name: &str) -> common::Run {
 }
 
 #[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
 fn sources_and_drives_list_the_mounted_card_and_drives() {
-    let Some((card, library)) = mounts("sources_and_drives_list_the_mounted_card_and_drives")
-    else {
-        return;
-    };
+    let (card, library) = mounts();
     let root = card.parent().unwrap();
 
     let sources = photosync([
@@ -97,10 +103,9 @@ fn sources_and_drives_list_the_mounted_card_and_drives() {
 /// source in the same session folder, a failure, and a refused card
 /// library: exit codes, files on the drive, and the report text.
 #[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
 fn sync_from_a_mounted_card_to_a_drive_end_to_end() {
-    let Some((card, drive)) = mounts("sync_from_a_mounted_card_to_a_drive_end_to_end") else {
-        return;
-    };
+    let (card, drive) = mounts();
     write_file(&card, "DCIM/100_FUJI/DSCF0001.RAF", b"raw one", at(TAKEN));
     write_file(&card, "DCIM/100_FUJI/DSCF0001.JPG", b"jpeg one", at(TAKEN));
     write_file(
@@ -298,10 +303,9 @@ fn closed_run(args: &[&std::ffi::OsStr], close_stderr: bool) -> (i32, String) {
 /// its exit code still says whether the card is safe, and a list that
 /// could not be written is not a success.
 #[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
 fn closed_stdout_never_panics_and_keeps_the_exit_code() {
-    let Some((card, drive)) = mounts("closed_stdout_never_panics_and_keeps_the_exit_code") else {
-        return;
-    };
+    let (card, drive) = mounts();
     // A plain folder on the temp image, not the card the other test counts.
     let dir = TempDir::new();
     let source = dir.0.join("card");
@@ -358,13 +362,10 @@ fn closed_stdout_never_panics_and_keeps_the_exit_code() {
 /// taken name, on the other card, is a name collision: the drive's file
 /// stays (INV-2).
 #[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
 fn two_cards_on_two_devices_copy_at_once() {
-    let test = "two_cards_on_two_devices_copy_at_once";
-    let (Some(drive), Some((twin_a, twin_b))) =
-        (common::test_drive(test), common::twin_cards(test))
-    else {
-        return;
-    };
+    let drive = common::test_drive();
+    let (twin_a, twin_b) = common::twin_cards();
     let (a, b) = (
         common::OnDrive::new(&twin_a, "s019-a"),
         common::OnDrive::new(&twin_b, "s019-b"),
@@ -442,13 +443,10 @@ fn two_cards_on_two_devices_copy_at_once() {
 /// A re-run of the first card alone: what is on the drive is "already on
 /// drive", and only the second of the JPEGs stays a duplicate, of the first.
 #[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
 fn the_report_shows_duplicates_and_names_the_card() {
-    let test = "the_report_shows_duplicates_and_names_the_card";
-    let (Some(drive), Some((twin_a, twin_b))) =
-        (common::test_drive(test), common::twin_cards(test))
-    else {
-        return;
-    };
+    let drive = common::test_drive();
+    let (twin_a, twin_b) = common::twin_cards();
     let (a, b) = (
         common::OnDrive::new(&twin_a, "s028-a"),
         common::OnDrive::new(&twin_b, "s028-b"),
@@ -498,11 +496,9 @@ fn the_report_shows_duplicates_and_names_the_card() {
 /// S040: on a plain terminal the problems can sit hundreds of lines up. The
 /// last lines, what `| tail` shows, say how many there are.
 #[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
 fn the_last_lines_point_back_at_problems_above_the_duplicates() {
-    let test = "the_last_lines_point_back_at_problems_above_the_duplicates";
-    let Some(_drive) = common::test_drive(test) else {
-        return;
-    };
+    let _drive = common::test_drive();
     let dir = TempDir::new();
     let (a, b) = (dir.0.join("a"), dir.0.join("b"));
     let library = common::OnDrive::new(&common::disk_of_the_binary(), "s040-cli");
@@ -530,11 +526,9 @@ fn the_last_lines_point_back_at_problems_above_the_duplicates() {
 /// S040: a library problem alone leaves "all on the drive" and exit 0, so
 /// the line above the result is the only sign of it at the end.
 #[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
 fn a_library_problem_alone_is_in_the_last_lines() {
-    let test = "a_library_problem_alone_is_in_the_last_lines";
-    let Some(_drive) = common::test_drive(test) else {
-        return;
-    };
+    let _drive = common::test_drive();
     let dir = TempDir::new();
     let card = dir.0.join("card");
     let library = common::OnDrive::new(&common::disk_of_the_binary(), "s040-lib");
@@ -555,11 +549,9 @@ fn a_library_problem_alone_is_in_the_last_lines() {
 
 /// S040: with no problem the report does not cry wolf.
 #[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
 fn a_report_of_duplicates_with_no_problem_points_at_nothing() {
-    let test = "a_report_of_duplicates_with_no_problem_points_at_nothing";
-    let Some(_drive) = common::test_drive(test) else {
-        return;
-    };
+    let _drive = common::test_drive();
     let dir = TempDir::new();
     let card = dir.0.join("card");
     let library = common::OnDrive::new(&common::disk_of_the_binary(), "s040-clean");
@@ -592,11 +584,9 @@ fn write_duplicates(card: &Path) {
 /// before the first duplicate line, however long the list. The library is
 /// off the images, as chmod does nothing on exFAT.
 #[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
 fn duplicates_never_bury_a_failure_or_a_library_problem_in_the_cli() {
-    let test = "duplicates_never_bury_a_failure_or_a_library_problem_in_the_cli";
-    let Some(_drive) = common::test_drive(test) else {
-        return;
-    };
+    let _drive = common::test_drive();
     let dir = TempDir::new();
     let (a, b) = (dir.0.join("a"), dir.0.join("b"));
     let library = common::OnDrive::new(&common::disk_of_the_binary(), "s039-cli");

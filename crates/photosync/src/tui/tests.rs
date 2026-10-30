@@ -1,7 +1,7 @@
 //! The TUI's loop on a `TestBackend` with scripted keys: the real worker
-//! thread and the real core, no terminal. The full sync needs the exFAT
-//! images of `scripts/test_exfat.sh` (strict INV-10 needs three devices);
-//! without them it says it was skipped.
+//! thread and the real core, no terminal. The full sync needs exFAT images
+//! (strict INV-10 needs three devices): `#[ignore]`d, and on macOS
+//! `tests::ignored_image_tests_pass_on_real_mounts` in `main.rs` runs it.
 
 use std::fs;
 use std::panic;
@@ -179,22 +179,12 @@ fn refused_sync_shows_the_cli_sentence_and_exits_2() {
     assert_eq!(manifest(&dir.0), before, "something was written");
 }
 
-/// The exFAT card and drive images, or `None` outside the script.
-fn mounts() -> Option<(PathBuf, PathBuf)> {
-    let (Some(card), Some(drive)) = (
-        std::env::var_os("PHOTOSYNC_TEST_CARD"),
-        std::env::var_os("PHOTOSYNC_TEST_LIBRARY"),
-    ) else {
-        eprintln!(
-            "SKIPPED tui_sync_on_exfat_end_to_end: PHOTOSYNC_TEST_CARD or \
-             PHOTOSYNC_TEST_LIBRARY is not set (scripts/test_exfat.sh sets them)"
-        );
-        return None;
-    };
-    Some((
-        fs::canonicalize(card).unwrap(),
-        fs::canonicalize(drive).unwrap(),
-    ))
+/// The exFAT card and drive images.
+fn mounts() -> (PathBuf, PathBuf) {
+    (
+        crate::common::image_path(crate::common::images::CARD),
+        crate::common::image_path(crate::common::images::LIBRARY),
+    )
 }
 
 /// Removes this test's photos from the shared card image, failing or not:
@@ -211,10 +201,9 @@ impl Drop for OffTheCard {
 /// cards found by discovery, the drive picked, the library typed, a name,
 /// the worker thread, the report screen and the exit code.
 #[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
 fn tui_sync_on_exfat_end_to_end() {
-    let Some((card, drive)) = mounts() else {
-        return;
-    };
+    let (card, drive) = mounts();
     let ours = card.join("DCIM/900_TUI");
     let _cleanup = OffTheCard(ours.clone());
     write_file(&card, "DCIM/900_TUI/DSCF9001.RAF", b"tui raw", at(TAKEN));

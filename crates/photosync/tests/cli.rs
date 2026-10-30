@@ -1,6 +1,6 @@
 //! The binary end to end on plain temp dirs. They are all on one device,
 //! which strict INV-10 refuses (DEC-025), so no sync succeeds here; the
-//! successful syncs are in `exfat_e2e.rs`, run by `scripts/test_exfat.sh`.
+//! successful syncs are in `exfat_e2e.rs`, on disk images.
 
 mod common;
 

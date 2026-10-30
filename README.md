@@ -186,8 +186,32 @@ Linux is built in but not yet verified on a real machine. What is known:
 - The no-replace rename is `renameat2(RENAME_NOREPLACE)`. On a file system
   that lacks it (EINVAL, e.g. some exFAT drivers), photosync falls back to a
   locked check + rename (DEC-018); any other error fails the copy.
-- `scripts/test_exfat.sh` is macOS-only (hdiutil). On Linux, run
-  `cargo test --workspace`; the exFAT-only tests say SKIPPED.
+- `scripts/test_exfat.sh` is macOS-only (hdiutil), and so are the images
+  plain `cargo test` mounts for itself. On Linux, `cargo test --workspace`
+  shows the tests that need real mounts as `ignored`: no successful sync is
+  proved until you run them as below.
+
+Image tests on Linux (needs root to mount; not yet run, S025 checks it):
+
+```sh
+work=$(mktemp -d)
+for n in mnt card lib twin_a twin_b; do
+    truncate -s 64M "$work/$n.img"
+    mkfs.ext4 -q "$work/$n.img"
+    mkdir "$work/$n"
+    sudo mount -o loop "$work/$n.img" "$work/$n"
+    sudo chown "$USER" "$work/$n"
+done
+mkdir "$work/card/DCIM"
+TMPDIR="$work/mnt" PHOTOSYNC_TEST_CARD="$work/card" \
+    PHOTOSYNC_TEST_LIBRARY="$work/lib" PHOTOSYNC_TEST_TWIN_A="$work/twin_a" \
+    PHOTOSYNC_TEST_TWIN_B="$work/twin_b" \
+    cargo test --workspace -- --ignored
+for n in mnt card lib twin_a twin_b; do sudo umount "$work/$n"; done
+rm -rf "$work"
+```
+
+Without the variables these tests fail, so they cannot pass with nothing checked.
 
 Hand check (see `adocs/plan_todo/S025_linux_checks.md`):
 
@@ -208,6 +232,24 @@ sudo ./target/debug/photosync drives  # must refuse, exit 2
 For the camera over cable: X-T5 off, MENU > Setup > CONNECTION SETTING >
 PC CONNECTION MODE > USB CARD READER, connect a USB-C data cable, switch on,
 then repeat the sync. Write down each command's output and exit code.
+
+### Real syncs in plain `cargo test` (macOS)
+
+Strict INV-10 lets a sync through only across devices, and the binary has no
+test seam, so a real sync needs real mounts. On macOS `cargo test --workspace`
+mounts them itself, with nothing to set up: it adds about 40 seconds. Those tests are
+`#[ignore]`d, and the count shows them. One test in each test binary,
+`ignored_image_tests_pass_on_real_mounts`, mounts small exFAT images with
+`hdiutil` in a temp dir, runs that binary's ignored tests on them, and fails
+unless every one passed. So a line such as `9 ignored` next to that test's `ok`
+means those nine ran. If `hdiutil` fails, the gate fails; it never passes with
+nothing checked.
+
+The images are detached on a failure, a panic, a kill or a Ctrl-C. Every
+`hdiutil` call and each test run has a time limit (macOS's disk-image service
+has hung on a test image), so a hang fails with a message saying so. If a detach
+fails, the failure names what is still attached and how to detach it, and the
+temp dir stays.
 
 ### exFAT (macOS)
 
@@ -237,9 +279,10 @@ and `app::tests::the_result_box_names_the_card_a_file_was_copied_from_its_twin_f
 run a session whose first sync copies a photo from its twin (the planned
 file is removed once copying starts), into a folder on that drive. A twin
 must be on another device, so those two cards are on two more small images
-(`PHOTOSYNC_TEST_TWIN_A`, `PHOTOSYNC_TEST_TWIN_B`). Plain `cargo test` skips these
-tests and says so; it covers the binary's help, usage errors and refusals
-on temp dirs. The tests reach `photosync sources` and `drives` through a
+(`PHOTOSYNC_TEST_TWIN_A`, `PHOTOSYNC_TEST_TWIN_B`). These are the tests that are
+`#[ignore]`d, and the script runs them directly, on its images, with the rest
+of the suite on exFAT. The script leaves out the tests that mount images of
+their own. Each `hdiutil` call and test run in it has a time limit too. The tests reach `photosync sources` and `drives` through a
 hidden `--search-root` option.
 
 photosync-core's `copy::threads_tests` (S019) copy several cards at once

@@ -327,18 +327,28 @@ fn inv10_library_on_another_device_than_the_source_volume_is_planned() {
     assert_eq!(plan.to_copy.len(), 1);
 }
 
-/// End to end, with the real volume lookup: a library on a mounted volume
-/// with `DCIM` at its top is refused. `scripts/test_exfat.sh` mounts such an
-/// image and names it in `PHOTOSYNC_TEST_CARD`; the source is a temp folder,
-/// on the other image there. Without the variable, nothing is checked and
-/// the test says so.
+/// F04: the one test here that needs a real mount, in the plain gate.
+#[cfg(target_os = "macos")]
 #[test]
+fn ignored_image_tests_pass_on_real_mounts() {
+    use common::images::{CARD, ignored_tests_pass_on_images};
+    ignored_tests_pass_on_images(
+        &[CARD],
+        &["inv10_library_on_a_mounted_card_is_refused_end_to_end"],
+    );
+}
+
+/// End to end, with the real volume lookup: a library on a mounted volume
+/// with `DCIM` at its top is refused. Its image is named in
+/// `PHOTOSYNC_TEST_CARD`; the source is a temp folder, on another image.
+/// Without the variable it fails: it never passes with nothing checked.
+#[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
 fn inv10_library_on_a_mounted_card_is_refused_end_to_end() {
-    let Some(card) = std::env::var_os("PHOTOSYNC_TEST_CARD") else {
-        eprintln!("SKIPPED inv10_library_on_a_mounted_card_is_refused_end_to_end: \
-                   PHOTOSYNC_TEST_CARD is not set (scripts/test_exfat.sh sets it)");
-        return;
-    };
+    let card = std::env::var_os("PHOTOSYNC_TEST_CARD").expect(
+        "PHOTOSYNC_TEST_CARD is not set: this test needs a disk image. On macOS plain \
+         `cargo test` runs it on its own images; on Linux see the README.",
+    );
     let card = fs::canonicalize(card).unwrap();
     assert!(card.join("DCIM").is_dir(), "{} has no DCIM folder", card.display());
     let dir = TempDir::new();

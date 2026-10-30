@@ -1985,6 +1985,7 @@ mod tests {
     /// the session's result name the card that could not be read, whether
     /// the session is complete or not. Real syncs, so on the drive image.
     #[test]
+    #[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
     fn a_session_names_the_card_a_file_was_copied_from_its_twin_for() {
         use crate::common::{LoseOnCopy, OnDrive, TempDir, at, test_drive, twin_cards, write_file};
         use photosync_core::{Cancel, Session};
@@ -1992,16 +1993,8 @@ mod tests {
         struct Quiet;
         impl Watch for Quiet {}
 
-        let Some(drive) =
-            test_drive("a_session_names_the_card_a_file_was_copied_from_its_twin_for")
-        else {
-            return;
-        };
-        let Some((card_a, card_b)) =
-            twin_cards("a_session_names_the_card_a_file_was_copied_from_its_twin_for")
-        else {
-            return;
-        };
+        let drive = test_drive();
+        let (card_a, card_b) = twin_cards();
         let library = OnDrive::new(&drive, "S023-cli");
         let dir = TempDir::new();
         // The twins on two images: on one device they would be no twins

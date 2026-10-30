@@ -10,6 +10,10 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+#[path = "../../../photosync-core/tests/common/images.rs"]
+pub mod images;
+
 /// A fresh directory under the system temp dir, removed on drop.
 pub struct TempDir(pub PathBuf);
 
@@ -80,36 +84,30 @@ pub fn manifest(root: &Path) -> BTreeMap<PathBuf, (SystemTime, Option<Vec<u8>>)>
     out
 }
 
-/// The drive image of `scripts/test_exfat.sh` (`PHOTOSYNC_TEST_LIBRARY`):
-/// another device than the temp dir, so a sync of temp folders into it
-/// passes INV-10. `None`, said on stderr, without it.
-pub fn test_drive(test: &str) -> Option<PathBuf> {
-    let Some(drive) = std::env::var_os("PHOTOSYNC_TEST_LIBRARY") else {
-        eprintln!(
-            "SKIPPED {test}: PHOTOSYNC_TEST_LIBRARY is not set (scripts/test_exfat.sh sets it)"
+/// A disk image's mount point, resolved. Only the tests that are
+/// `#[ignore]`d for their images call this, so a test that needs mounts can
+/// never pass with nothing checked: run outside the images, it fails.
+pub fn image_path(var: &str) -> PathBuf {
+    let Some(path) = std::env::var_os(var) else {
+        panic!(
+            "{var} is not set: this test needs disk images. On macOS plain `cargo test` runs it \
+             on its own images; on Linux see the README."
         );
-        return None;
     };
-    Some(fs::canonicalize(drive).unwrap())
+    fs::canonicalize(path).unwrap()
 }
 
-/// The two card images of `scripts/test_exfat.sh` for twins
-/// (`PHOTOSYNC_TEST_TWIN_A`, `PHOTOSYNC_TEST_TWIN_B`): a device each, as a
-/// twin must be on another device than the file it stands in for
-/// (DEC-038), and the temp dir is one device. `None`, said on stderr,
-/// without them.
-pub fn twin_cards(test: &str) -> Option<(PathBuf, PathBuf)> {
-    let (Some(a), Some(b)) = (
-        std::env::var_os("PHOTOSYNC_TEST_TWIN_A"),
-        std::env::var_os("PHOTOSYNC_TEST_TWIN_B"),
-    ) else {
-        eprintln!(
-            "SKIPPED {test}: PHOTOSYNC_TEST_TWIN_A or PHOTOSYNC_TEST_TWIN_B is not set \
-             (scripts/test_exfat.sh sets them)"
-        );
-        return None;
-    };
-    Some((fs::canonicalize(a).unwrap(), fs::canonicalize(b).unwrap()))
+/// The drive image: another device than the temp dir, so a sync of temp
+/// folders into it passes INV-10.
+pub fn test_drive() -> PathBuf {
+    image_path(images::LIBRARY)
+}
+
+/// The two card images for twins: a device each, as a twin must be on
+/// another device than the file it stands in for (DEC-038), and the temp
+/// dir is one device.
+pub fn twin_cards() -> (PathBuf, PathBuf) {
+    (image_path(images::TWIN_A), image_path(images::TWIN_B))
 }
 
 /// A fresh folder on a test image (a library on the drive, or a card on
@@ -132,8 +130,7 @@ impl Drop for OnDrive {
     }
 }
 
-/// A disk outside the images of `scripts/test_exfat.sh`, the one the test
-/// binary is on: chmod does nothing on exFAT, so a library with an unreadable
+/// A disk outside the images, the one the test binary is on: chmod does nothing on exFAT, so a library with an unreadable
 /// file must live here, and the cards on the images keep it on another device.
 pub fn disk_of_the_binary() -> PathBuf {
     let binary = std::env::current_exe().unwrap();

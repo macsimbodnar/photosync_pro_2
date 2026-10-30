@@ -1,11 +1,12 @@
-//! S020: `photosync sync --one-by-one` end to end on the exFAT images of
-//! `scripts/test_exfat.sh`: one card after another into one session, with
+//! S020: `photosync sync --one-by-one` end to end on exFAT images: one card
+//! after another into one session, with
 //! real copies, so the session's summary and exit code can be checked
 //! against a failed sync followed by complete and refused ones. Its own
 //! test binary, so it never runs beside `exfat_e2e.rs`, which counts the
 //! files on the shared card image. The cards are typed at the prompt on a
-//! pseudo-terminal, as it asks only on a terminal. Without the images it
-//! says so.
+//! pseudo-terminal, as it asks only on a terminal. On macOS
+//! `ignored_image_tests_pass_on_real_mounts` below mounts the images and runs
+//! these tests. Without the images each test fails.
 
 #![cfg(unix)]
 
@@ -27,22 +28,22 @@ impl Drop for OffTheCard {
     }
 }
 
-fn mounts() -> Option<(PathBuf, PathBuf)> {
-    let (Some(card), Some(drive)) = (
-        std::env::var_os("PHOTOSYNC_TEST_CARD"),
-        std::env::var_os("PHOTOSYNC_TEST_LIBRARY"),
-    ) else {
-        eprintln!(
-            "SKIPPED one_card_after_another_keeps_the_worst_outcome_on_exfat: \
-             PHOTOSYNC_TEST_CARD or PHOTOSYNC_TEST_LIBRARY is not set \
-             (scripts/test_exfat.sh sets them)"
-        );
-        return None;
-    };
-    Some((
-        fs::canonicalize(card).unwrap(),
-        fs::canonicalize(drive).unwrap(),
-    ))
+fn mounts() -> (PathBuf, PathBuf) {
+    (
+        common::image_path(common::images::CARD),
+        common::image_path(common::images::LIBRARY),
+    )
+}
+
+/// F04: the gate itself proves the worst-outcome exit code (M29).
+#[cfg(target_os = "macos")]
+#[test]
+fn ignored_image_tests_pass_on_real_mounts() {
+    use common::images::{CARD, LIBRARY, ignored_tests_pass_on_images};
+    ignored_tests_pass_on_images(
+        &[CARD, LIBRARY],
+        &["one_card_after_another_keeps_the_worst_outcome_on_exfat"],
+    );
 }
 
 /// One reader, five cards in one session: a complete one, one whose photo
@@ -52,10 +53,9 @@ fn mounts() -> Option<(PathBuf, PathBuf)> {
 /// failed one: the summary names each sync that was not complete, and the
 /// exit code is 1, not 0 or 2.
 #[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
 fn one_card_after_another_keeps_the_worst_outcome_on_exfat() {
-    let Some((card, drive)) = mounts() else {
-        return;
-    };
+    let (card, drive) = mounts();
     let ours = card.join("DCIM/901_SESSION");
     let _cleanup = OffTheCard(ours);
     write_file(
@@ -175,10 +175,9 @@ fn one_card_after_another_keeps_the_worst_outcome_on_exfat() {
 /// "complete", and the second's report pushes it off the screen: the summary
 /// still points back at it, right above the result.
 #[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
 fn the_session_summary_points_back_at_a_library_problem_of_an_earlier_sync() {
-    if mounts().is_none() {
-        return;
-    }
+    mounts();
     let dir = TempDir::new();
     let (first, backup) = (dir.0.join("first"), dir.0.join("backup"));
     let library = common::OnDrive::new(&common::disk_of_the_binary(), "s040-session");

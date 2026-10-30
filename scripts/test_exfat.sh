@@ -12,7 +12,8 @@
 # name tests again (`hfs_tests`): HFS+, like exFAT, lists a name decomposed.
 # All images are made in a
 # temp dir outside the repo and detached at the end, even on failure; if a
-# detach fails, the script says so and removes nothing.
+# detach fails, the script says so and removes nothing. Every hdiutil call and
+# test run has a time limit, as macOS's disk-image service can hang.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,6 +44,17 @@ skip=(
     plan::tests::inv10_library_whose_volume_top_cannot_be_checked_is_refused   # unit
 )
 
+# These mount images of their own, which plain `cargo test` needs and this
+# script does not: it runs what they run, on its own images.
+skip+=(
+    ignored_image_tests_pass_on_real_mounts                     # three test files
+    tests::ignored_image_tests_pass_on_real_mounts              # the binary's unit tests
+    a_panic_still_detaches_the_images                           # test_images
+    holds_the_images_until_killed                               # test_images
+    a_killed_test_binary_leaves_no_image_attached               # test_images
+    a_command_that_hangs_is_killed_and_named                    # test_images
+)
+
 # Run on HFS+ too, by exact name, and counted: a misspelt name would run
 # nothing and pass.
 hfs_tests=(
@@ -66,11 +78,49 @@ library="$work/lib"
 twin_a="$work/twin_a"
 twin_b="$work/twin_b"
 hfs="$work/hfs"
+
+# Well above what each takes: a limit is there to end a hang, never to fail a
+# slow run. The tests' limit includes building them.
+hdiutil_limit=120
+tests_limit=1200
+hung="macOS's disk-image service may be hung: see 'hdiutil info'; a restart clears it"
+
+# Kills a process and all it started.
+kill_tree() {
+    local pid
+    for pid in $(pgrep -P "$1"); do
+        kill_tree "$pid"
+    done
+    kill -9 "$1" 2>/dev/null || true
+}
+
+# Runs "$@" within $1 seconds; killed past that, with a message. Its status.
+# Bash, not `timeout`: macOS has none.
+running=
+with_limit() {
+    local limit="$1" status=0 watcher
+    shift
+    "$@" &
+    running=$!
+    # No stdout: a watcher left behind must not hold a caller's pipe open.
+    ( sleep "$limit"; kill_tree "$running" ) </dev/null >/dev/null 2>&1 &
+    watcher=$!
+    wait "$running" || status=$?
+    kill_tree "$watcher"
+    wait "$watcher" 2>/dev/null || true
+    running=
+    # 137: killed with -9, and only the watcher does that here.
+    if (( status == 137 )); then
+        echo "test_exfat.sh: '$*' did not end in ${limit}s and was killed. $hung" >&2
+    fi
+    return "$status"
+}
+
 # Whole-disk devices of attached images whose file is under $1. A failing
 # `hdiutil info` prints a placeholder, so the caller counts it as left.
 attached_under() {
     local info
-    if ! info=$(hdiutil info); then
+    if ! info=$(with_limit "$hdiutil_limit" hdiutil info); then
         echo "hdiutil-info-failed"
         return
     fi
@@ -82,12 +132,18 @@ attached_under() {
 
 cleanup() {
     local status=$?
+    # A Ctrl-C ends this script only: a command under `with_limit` runs in
+    # the background and ignores it. It must not keep the images busy.
+    if [[ -n $running ]]; then
+        kill_tree "$running"
+    fi
     # Every mount point is detached and checked, attached or not: one
     # attach may have mounted before it failed.
     local point mounts left=()
     for point in "$hfs" "$twin_b" "$twin_a" "$library" "$card" "$mnt"; do
         if mounts=$(mount) && [[ $mounts == *" on $point "* ]]; then
-            hdiutil detach "$point" -quiet || hdiutil detach "$point" -force -quiet || true
+            with_limit 30 hdiutil detach "$point" -quiet ||
+                with_limit 30 hdiutil detach "$point" -force -quiet || true
         fi
         # Checked again, not trusted to the detach: `rm -rf` through a live
         # mount would delete inside the image, and the image file under it.
@@ -102,7 +158,8 @@ cleanup() {
     # midway); no mount point shows it, so detach by image path as well.
     local dev
     for dev in $(attached_under "$work"); do
-        hdiutil detach "$dev" -quiet || hdiutil detach "$dev" -force -quiet || true
+        with_limit 30 hdiutil detach "$dev" -quiet ||
+            with_limit 30 hdiutil detach "$dev" -force -quiet || true
     done
     for dev in $(attached_under "$work"); do
         left+=("$dev")
@@ -120,8 +177,9 @@ trap cleanup EXIT
 attach_exfat() {
     local name="$1" size="$2" point="$3"
     mkdir "$point"
-    hdiutil create -size "$size" -fs ExFAT -volname "$name" "$work/$name.dmg" -ov -quiet
-    hdiutil attach "$work/$name.dmg" -nobrowse -mountpoint "$point" -quiet
+    with_limit "$hdiutil_limit" hdiutil create -size "$size" -fs ExFAT -volname "$name" \
+        "$work/$name.dmg" -ov -quiet
+    with_limit "$hdiutil_limit" hdiutil attach "$work/$name.dmg" -nobrowse -mountpoint "$point" -quiet
     if ! mount | grep -F " on $point " | grep -q "(exfat"; then
         echo "test_exfat.sh: $point is not mounted as exFAT" >&2
         exit 1
@@ -132,8 +190,9 @@ attach_exfat() {
 attach_hfs() {
     local name="$1" size="$2" point="$3"
     mkdir "$point"
-    hdiutil create -size "$size" -fs HFS+ -volname "$name" "$work/$name.dmg" -ov -quiet
-    hdiutil attach "$work/$name.dmg" -nobrowse -mountpoint "$point" -quiet
+    with_limit "$hdiutil_limit" hdiutil create -size "$size" -fs HFS+ -volname "$name" \
+        "$work/$name.dmg" -ov -quiet
+    with_limit "$hdiutil_limit" hdiutil attach "$work/$name.dmg" -nobrowse -mountpoint "$point" -quiet
     if ! mount | grep -F " on $point " | grep -q "(hfs"; then
         echo "test_exfat.sh: $point is not mounted as HFS+" >&2
         exit 1
@@ -158,14 +217,22 @@ args=()
 for name in ${skip[@]+"${skip[@]}"}; do
     args+=(--skip "$name")
 done
+# The ignored tests are the ones that need these images.
 TMPDIR="$mnt" PHOTOSYNC_TEST_CARD="$card" PHOTOSYNC_TEST_LIBRARY="$library" \
     PHOTOSYNC_TEST_TWIN_A="$twin_a" PHOTOSYNC_TEST_TWIN_B="$twin_b" \
-    cargo test --manifest-path "$repo/Cargo.toml" -p photosync-core -p photosync \
-    --no-fail-fast -- --exact ${args[@]+"${args[@]}"} || failed=$?
+    with_limit "$tests_limit" cargo test --manifest-path "$repo/Cargo.toml" \
+    -p photosync-core -p photosync \
+    --no-fail-fast -- --exact --include-ignored ${args[@]+"${args[@]}"} || failed=$?
 
 # Run even if the above failed, so a failure on one format hides no other.
-if ! TMPDIR="$hfs" cargo test --manifest-path "$repo/Cargo.toml" -p photosync-core \
-    --test copy_engine --no-fail-fast -- --exact "${hfs_tests[@]}" | tee "$work/hfs.log"; then
+# To a file, not `| tee`: a pipeline would run `with_limit` in a subshell, out
+# of the cleanup's reach.
+hfs_ok=1
+TMPDIR="$hfs" with_limit "$tests_limit" cargo test --manifest-path "$repo/Cargo.toml" \
+    -p photosync-core --test copy_engine --no-fail-fast -- --exact "${hfs_tests[@]}" \
+    >"$work/hfs.log" 2>&1 || hfs_ok=0
+cat "$work/hfs.log"
+if (( ! hfs_ok )); then
     failed=1
 elif ! grep -q "test result: ok. ${#hfs_tests[@]} passed" "$work/hfs.log"; then
     echo "test_exfat.sh: expected ${#hfs_tests[@]} tests to pass on HFS+" >&2
