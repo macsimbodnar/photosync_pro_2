@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-30, by Claude (S041 done)
+Updated: 2026-10-30, by Claude (S042 done)
 
-- Last done: S041  image harness keeps its promises (S029 fast check)
+- Last done: S042  refused screen offers only keys that work (S032 fast check)
 - In progress: none
-- Next: S042  refused screen offers only keys that work; then the rest of plan.md's Open list
+- Next: S031  too long a name is refused (F06); then the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:

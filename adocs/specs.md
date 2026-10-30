@@ -137,7 +137,8 @@ picks. It is simple to use.
     is the one exception (Sources; DEC-050). The result names each card a file could
     not be read on and was copied from its twin, as the CLI's does. A name that cannot be a folder name,
     or a library folder that is not there, is refused before the session
-    starts, with no card read, and can be fixed; after that, the library
+    starts, with no card read, and can be fixed; that refusal offers no next
+    card, as there is no session yet. After that, the library
     and the name stay. The TUI never makes the folder (DEC-050). A sync with no source picked does not
     start. A panic in the sync's thread leaves the screen as it is, and
     the sync is recorded in the session as not complete (DEC-031,

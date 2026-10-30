@@ -63,7 +63,7 @@ pub fn render(app: &App, frame: &mut Frame) {
     if let Some(h) = app.hint() {
         frame.render_widget(Line::from(h.to_string()).yellow(), hint);
     }
-    frame.render_widget(Line::from(keys_help(app.screen())).dim(), keys);
+    frame.render_widget(Line::from(keys_help(app)).dim(), keys);
 }
 
 fn heading(app: &App) -> String {
@@ -89,14 +89,16 @@ fn heading(app: &App) -> String {
 }
 
 /// Must match what `App::update` does on each screen.
-pub fn keys_help(screen: Screen) -> &'static str {
-    match screen {
+pub fn keys_help(app: &App) -> &'static str {
+    match app.screen() {
         Screen::Sources => " ↑↓ move   Space pick   Enter next   r look again   q quit",
         Screen::Drive => " ↑↓ move   Enter pick   Esc back   r look again   q quit",
         Screen::Library | Screen::Name => " type to edit   Enter next   Esc back   Ctrl-C quit",
         Screen::Confirm => " Enter start copying   Esc back   q quit",
         Screen::Running => " c cancel   Ctrl-C twice quits at once",
-        Screen::Refused => " Enter back, to fix it   n next card   q quit",
+        // Before the session starts there is no session for a next card to join.
+        Screen::Refused if app.in_session() => " Enter back, to fix it   n next card   q quit",
+        Screen::Refused => " Enter back, to fix it   q quit",
         Screen::Report => " ↑↓ PgUp PgDn scroll   n next card   q quit",
     }
 }
@@ -574,6 +576,28 @@ mod tests {
             "The library /x is on /c, which is a camera card."
         ));
         assert!(has(&screen, "Enter back"));
+    }
+
+    /// S042: a bad name is refused before the session, so there is no next
+    /// card to take: the footer does not offer it, and `n` does nothing.
+    #[test]
+    fn a_bad_name_is_refused_without_offering_the_next_card() {
+        let mut app = app();
+        press(&mut app, &[Key::Enter, Key::Enter, Key::Enter]);
+        press(&mut app, &[Key::Char('a'), Key::Char('/'), Key::Char('b')]);
+        press(&mut app, &[Key::Enter, Key::Enter]);
+        assert_eq!(app.screen(), Screen::Refused);
+        assert!(!app.in_session());
+
+        let screen = draw(&app, 100, 10);
+        assert!(!has(&screen, "n next card"), "{screen:#?}");
+        assert!(has(&screen, "Enter back"), "{screen:#?}");
+        assert!(has(&screen, "q quit"), "{screen:#?}");
+
+        press(&mut app, &[Key::Char('n')]);
+        assert_eq!(app.screen(), Screen::Refused);
+        press(&mut app, &[Key::Enter]);
+        assert_eq!(app.screen(), Screen::Confirm);
     }
 
     /// A narrow terminal must not panic the view.

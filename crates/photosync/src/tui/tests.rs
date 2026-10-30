@@ -179,6 +179,84 @@ fn refused_sync_shows_the_cli_sentence_and_exits_2() {
     assert_eq!(manifest(&dir.0), before, "something was written");
 }
 
+/// S042: the footer of the refused screen offers `n` only in a session, as
+/// `App::update` ignores it before one. Every key it offers acts: a script
+/// waits for its screen, so a key that does nothing fails here.
+#[test]
+fn a_refusal_before_the_session_does_not_offer_the_next_card() {
+    let dir = TempDir::new();
+    let card = dir.0.join("CARD");
+    write_file(&card, "DCIM/100_FUJI/DSCF0001.RAF", b"raw", at(TAKEN));
+    let drive = dir.0.join("SSD");
+    fs::create_dir_all(&drive).unwrap();
+    let found = || Volumes {
+        sources: vec![card.clone()],
+        destinations: vec![drive.clone()],
+        failures: Vec::new(),
+    };
+    let mut terminal = Terminal::new(TestBackend::new(500, 20)).unwrap();
+    let keys = script(vec![
+        (Screen::Sources, vec![Key::Enter]),
+        (Screen::Drive, vec![Key::Enter]),
+        (Screen::Library, vec![Key::Enter]),
+        (Screen::Name, vec![Key::Enter]),
+        (Screen::Confirm, vec![Key::Enter]),
+        // `n` does nothing here: it must not move the script off this screen.
+        (Screen::Refused, vec![Key::Char('n'), Key::Enter]),
+        (Screen::Confirm, vec![Key::Enter]),
+        (Screen::Refused, vec![Key::Char('q')]),
+    ]);
+
+    let app = run_loop(&mut terminal, keys, found).unwrap();
+
+    assert!(!app.in_session(), "the session started: {app:?}");
+    let screen = rows(terminal.backend());
+    let has = |part: &str| screen.iter().any(|r| r.contains(part));
+    assert!(!has("n next card"), "{screen:#?}");
+    assert!(has("Enter back") && has("q quit"), "{screen:#?}");
+}
+
+/// S042: in a session the refused screen still offers `n`, and Enter, `n`
+/// and `q` all act. Card and library on one device: the core refuses.
+#[test]
+fn a_refusal_in_the_session_offers_the_next_card() {
+    let dir = TempDir::new();
+    let card = dir.0.join("CARD");
+    write_file(&card, "DCIM/100_FUJI/DSCF0001.RAF", b"raw", at(TAKEN));
+    let drive = dir.0.join("SSD");
+    fs::create_dir_all(drive.join("Photos")).unwrap();
+    let found = || Volumes {
+        sources: vec![card.clone()],
+        destinations: vec![drive.clone()],
+        failures: Vec::new(),
+    };
+    let mut terminal = Terminal::new(TestBackend::new(500, 20)).unwrap();
+    let keys = script(vec![
+        (Screen::Sources, vec![Key::Enter]),
+        (Screen::Drive, vec![Key::Enter]),
+        (Screen::Library, vec![Key::Enter]),
+        (Screen::Name, vec![Key::Enter]),
+        (Screen::Confirm, vec![Key::Enter]),
+        (Screen::Refused, vec![Key::Enter]),
+        (Screen::Confirm, vec![Key::Enter]),
+        (Screen::Refused, vec![Key::Char('n')]),
+        (Screen::Sources, vec![Key::Enter]),
+        (Screen::Confirm, vec![Key::Enter]),
+        (Screen::Refused, vec![Key::Char('q')]),
+    ]);
+
+    let app = run_loop(&mut terminal, keys, found).unwrap();
+
+    assert!(app.in_session(), "no session: {app:?}");
+    assert_eq!(app.syncs(), 3);
+    let screen = rows(terminal.backend());
+    let has = |part: &str| screen.iter().any(|r| r.contains(part));
+    assert!(
+        has("Enter back") && has("n next card") && has("q quit"),
+        "{screen:#?}"
+    );
+}
+
 /// S032 (F07): on a fresh drive with no `<drive>/Photos`, the loop refuses
 /// at the check, before a session exists or a card is read, so the library
 /// can still be changed. Nothing is made on the drive. With the library

@@ -21,7 +21,8 @@ into the same session: the same library, name and folder, straight to the
 check. The report then shows every card of the session and the totals of
 all. A library folder that is not there is refused at the check, before
 any card is read: make the folder, or go back and change it (photosync never
-makes it). After a refusal you can go back and try again, or take the next card.
+makes it). After a refusal you can go back and try again; once the session has
+started, you can also take the next card.
 The exit code and the message on quitting are the worst of the session:
 a sync that was not complete is named, and no later sync hides it. The one
 exception: a refused sync, which wrote nothing, stops counting once each of its
@@ -37,7 +38,7 @@ count. To change the library or the name, quit and start again. Without a termin
 | library folder, name | type to edit, `Backspace`, `Enter` next, `Esc` back |
 | check | `Enter` start copying, `Esc` back, `q` quit |
 | copying | `c` or `Esc` cancel; `Ctrl-C` cancels, a second `Ctrl-C` quits at once |
-| refused | `Enter` back to fix it, `n` next card, `q` quit |
+| refused | `Enter` back to fix it, `n` next card (only once the session has started), `q` quit |
 | report | `↑` `↓` `PgUp` `PgDn` scroll, `n` next card, `q` quit |
 
 `Ctrl-C` quits from any screen but the copy. Quitting during a copy is safe
