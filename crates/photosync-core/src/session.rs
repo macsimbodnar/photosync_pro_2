@@ -377,6 +377,7 @@ fn accept(
 mod tests {
     use super::*;
     use crate::common::{TempDir, at, scan_elsewhere, write_file};
+    use crate::plan::{Duplicate, plan_sync};
 
     struct Quiet;
     impl Watch for Quiet {}
@@ -404,5 +405,31 @@ mod tests {
         assert_eq!(session.verdict(), Verdict::NotComplete, "a later sync hid it");
         let named: Vec<usize> = session.not_complete().map(|(i, _)| i).collect();
         assert_eq!(named, [0]);
+    }
+
+    /// S038: a file in `seen_earlier` was never copied, so it vouches for
+    /// nothing. Planning never lists a duplicate of one, and a plan that did
+    /// would name the wrong card: refused.
+    #[test]
+    fn a_duplicate_of_a_file_found_in_an_earlier_sync_is_refused() {
+        let dir = TempDir::new();
+        let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+        for folder in ["100_FUJI", "101_FUJI"] {
+            write_file(&card, &format!("DCIM/{folder}/DSCF0001.RAF"), b"raw", at(1_700_000_000));
+        }
+        write_file(&lib, "2026-01-01/RAW/DSCF0001.RAF", b"raw", at(1_700_000_000));
+        let scans = vec![scan_elsewhere(&card)];
+        let mut plan = plan_sync(&lib, &scans, &mut Monitor::default()).unwrap();
+        let skipped = plan.skipped.pop().unwrap();
+        let first = skipped.file.path.clone();
+        let original = dir.0.join("old/DCIM/100_FUJI/DSCF0001.RAF");
+        plan.seen_earlier.push(Duplicate { file: skipped.file, of: original.clone() });
+        assert_eq!(plan.duplicates[0].of, first);
+
+        let outcome = CopyOutcome::nothing_to_copy(TempCleanup::default());
+        match Report::build(scans, plan, outcome, &HashSet::from([&original])) {
+            Err(ReportError::NoOriginal { of, .. }) => assert_eq!(of, first),
+            other => panic!("expected NoOriginal, got {other:?}"),
+        }
     }
 }

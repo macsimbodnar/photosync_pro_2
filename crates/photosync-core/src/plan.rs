@@ -32,6 +32,7 @@ pub struct SyncPlan {
     /// Already synced: same name, size and hash as a library file.
     pub skipped: Vec<Skipped>,
     /// Same content as a file earlier in this plan, so it is planned once.
+    /// Never one in `seen_earlier`: a copy of that is in `seen_earlier` too.
     pub duplicates: Vec<Duplicate>,
     /// Same content as a file an earlier sync of the session copied or
     /// found on the drive (`of`, on an earlier card): "duplicate in
@@ -265,7 +266,14 @@ pub(crate) fn plan_in_session(
             }
         };
         let seen = planned.entry(key).or_default();
-        if let Some((_, of, copied)) = seen.iter().find(|(h, _, _)| *h == hash) {
+        if let Some((_, of, copied, held)) = seen.iter().find(|(h, ..)| *h == hash) {
+            // Not `of`: that file was never copied, so a line naming it
+            // would name a card whose file is not on the drive.
+            if let Some(library_file) = held {
+                place_on_drive(&mut plan, file, library_file, earlier);
+                tracker.file_done(&file.path);
+                continue;
+            }
             // A twin stands in for an unreadable card, so one on that same
             // card is none (INV-3): its read error would likely hit it too.
             // By device, not source index: two sources can be one card
@@ -306,33 +314,42 @@ pub(crate) fn plan_in_session(
                 break;
             }
         }
-        let copied = match in_library {
+        let (copied, held) = match in_library {
             Some(library_file) => {
-                // The same card synced again holds the very files that
-                // put these photos there: already on drive, not twins.
-                match earlier.get(library_file).filter(|of| **of != file.path) {
-                    Some(of) => plan.seen_earlier.push(Duplicate { file: file.clone(), of: of.clone() }),
-                    None => plan
-                        .skipped
-                        .push(Skipped { file: file.clone(), library_file: library_file.clone() }),
-                }
-                None
+                place_on_drive(&mut plan, file, library_file, earlier);
+                (None, earlier.contains_key(library_file).then(|| library_file.clone()))
             }
             None => {
                 plan.to_copy.push(Planned { file: file.clone(), source, hash: Some(hash), twins: Vec::new() });
-                Some(plan.to_copy.len() - 1)
+                (Some(plan.to_copy.len() - 1), None)
             }
         };
-        seen.push((hash, file.path.clone(), copied));
+        seen.push((hash, file.path.clone(), copied, held));
         tracker.file_done(&file.path);
     }
     tracker.finish(false);
     Ok(plan)
 }
 
-/// A file planning has read: its hash, its path and, if it is to be
-/// copied, its index in `to_copy`.
-type Seen = (Hash, PathBuf, Option<usize>);
+/// A file planning has read: its hash, its path, its index in `to_copy` if
+/// it is to be copied, and the library file holding it if an earlier sync of
+/// the session put that there or found it.
+type Seen = (Hash, PathBuf, Option<usize>, Option<PathBuf>);
+
+/// Lists `file`, whose content `library_file` holds. The same card synced
+/// again holds the very files that put these photos there: already on
+/// drive, not twins.
+fn place_on_drive(
+    plan: &mut SyncPlan,
+    file: &SourceFile,
+    library_file: &PathBuf,
+    earlier: &HashMap<PathBuf, PathBuf>,
+) {
+    match earlier.get(library_file).filter(|of| **of != file.path) {
+        Some(of) => plan.seen_earlier.push(Duplicate { file: file.clone(), of: of.clone() }),
+        None => plan.skipped.push(Skipped { file: file.clone(), library_file: library_file.clone() }),
+    }
+}
 
 fn key(file: &SourceFile) -> (OsString, u64) {
     (file.path.file_name().unwrap_or_default().to_os_string(), file.size)

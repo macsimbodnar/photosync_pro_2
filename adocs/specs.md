@@ -283,7 +283,8 @@ picks. It is simple to use.
 - The report is never built from inputs that would make it wrong: a source
   given twice (in any spelling), or a plan or copy that is not of these
   scans (a file not listed, listed with another size or mtime, left out, a
-  duplicate whose original is not reported, or a file read in place of a
+  duplicate whose original is not reported or is itself a duplicate of an
+  earlier sync's file, or a file read in place of a
   planned one that the plan does not list as its twin) is refused with the
   reason.
 

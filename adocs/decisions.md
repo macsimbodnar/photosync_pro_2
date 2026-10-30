@@ -61,6 +61,7 @@ Why: one line.
 - DEC-042 2026-10-30 — a file that reads another length than scanned fails (S026)
 - DEC-043 2026-10-30 — how the report shows duplicates and names the card (S028)
 - DEC-044 2026-10-30 — a sync name is matched by the filesystem's lookup, not by bytes (S027)
+- DEC-045 2026-10-30 — a later copy of an earlier sync's photo is resolved in the plan (S038)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1049,3 +1050,18 @@ a Mac made decomposed and a name typed composed on Linux are two names and two
 folders. No photo is lost or copied twice: already-synced detection goes by file
 name, size and hash, in any folder.
 Why: only the filesystem knows which names it treats as one folder.
+
+## DEC-045  2026-10-30  a later copy of an earlier sync's photo is resolved in the plan (S038)
+Tags: report, session, plan
+Decision: agent's pick in S038, not yet confirmed by the user. Planning treats
+every copy in a plan of a photo an earlier sync holds the same way as the first:
+`seen_earlier` naming the earlier card, or "already on drive" if it is that
+very file. So `duplicates` never points at a `seen_earlier` file, and
+`Report::build` now refuses one that does (NoOriginal). Rejected: following
+`of` through `seen_earlier` in the report, which keeps a chain that can name
+the wrong card and cannot make the same card given again "already on drive".
+Consequence, also the agent's: a card synced again along with a later one,
+after it (`[B, A]`), is now "already on drive" on A, where it was a duplicate
+of B.
+Why: the line must name the card whose file is on the drive, and a plan that
+says otherwise must be refused, not reported.

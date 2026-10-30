@@ -307,8 +307,9 @@ impl Report {
         // Inserted safe first, so a path also listed as failed or cancelled
         // is taken as not safe.
         let mut originals = HashMap::new();
+        // Not `seen_earlier`: that file's own card is not on the drive from
+        // it, so a duplicate of it would name the wrong card (S038).
         let on_drive = plan.skipped.iter().map(|s| &s.file.path);
-        let on_drive = on_drive.chain(plan.seen_earlier.iter().map(|d| &d.file.path));
         for path in on_drive.chain(outcome.copied.iter().map(|c| &c.file.path)) {
             originals.insert(path.clone(), Original::OnDrive);
         }

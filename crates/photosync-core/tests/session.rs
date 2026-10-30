@@ -429,6 +429,92 @@ fn the_same_card_synced_again_is_already_on_drive_not_a_duplicate_of_itself() {
     assert!(again.is_complete());
 }
 
+/// S038: the card whose file is on the drive is the one named, however many
+/// copies a later card holds. The second copy on B used to name B's first,
+/// which was never copied.
+#[test]
+fn every_copy_on_a_later_card_names_the_card_whose_file_is_on_the_drive() {
+    let dir = TempDir::new();
+    let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
+    put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    put(&b, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw"), ("DCIM/101_FUJI/DSCF0001.RAF", b"raw")]);
+    fs::create_dir_all(&lib).unwrap();
+    let mut session = Session::new(&lib, None).unwrap();
+    let from_a = a.join("DCIM/100_FUJI/DSCF0001.RAF");
+
+    assert!(matches!(
+        outcome(report(sync(&mut session, &[&a])), &from_a),
+        FileOutcome::Copied { .. }
+    ));
+    let second = report(sync(&mut session, &[&b]));
+
+    for folder in ["100_FUJI", "101_FUJI"] {
+        match outcome(second, &b.join("DCIM").join(folder).join("DSCF0001.RAF")) {
+            FileOutcome::DuplicateInSession { of } => assert_eq!(*of, from_a, "{folder}"),
+            other => panic!("{folder}: {other:?}"),
+        }
+    }
+    assert_inv6(second, &[&b]);
+    assert!(second.is_complete());
+    assert_eq!(library_files(&lib).len(), 1, "each photo once");
+}
+
+/// S038: the same with the later copies on two cards at once.
+#[test]
+fn two_later_cards_at_once_name_the_card_whose_file_is_on_the_drive() {
+    let dir = TempDir::new();
+    let (a, b, c, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("c"), dir.0.join("lib"));
+    for card in [&a, &b, &c] {
+        put(card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    }
+    fs::create_dir_all(&lib).unwrap();
+    let mut session = Session::new(&lib, None).unwrap();
+    let from_a = a.join("DCIM/100_FUJI/DSCF0001.RAF");
+
+    assert!(report(sync(&mut session, &[&a])).is_complete());
+    let second = report(sync(&mut session, &[&b, &c]));
+
+    for card in [&b, &c] {
+        match outcome(second, &card.join("DCIM/100_FUJI/DSCF0001.RAF")) {
+            FileOutcome::DuplicateInSession { of } => assert_eq!(*of, from_a, "{card:?}"),
+            other => panic!("{card:?}: {other:?}"),
+        }
+    }
+    assert_inv6(second, &[&b, &c]);
+    assert!(second.is_complete());
+    assert_eq!(library_files(&lib).len(), 1, "each photo once");
+}
+
+/// S038: the original's own card, given again after another card that holds
+/// the photo, is "already on drive". It used to be a duplicate of the other
+/// card, whose own line named this one back.
+#[test]
+fn the_first_card_given_again_after_a_later_one_is_already_on_drive() {
+    let dir = TempDir::new();
+    let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
+    for card in [&a, &b] {
+        put(card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    }
+    fs::create_dir_all(&lib).unwrap();
+    let mut session = Session::new(&lib, None).unwrap();
+    let from_a = a.join("DCIM/100_FUJI/DSCF0001.RAF");
+
+    assert!(report(sync(&mut session, &[&a])).is_complete());
+    let on_drive = session.folder().unwrap().path().join("RAW/DSCF0001.RAF");
+    let again = report(sync(&mut session, &[&b, &a]));
+
+    match outcome(again, &b.join("DCIM/100_FUJI/DSCF0001.RAF")) {
+        FileOutcome::DuplicateInSession { of } => assert_eq!(*of, from_a),
+        other => panic!("{other:?}"),
+    }
+    match outcome(again, &from_a) {
+        FileOutcome::AlreadySynced { library_file } => assert_eq!(*library_file, on_drive),
+        other => panic!("{other:?}"),
+    }
+    assert_inv6(again, &[&b, &a]);
+    assert!(again.is_complete());
+}
+
 /// S010 fast check: the session's memory names the right original. A
 /// library file a later sync copied to a path an earlier sync had used
 /// (the earlier copy was removed in between) holds the later sync's photo,
