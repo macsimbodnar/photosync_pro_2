@@ -39,6 +39,9 @@ Updated: 2026-10-30, by Claude (S031 done)
     DiskArbitration (Mac) or udev (Linux).
   - `copy_plan` (public, one plan) still copies on one thread; only
     `Session` copies cards at once (DEC-040 (9)). A GUI must use `Session`.
+  - Test watchdog: a process stuck in the kernel (state U) ignores SIGKILL, so
+    `wait` in tests/common/images.rs and scripts/test_exfat.sh would block with
+    nothing logged (S041 fast check, read only, not reproduced). Harness only.
   - macOS's disk-image service hung once on a test image (2026-10-28); the
     script now also detaches images attached but not mounted. Since S029
     every hdiutil call and test run has a time limit, in the script and in
