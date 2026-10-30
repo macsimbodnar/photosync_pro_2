@@ -75,6 +75,7 @@ Why: one line.
 - DEC-056 2026-10-30 — one sentence for the way out of a name collision; too long in any spelling has its own sentence (S033, S035)
 - DEC-057 2026-10-30 — a cancel ends the wait for the folder's lock; one timeout fails the folder for the run (S044)
 - DEC-058 2026-10-30 — the CLI's line: each source's bytes in its bracket, dropped whole by the cut; the TUI's line stays (S035)
+- DEC-059 2026-10-30 — the harness stops a process before it kills its tree, and kills it last (S045)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1494,3 +1495,26 @@ a log showed no bytes. The second could stay with the bytes after the bracket, w
 each name twice and so fits fewer terminals.
 Why: which card is slow shows in bytes (F10), but a line that wraps cannot be rewritten in
 place, so the bytes are what a narrow terminal can spare.
+
+## DEC-059  2026-10-30  the harness stops a process before it kills its tree, and kills it last (S045)
+Tags: tests, gate
+Decision: the agent's choice in S045, not yet confirmed by the user. Adds to DEC-051 (1).
+(1) `kill_tree`, in `tests/common/images.rs` and `scripts/test_exfat.sh`, sends SIGSTOP to a
+process, then handles its children, then sends SIGKILL to it. So a process past its limit can
+no longer end by itself once the kill began: it cannot see a helper die, nor start another. It
+counts as 137, and `-force` is tried.
+(2) Rejected: killing the parent first, the plain reading of the bug. Run with the two tests
+of `test_images.rs` over 3 runs, it failed all: `{pid} lives on`. The parent's death wakes the
+shell's `wait`, which kills the watcher before the watcher has killed the children. Rejected:
+raising a time limit, which does not touch the race; a flag file saying the watcher fired, not
+tried: it would put the status right, but a tool could still act on its helper's death, or
+start a helper after the list was taken.
+(3) `scripts/test_exfat.sh` had the same order and is outside S045's `touches`, as is its skip
+list, which needs the new test. Fixed there too. Shown by hand with its own `with_limit`: a
+tool that ends well when its helper dies gave status 0 before, 137 after. No test covers that
+file's copy: the two functions could drift apart.
+(4) Still not covered: a tool that ends by itself just before the limit keeps its own status,
+which is right, and a process stuck in the kernel (state U) ignores SIGKILL (Parked).
+Why: S045: the first detach counted as a success, and `-force` was skipped, in 2 of 6 gate runs,
+then 1 of 4, then 1 of 6 with a trace in. The trace showed the fake's `wait` returning 0 between
+the two kills, and `limited` seeing status 0.

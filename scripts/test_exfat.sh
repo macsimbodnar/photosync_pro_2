@@ -56,6 +56,7 @@ skip+=(
     a_killed_test_binary_leaves_no_image_attached               # test_images
     a_command_that_hangs_is_killed_and_named                    # test_images
     a_hung_hdiutil_ends_the_watchdog_and_it_says_so             # test_images
+    an_hdiutil_killed_at_its_limit_never_counts_as_ended_well   # test_images
     mounts_on_the_path_it_is_given                              # test_images
     missing_tools_are_named_and_nothing_is_left                 # test_images
 )
@@ -97,9 +98,12 @@ hdiutil_limit=120
 tests_limit=1200
 hung="macOS's disk-image service may be hung: see 'hdiutil info'; a restart clears it"
 
-# Kills a process and all it started.
+# Kills a process and all it started. Stopped first, so it can neither end well
+# when a helper dies nor start another. Killed last, so whoever waits for it wakes
+# only when the whole tree is gone.
 kill_tree() {
     local pid
+    kill -STOP "$1" 2>/dev/null || true
     for pid in $(pgrep -P "$1"); do
         kill_tree "$pid"
     done

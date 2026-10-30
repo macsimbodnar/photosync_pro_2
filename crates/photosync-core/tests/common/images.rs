@@ -73,7 +73,10 @@ say() {
     echo "$*" >>"$work/watchdog.log"
 }
 
+# Stopped first, so it can neither end well when a helper dies nor start another.
+# Killed last, so whoever waits for it wakes only when the whole tree is gone.
 kill_tree() {
+    kill -STOP "$1" 2>/dev/null
     for pid in $(pgrep -P "$1"); do
         kill_tree "$pid"
     done

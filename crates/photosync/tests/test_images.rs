@@ -189,6 +189,68 @@ fn a_hung_hdiutil_ends_the_watchdog_and_it_says_so() {
     }
 }
 
+/// An hdiutil that ends well the moment its first helper dies, as a real one
+/// might. A slow `pgrep` makes the watchdog's kill take its time, so this holds
+/// on every run, not only when a loaded machine happens to slow it down.
+const ENDS_WELL_HDIUTIL: &str = r#"#!/bin/sh
+echo "$*" >>"$FAKE_CALLS"
+[ "$1" = detach ] || exit 1
+sleep 100 &
+first=$!
+sleep 100 &
+echo "$first $!" >>"$FAKE_PIDS"
+wait "$first"
+exit 0
+"#;
+const SLOW_PGREP: &str = "#!/bin/sh\nsleep 0.2\nexec /usr/bin/pgrep \"$@\"\n";
+
+#[test]
+fn an_hdiutil_killed_at_its_limit_never_counts_as_ended_well() {
+    let dir = TempDir::new();
+    let bin = dir.0.join("bin");
+    fs::create_dir(&bin).unwrap();
+    for (tool, script) in [("hdiutil", ENDS_WELL_HDIUTIL), ("pgrep", SLOW_PGREP)] {
+        let tool = bin.join(tool);
+        fs::write(&tool, script).unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let work = dir.0.join("work");
+    fs::create_dir(&work).unwrap();
+    let (calls, pids) = (dir.0.join("calls"), dir.0.join("pids"));
+
+    limited(
+        watchdog_command(&work, &[work.join("mnt")], Duration::from_secs(1))
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .env("FAKE_CALLS", &calls)
+            .env("FAKE_PIDS", &pids),
+        Duration::from_secs(30),
+        "the watchdog",
+        &dir.0,
+    )
+    .unwrap();
+
+    let calls = fs::read_to_string(&calls).unwrap();
+    assert!(calls.contains("-force"), "no -force in:\n{calls}");
+    let log = fs::read_to_string(work.join("watchdog.log")).unwrap();
+    assert!(log.contains("hdiutil detach"), "{log}");
+    assert!(log.contains("did not end in 1s"), "{log}");
+
+    // Every helper too: stopping the tool must not let one slip the kill.
+    let start = Instant::now();
+    let pids = fs::read_to_string(&pids).unwrap();
+    for pid in pids.split_whitespace() {
+        let pid: libc::pid_t = pid.parse().unwrap();
+        // SAFETY: kill takes two plain ints, and signal 0 sends nothing.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(start.elapsed() < Duration::from_secs(5), "{pid} lives on");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
 /// Run by the next test, on a PATH it picks.
 #[test]
 #[ignore = "a helper of missing_tools_are_named_and_nothing_is_left"]

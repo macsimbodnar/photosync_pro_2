@@ -17,7 +17,7 @@ not change the order.
 
 ## Open
 
-1. S045  watchdog test fails now and then: a race (found in S035)
+1. S046  closed-stdout test fails now and then (found in S045)
 2. S037  TUI report cuts long lines (found in S028)
 3. S036  plan the GUI: confirm iced, layout, steps
 4. S025  first run on Linux: build, tests, hand checks (waits for the user)
@@ -30,8 +30,8 @@ it too; the audit loop stops when a run reports no high and no medium.
 
 Last five; the full record is `plan_done/`.
 
+- S045  a killed hdiutil never counts as ended well (found in S035)
 - S035  CLI bytes per source (F10)
 - S044  cancel is heard during the lock wait (S043 fast check)
 - S033  collision result names the way out (F08)
 - S043  no-replace fallback holds across processes (found in S034)
-- S034  cleanup leaves live temps (F09)
