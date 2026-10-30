@@ -17,12 +17,13 @@ not change the order.
 
 ## Open
 
-1. S033  collision result names the way out (F08)
-2. S035  CLI bytes per source (F10)
-3. S037  TUI report cuts long lines (found in S028)
-4. S036  plan the GUI: confirm iced, layout, steps
-5. S025  first run on Linux: build, tests, hand checks (waits for the user)
-6. S017  hardware hand checks on Mac (waits for the user)
+1. S043  no-replace fallback holds across processes (found in S034)
+2. S033  collision result names the way out (F08)
+3. S035  CLI bytes per source (F10)
+4. S037  TUI report cuts long lines (found in S028)
+5. S036  plan the GUI: confirm iced, layout, steps
+6. S025  first run on Linux: build, tests, hand checks (waits for the user)
+7. S017  hardware hand checks on Mac (waits for the user)
 
 Later, not yet steps: re-run the adversarial audit after the GUI, covering
 it too; the audit loop stops when a run reports no high and no medium.

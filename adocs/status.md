@@ -8,7 +8,7 @@ Updated: 2026-10-30, by Claude (S034 done)
 
 - Last done: S034  cleanup leaves live temps (F09)
 - In progress: none
-- Next: S033  collision result names the way out (F08); then the rest of plan.md's Open list
+- Next: S043  no-replace fallback holds across processes; then the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
