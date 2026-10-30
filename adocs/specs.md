@@ -264,7 +264,10 @@ picks. It is simple to use.
   name give one copy and one name collision. No lock file is written (INV-9),
   and a process that dies drops its lock. A lock that cannot be taken, or that
   another process holds for over a minute, fails that copy with the reason,
-  and nothing is renamed (DEC-055).
+  and nothing is renamed (DEC-055). After one such minute on a folder, the
+  sync's other photos for that folder fail at once with the same reason, their
+  cards not read; a later sync tries again. A cancel ends the wait at once: the
+  temp is removed and the photo is cancelled, not failed (DEC-057).
 
 ### Already-synced detection
 

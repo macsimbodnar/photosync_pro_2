@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::Condvar;
+use std::sync::{Condvar, Once, OnceLock};
 use std::thread::ThreadId;
 use std::time::Duration;
 
@@ -640,6 +640,106 @@ fn s019_a_cancel_stops_every_thread_at_its_next_check() {
     assert_eq!((manifest(&a), manifest(&b)), cards, "INV-1");
     let last = events.0.last().unwrap();
     assert!(matches!(last.kind, EventKind::Cancelled), "{last:?}");
+}
+
+/// Two cards' photos, one RAW folder. Holds that folder's lock on a handle of
+/// its own, as another process would, once both copies are verified, and runs
+/// `at_rename` when the first thread is at the rename. The other is behind it,
+/// at the folder's mutex. The file holds the lock for as long as it is kept.
+/// The count is of the copies verified.
+fn hold_raw_when_both_are_verified(
+    at_rename: impl Fn() + Send + Sync + 'static,
+) -> (Hooked, Arc<OnceLock<File>>, Arc<AtomicU64>) {
+    let (meet, once, held) = (Meet::new(2), Arc::new(Once::new()), Arc::new(OnceLock::new()));
+    let verified = Arc::new(AtomicU64::new(0));
+    let (keep, count) = (held.clone(), verified.clone());
+    let hooked = hook(move |stage, path| match stage {
+        Stage::Verified => {
+            count.fetch_add(1, Ordering::SeqCst);
+            let met = meet.meet(|| {
+                let file = File::open(path.parent().unwrap()).unwrap();
+                try_flock(&file).unwrap();
+                keep.set(file).unwrap();
+            });
+            assert!(met, "the two copies did not meet before renaming");
+        }
+        Stage::RenameLocked => once.call_once(&at_rename),
+        _ => {}
+    });
+    (hooked, held, verified)
+}
+
+/// S044: the thread behind the mutex hears a cancel as soon as the one waiting
+/// for the lock does: neither waits on. Both cards are cancelled whole, nothing
+/// is renamed, no temp stays.
+#[test]
+fn s044_a_cancel_ends_the_wait_and_frees_the_thread_behind_it() {
+    let dir = TempDir::new();
+    let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
+    put(&a, "DCIM/100_FUJI/DSCF0001.RAF", b"a one");
+    put(&a, "DCIM/100_FUJI/DSCF0002.RAF", b"a two");
+    put(&b, "DCIM/100_FUJI/DSCF0101.RAF", b"b one");
+    put(&b, "DCIM/100_FUJI/DSCF0102.RAF", b"b two");
+    fs::create_dir(&lib).unwrap();
+    let cards = (manifest(&a), manifest(&b));
+
+    let _way = forced_fallback(Duration::from_secs(10));
+    let cancel = Cancel::new();
+    let cancelled_at = Arc::new(Mutex::new(None));
+    let (flag, when) = (cancel.clone(), cancelled_at.clone());
+    let (_hook, _held, _) = hold_raw_when_both_are_verified(move || {
+        let (flag, when) = (flag.clone(), when.clone());
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            *when.lock().unwrap() = Some(Instant::now());
+            flag.cancel();
+        });
+    });
+    let mut session = Session::new(&lib, None).unwrap();
+    session.sync_scans(on_own_cards(&[&a, &b]), &cancel, &mut Log::default());
+
+    let cancelled_at = cancelled_at.lock().unwrap().expect("a copy reached its wait");
+    assert!(cancelled_at.elapsed() < Duration::from_secs(2), "{:?}", cancelled_at.elapsed());
+    let report = last_report(&session);
+    assert_inv6(report, &[&a, &b]);
+    for source in report.sources() {
+        assert_eq!(source.totals().cancelled.files, 2, "{source:?}");
+    }
+    assert!(files(&lib).is_empty(), "INV-7: {:?}", files(&lib));
+    assert_eq!((manifest(&a), manifest(&b)), cards, "INV-1");
+}
+
+/// S044: with no cancel, the first thread waits to the limit and the one behind
+/// it does not wait again. Neither card reads its next photo.
+#[test]
+fn s044_the_thread_behind_a_lock_timeout_fails_without_waiting_again() {
+    let dir = TempDir::new();
+    let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
+    let paths = [
+        put(&a, "DCIM/100_FUJI/DSCF0001.RAF", b"a one"),
+        put(&a, "DCIM/100_FUJI/DSCF0002.RAF", b"a two"),
+        put(&b, "DCIM/100_FUJI/DSCF0101.RAF", b"b one"),
+        put(&b, "DCIM/100_FUJI/DSCF0102.RAF", b"b two"),
+    ];
+    fs::create_dir(&lib).unwrap();
+
+    let limit = Duration::from_secs(2);
+    let _way = forced_fallback(limit);
+    let (_hook, _held, verified) = hold_raw_when_both_are_verified(|| {});
+    let start = Instant::now();
+    let mut session = Session::new(&lib, None).unwrap();
+    session.sync_scans(on_own_cards(&[&a, &b]), &Cancel::new(), &mut Log::default());
+
+    assert!(start.elapsed() < limit + limit * 3 / 4, "waited twice: {:?}", start.elapsed());
+    assert_eq!(verified.load(Ordering::SeqCst), 2, "a later photo was read");
+    let report = last_report(&session);
+    assert_inv6(report, &[&a, &b]);
+    for path in &paths {
+        let timed_out = matches!(outcome(report, path),
+            FileOutcome::Failed(FailReason::Write { error, .. }) if error.kind() == io::ErrorKind::TimedOut);
+        assert!(timed_out, "{:?}", outcome(report, path));
+    }
+    assert!(files(&lib).is_empty(), "INV-7: {:?}", files(&lib));
 }
 
 /// A twin on a card that its own thread is reading: card a's photo cannot

@@ -227,12 +227,13 @@ mkdir "$work/card/DCIM"
 TMPDIR="$work/mnt" PHOTOSYNC_TEST_CARD="$work/card" \
     PHOTOSYNC_TEST_LIBRARY="$work/lib" PHOTOSYNC_TEST_TWIN_A="$work/twin_a" \
     PHOTOSYNC_TEST_TWIN_B="$work/twin_b" \
-    cargo test --workspace -- --ignored
+    cargo test --workspace -- --ignored --skip copy::tests::fallback_writer
 for n in mnt card lib twin_a twin_b; do sudo umount "$work/$n"; done
 rm -rf "$work"
 ```
 
 Without the variables these tests fail, so they cannot pass with nothing checked.
+The one skipped is a helper the two-process tests start: run alone, it fails.
 
 Hand check (see `adocs/plan_todo/S025_linux_checks.md`):
 

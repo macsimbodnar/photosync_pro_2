@@ -567,6 +567,8 @@ pub(crate) fn copy_files(
         tracker: Mutex::new(tracker),
         panicked: AtomicBool::new(false),
         moved: AtomicBool::new(false),
+        rename_way: rename_way(),
+        gave_up: Mutex::new(Vec::new()),
     };
     let groups = groups(plan, threads);
     let lots: Vec<Lot> = if groups.len() < 2 {
@@ -640,6 +642,10 @@ struct Shared<'m, 'a> {
     /// The INV-10 re-check has failed, in any thread: from then on every
     /// thread runs it before every file, not only before a new folder.
     moved: AtomicBool,
+    rename_way: RenameWay,
+    /// The folders whose lock another process held past the limit, in this
+    /// run (DEC-057). A later sync tries them again.
+    gave_up: Mutex<Vec<PathBuf>>,
 }
 
 impl<'m, 'a> Shared<'m, 'a> {
@@ -652,6 +658,20 @@ impl<'m, 'a> Shared<'m, 'a> {
         // A thread that panicked in the observer leaves the counts whole:
         // each update is one call, and the panic ends the copy anyway.
         update(&mut self.tracker.lock().unwrap_or_else(PoisonError::into_inner));
+    }
+
+    /// Moves a verified temp to its final name. Nothing is renamed on a
+    /// failure or a cancel: the caller removes the temp.
+    fn rename_into_place(&self, temp: &Path, target: &Path) -> Result<(), Stop> {
+        let halted = || self.halted();
+        let wait = LockWait { limit: self.rename_way.limit, halted: &halted, gave_up: &self.gave_up };
+        rename_noreplace(self.rename_way.excl, temp, target, &wait).map_err(|stop| match stop {
+            RenameStop::Halted => Stop::Cancelled,
+            RenameStop::Io(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                FailReason::NameCollision { existing: target.to_path_buf() }.into()
+            }
+            RenameStop::Io(error) => FailReason::Write { path: target.to_path_buf(), error }.into(),
+        })
     }
 }
 
@@ -962,6 +982,11 @@ impl<'p, 's, 'm, 'a> Copier<'p, 's, 'm, 'a> {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(FailReason::Write { path: target, error: e }.into()),
         }
+        // Reading, verifying and waiting a minute would end the same way, for
+        // every photo left. After the name's check: a taken name stays one.
+        if listed(&self.shared.gave_up, &dir) {
+            return Err(FailReason::Write { path: target, error: lock_held_too_long() }.into());
+        }
 
         let temp = dir.join(temp_name(name));
         let out = File::options()
@@ -971,15 +996,7 @@ impl<'p, 's, 'm, 'a> Copier<'p, 's, 'm, 'a> {
             .map_err(write_error(&temp))?;
         // From here the temp file is ours: every failure and a cancel remove it.
         let placed = fill_and_verify(file, expected, out, &temp, &dir, self.shared, source)
-            .and_then(|()| {
-                rename_noreplace(&temp, &target).map_err(|error| {
-                    if error.kind() == io::ErrorKind::AlreadyExists {
-                        FailReason::NameCollision { existing: target.clone() }.into()
-                    } else {
-                        FailReason::Write { path: target.clone(), error }.into()
-                    }
-                })
-            });
+            .and_then(|()| self.shared.rename_into_place(&temp, &target));
         if let Err(reason) = placed {
             if let Err(source) = fs::remove_file(&temp) {
                 self.temps_failed.push(ScanError { path: temp, source });
@@ -1120,17 +1137,13 @@ pub(crate) fn c_path(path: &Path) -> io::Result<std::ffi::CString> {
 /// no such rename (exFAT), it checks and renames under a lock other photosync
 /// processes honour too (DEC-018, DEC-055). Either way it holds the lock of
 /// `to`'s folder, so this process's renames into one folder never overlap
-/// (DEC-008).
-fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
-    rename_noreplace_with(rename_excl, from, to)
-}
-
-/// `rename_noreplace` over any OS rename, so tests can force "unsupported".
-fn rename_noreplace_with(
-    excl: fn(&Path, &Path) -> io::Result<()>,
+/// (DEC-008). `excl` is the OS's rename: tests can force "unsupported".
+fn rename_noreplace(
+    excl: ExclRename,
     from: &Path,
     to: &Path,
-) -> io::Result<()> {
+    wait: &LockWait,
+) -> Result<(), RenameStop> {
     let folder = match to.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
@@ -1143,9 +1156,9 @@ fn rename_noreplace_with(
         // Only this errno: any other error may mean the rename half-ran or
         // the target is unusable, and falling back could hide it.
         Err(e) if EXCL_UNSUPPORTED.is_some_and(|code| e.raw_os_error() == Some(code)) => {
-            rename_checked(folder, from, to)
+            rename_checked(folder, from, to, wait)
         }
-        result => result,
+        result => result.map_err(RenameStop::Io),
     };
     at_stage(Stage::RenameUnlocking, to);
     renamed
@@ -1156,40 +1169,98 @@ fn rename_noreplace_with(
 /// threads; `hold_folder` keeps other photosync processes out. If it cannot,
 /// nothing is renamed: the copy fails and is reported. Another program could
 /// still create `to` in between; DEC-018 accepts that.
-fn rename_checked(folder: &Path, from: &Path, to: &Path) -> io::Result<()> {
-    let _held = hold_folder(folder, FOLDER_HOLD_WAIT)?;
+fn rename_checked(folder: &Path, from: &Path, to: &Path, wait: &LockWait) -> Result<(), RenameStop> {
+    let _held = hold_folder(folder, wait)?;
     match fs::symlink_metadata(to) {
-        Ok(_) => return Err(io::Error::new(io::ErrorKind::AlreadyExists, "target exists")),
+        Ok(_) => return Err(io::Error::new(io::ErrorKind::AlreadyExists, "target exists").into()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
+        Err(e) => return Err(e.into()),
     }
     at_fallback_checked();
-    fs::rename(from, to)
+    Ok(fs::rename(from, to)?)
 }
 
 /// Far above one check and rename, even on a slow drive. A holder stopped by
 /// hand must fail this copy, which a later sync redoes, not hang this sync.
 const FOLDER_HOLD_WAIT: Duration = Duration::from_secs(60);
 
+/// The OS's no-replace rename.
+type ExclRename = fn(&Path, &Path) -> io::Result<()>;
+
+/// How one copy run renames. A value, so a test can force the fallback and a
+/// short wait on any filesystem, for every copy thread of the run.
+#[derive(Clone, Copy)]
+struct RenameWay {
+    excl: ExclRename,
+    limit: Duration,
+}
+
+fn rename_way() -> RenameWay {
+    #[cfg(test)]
+    if let Some(way) = RENAME_WAY.with(std::cell::Cell::get) {
+        return way;
+    }
+    RenameWay { excl: rename_excl, limit: FOLDER_HOLD_WAIT }
+}
+
+/// What a wait for a folder's lock answers to.
+struct LockWait<'w> {
+    limit: Duration,
+    /// Asked on each poll: the mutex of the folder is held all through the
+    /// wait, so other threads wait behind this one (DEC-057).
+    halted: &'w dyn Fn() -> bool,
+    gave_up: &'w Mutex<Vec<PathBuf>>,
+}
+
+fn listed(gave_up: &Mutex<Vec<PathBuf>>, folder: &Path) -> bool {
+    gave_up.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|f| f == folder)
+}
+
+/// Why a rename did not happen.
+#[derive(Debug)]
+enum RenameStop {
+    /// A cancel, or a panic in another copy thread, ended the lock's wait.
+    Halted,
+    Io(io::Error),
+}
+
+impl From<io::Error> for RenameStop {
+    fn from(error: io::Error) -> RenameStop {
+        RenameStop::Io(error)
+    }
+}
+
+fn lock_held_too_long() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "another photosync process holds the lock of this folder")
+}
+
 /// Takes the kernel's lock on `folder` itself, until the file returned is
 /// dropped. On the folder, so no lock file is ever left on the drive (INV-9),
 /// and the kernel drops it when a process dies, so a crash leaves nothing stuck
-/// (DEC-055). Fails if another process holds it for `wait`, as polling, unlike
-/// a blocking `flock`, cannot hang.
-fn hold_folder(folder: &Path, wait: Duration) -> io::Result<File> {
+/// (DEC-055). Fails if another process holds it for `wait.limit`, as polling,
+/// unlike a blocking `flock`, cannot hang.
+fn hold_folder(folder: &Path, wait: &LockWait) -> Result<File, RenameStop> {
+    // A thread behind the folder's mutex comes here when the wait ahead of it
+    // ends: it must not start a limit of its own.
+    if listed(wait.gave_up, folder) {
+        return Err(lock_held_too_long().into());
+    }
     let held = File::open(folder)?;
     let start = Instant::now();
     loop {
         match try_flock(&held) {
             Ok(()) => return Ok(held),
             Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {}
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         }
-        if start.elapsed() >= wait {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "another photosync process holds the lock of this folder",
-            ));
+        // After the try: with the lock free a verified photo is renamed, as on
+        // a filesystem with a no-replace rename.
+        if (wait.halted)() {
+            return Err(RenameStop::Halted);
+        }
+        if start.elapsed() >= wait.limit {
+            wait.gave_up.lock().unwrap_or_else(PoisonError::into_inner).push(folder.to_path_buf());
+            return Err(lock_held_too_long().into());
         }
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -1345,6 +1416,31 @@ thread_local! {
 #[cfg(test)]
 thread_local! {
     static FALLBACK_CHECKED: std::cell::RefCell<Option<Box<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+}
+
+// TEST ONLY: replaces how the copy runs started on this thread rename.
+#[cfg(test)]
+thread_local! {
+    static RENAME_WAY: std::cell::Cell<Option<RenameWay>> = const { std::cell::Cell::new(None) };
+}
+
+/// Until dropped, copy runs started on this thread take the fallback, whatever
+/// the filesystem, and wait `limit` for its lock.
+#[cfg(test)]
+struct ForcedFallback;
+
+#[cfg(test)]
+fn forced_fallback(limit: Duration) -> ForcedFallback {
+    let excl: ExclRename = |_, _| Err(io::Error::from_raw_os_error(EXCL_UNSUPPORTED.unwrap()));
+    RENAME_WAY.with(|way| way.set(Some(RenameWay { excl, limit })));
+    ForcedFallback
+}
+
+#[cfg(test)]
+impl Drop for ForcedFallback {
+    fn drop(&mut self) {
+        RENAME_WAY.with(|way| way.set(None));
+    }
 }
 
 fn at_fallback_checked() {
@@ -1891,6 +1987,27 @@ mod tests {
         Err(io::Error::from_raw_os_error(EXCL_UNSUPPORTED.unwrap()))
     }
 
+    /// A wait no cancel reaches and that nothing gave up on before.
+    fn plain_wait<R>(limit: Duration, run: impl FnOnce(&LockWait) -> Result<R, RenameStop>) -> io::Result<R> {
+        let gave_up = Mutex::new(Vec::new());
+        run(&LockWait { limit, halted: &|| false, gave_up: &gave_up }).map_err(|stop| match stop {
+            RenameStop::Io(error) => error,
+            RenameStop::Halted => panic!("nothing halts a plain wait"),
+        })
+    }
+
+    fn rename_noreplace_with(excl: ExclRename, from: &Path, to: &Path) -> io::Result<()> {
+        plain_wait(FOLDER_HOLD_WAIT, |wait| super::rename_noreplace(excl, from, to, wait))
+    }
+
+    fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+        rename_noreplace_with(rename_excl, from, to)
+    }
+
+    fn hold_folder(folder: &Path, limit: Duration) -> io::Result<File> {
+        plain_wait(limit, |wait| super::hold_folder(folder, wait))
+    }
+
     #[test]
     fn inv2_unsupported_rename_falls_back_and_never_replaces_an_existing_target() {
         let dir = TempDir::new();
@@ -2156,6 +2273,170 @@ mod tests {
 
         drop(held);
         hold_folder(&dir.0, Duration::ZERO).unwrap();
+    }
+
+    /// A library planned from `card`, with a process of its own holding the lock
+    /// of the session's RAW folder until the `Writer` drops. The helper locks
+    /// `<dir>/folder`, so that is made a way to the RAW folder.
+    fn plan_with_raw_held(dir: &TempDir, card: &Path, lib: &Path) -> (SyncPlan, SyncFolder, PathBuf, Writer) {
+        let (plan, folder) = plan_for(card, lib);
+        let raw = folder.path().join("RAW");
+        fs::create_dir_all(&raw).unwrap();
+        std::os::unix::fs::symlink(&raw, dir.0.join("folder")).unwrap();
+        fs::write(dir.0.join("doomed.temp"), b"doomed").unwrap();
+        let holder = Writer::start(&dir.0, "doomed");
+        assert!(wait_for_mark(&dir.0.join("checked-doomed"), Duration::from_secs(60)));
+        (plan, folder, raw, holder)
+    }
+
+    fn plan_for(card: &Path, lib: &Path) -> (SyncPlan, SyncFolder) {
+        let plan = plan_sync(lib, &[scan_elsewhere(card)], &mut Monitor::default()).unwrap();
+        let folder = sync_folder(&plan, Some("Trip")).unwrap().unwrap();
+        (plan, folder)
+    }
+
+    /// S044: another process holds the folder's lock, and the verified copy
+    /// waits for it. A cancel ends the wait at once: nothing is renamed, the
+    /// temp goes, and every photo is cancelled, none failed and none copied.
+    #[test]
+    fn s044_a_cancel_is_heard_while_another_process_holds_the_folder_lock() {
+        let dir = TempDir::new();
+        let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+        fs::create_dir_all(&lib).unwrap();
+        card_with_two_files(&card);
+        let (plan, folder, raw, _holder) = plan_with_raw_held(&dir, &card, &lib);
+        let _way = forced_fallback(Duration::from_secs(10));
+
+        let cancel = Cancel::new();
+        let cancelled_at = Arc::new(Mutex::new(None));
+        let (flag, when) = (cancel.clone(), cancelled_at.clone());
+        set_hook(move |stage, _| {
+            if stage == Stage::Verified {
+                let (flag, when) = (flag.clone(), when.clone());
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(200));
+                    *when.lock().unwrap() = Some(Instant::now());
+                    flag.cancel();
+                });
+            }
+        });
+        let outcome = copy_plan(&plan, &folder, &mut Monitor::new(cancel, |_| {}));
+        clear_hook();
+        let outcome = outcome.unwrap();
+
+        assert!(outcome.copied.is_empty(), "{:?}", outcome.copied);
+        assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+        assert_eq!(outcome.cancelled.len(), 2);
+        let cancelled_at = cancelled_at.lock().unwrap().expect("the copy reached its wait");
+        assert!(cancelled_at.elapsed() < Duration::from_secs(2), "{:?}", cancelled_at.elapsed());
+        assert!(temps_under(&lib).is_empty());
+        assert_eq!(fs::read_dir(&raw).unwrap().count(), 0, "a file was renamed");
+    }
+
+    /// S044: one wait to the limit, then the folder's other photos fail with
+    /// the same reason, with the card not read. A taken name is still called
+    /// that, another folder still copies, and a later sync redoes the failed.
+    #[test]
+    fn s044_one_lock_timeout_fails_the_folders_other_photos_at_once() {
+        let dir = TempDir::new();
+        let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+        fs::create_dir_all(&lib).unwrap();
+        let photos = ["DSCF0001.RAF", "DSCF0002.RAF", "DSCF0003.RAF", "DSCF0004.RAF", "DSCF0005.JPG"];
+        for (n, name) in (0..).zip(photos) {
+            let at_time = at(1_700_000_000 + n);
+            write_file(&card, &format!("DCIM/100_FUJI/{name}"), name.as_bytes(), at_time);
+        }
+        let (plan, folder, raw, holder) = plan_with_raw_held(&dir, &card, &lib);
+        fs::write(raw.join("DSCF0003.RAF"), b"another photo").unwrap();
+        let _way = forced_fallback(Duration::from_millis(200));
+
+        let read = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let log = read.clone();
+        set_hook(move |stage, path| {
+            if stage == Stage::Written {
+                log.borrow_mut().push(path.to_string_lossy().into_owned());
+            }
+        });
+        let outcome = copy_plan(&plan, &folder, &mut Monitor::default());
+        clear_hook();
+        let outcome = outcome.unwrap();
+
+        let read = read.borrow();
+        assert_eq!(read.len(), 2, "{read:?}");
+        assert!(read[0].ends_with("DSCF0001.RAF") && read[1].ends_with("DSCF0005.JPG"), "{read:?}");
+        let timed_out: Vec<_> = outcome
+            .failed
+            .iter()
+            .filter_map(|failed| match &failed.reason {
+                FailReason::Write { path, error } if error.kind() == io::ErrorKind::TimedOut => {
+                    Some((path.clone(), error.to_string()))
+                }
+                _ => None,
+            })
+            .collect();
+        let reason = lock_held_too_long().to_string();
+        let expected: Vec<_> =
+            ["DSCF0001.RAF", "DSCF0002.RAF", "DSCF0004.RAF"].map(|n| (raw.join(n), reason.clone())).to_vec();
+        assert_eq!(timed_out, expected);
+        assert_eq!(outcome.failed.len(), 4, "{:?}", outcome.failed);
+        assert!(matches!(outcome.failed[2].reason, FailReason::NameCollision { .. }), "{:?}", outcome.failed);
+        let copied: Vec<_> = outcome.copied.iter().map(|c| c.to.clone()).collect();
+        assert_eq!(copied, [folder.path().join("JPEG/DSCF0005.JPG")]);
+        assert!(outcome.cancelled.is_empty());
+        assert!(temps_under(&lib).is_empty());
+        assert_eq!(fs::read(raw.join("DSCF0003.RAF")).unwrap(), b"another photo");
+
+        // The holder is gone: nothing of the first sync sticks.
+        drop(holder);
+        let (plan, folder) = plan_for(&card, &lib);
+        let outcome = copy_plan(&plan, &folder, &mut Monitor::default()).unwrap();
+        assert_eq!(outcome.copied.len(), 3, "{:?}", outcome.failed);
+        assert_eq!(fs::read(raw.join("DSCF0001.RAF")).unwrap(), b"DSCF0001.RAF");
+        assert_eq!(outcome.failed.len(), 1, "{:?}", outcome.failed);
+    }
+
+    /// S044: a folder given up on is not waited for again, even by a copy that
+    /// had reached its rename already. It stays failed with the lock free now:
+    /// one rule for the run, and a later sync redoes the file.
+    #[test]
+    fn s044_a_folder_given_up_on_fails_at_once() {
+        let dir = TempDir::new();
+        let gave_up = Mutex::new(vec![dir.0.clone()]);
+        let wait = LockWait { limit: Duration::from_secs(60), halted: &|| false, gave_up: &gave_up };
+
+        let start = Instant::now();
+        let stop = super::hold_folder(&dir.0, &wait).unwrap_err();
+
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(matches!(&stop, RenameStop::Io(e) if e.kind() == io::ErrorKind::TimedOut), "{stop:?}");
+    }
+
+    /// S044: a limit reached is recorded for the folder, so the next copy knows.
+    #[test]
+    fn s044_a_wait_that_reaches_its_limit_records_the_folder() {
+        let dir = TempDir::new();
+        let _held = hold_folder(&dir.0, Duration::ZERO).unwrap();
+        let gave_up = Mutex::new(Vec::new());
+        let wait = LockWait { limit: Duration::from_millis(20), halted: &|| false, gave_up: &gave_up };
+
+        assert!(matches!(super::hold_folder(&dir.0, &wait), Err(RenameStop::Io(_))));
+        assert_eq!(*gave_up.lock().unwrap(), [dir.0.clone()]);
+    }
+
+    /// S044: a cancel ends only a wait. With the lock free, a verified photo is
+    /// renamed, as on a filesystem with a no-replace rename: the same stage of a
+    /// cancel gives the same outcome on either.
+    #[test]
+    fn s044_a_cancel_with_the_lock_free_still_renames() {
+        let dir = TempDir::new();
+        let (from, to) = (dir.0.join("from"), dir.0.join("to"));
+        fs::write(&from, b"new").unwrap();
+        let gave_up = Mutex::new(Vec::new());
+        let wait = LockWait { limit: Duration::from_secs(60), halted: &|| true, gave_up: &gave_up };
+
+        super::rename_noreplace(excl_unsupported, &from, &to, &wait).unwrap();
+
+        assert_eq!(fs::read(&to).unwrap(), b"new");
     }
 
     /// Where the lock cannot be taken, nothing is renamed: going on unguarded

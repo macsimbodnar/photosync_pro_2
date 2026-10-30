@@ -73,6 +73,7 @@ Why: one line.
 - DEC-054 2026-10-30 — stale temps: the pid in the name decides (S034)
 - DEC-055 2026-10-30 — the exFAT fallback holds a kernel lock on the folder, across processes (S043)
 - DEC-056 2026-10-30 — one sentence for the way out of a name collision; a path too long is not the name's fault (S033)
+- DEC-057 2026-10-30 — a cancel ends the wait for the folder's lock; one timeout fails the folder for the run (S044)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1408,6 +1409,8 @@ naming the standard streams under `src`. The test on the real binary depends on 
 for the window, and catches the race only because the pairs are many.
 Why: the kernel drops the lock when a process dies, so a crash leaves nothing stuck, and
 no new file goes on the drive. Every doubt fails a copy that a later sync can redo.
+Amended by DEC-057: (5)'s limit stands, but a cancel ends the wait, and one timeout ends
+the waiting for that folder for the run.
 
 ## DEC-056  2026-10-30  one sentence for the way out of a name collision; a path too long is not the name's fault (S033)
 Tags: report, cli, tui, layout
@@ -1432,3 +1435,36 @@ under it, or a sync with no name, is not refused: each file fails, exit 1, with 
 Refusing it would mean guessing the longest temp name. True, if late.
 Why: a dead end costs a user whose counter wrapped a useless re-run, and a sentence about
 242 bytes sends a user with a short name looking for the wrong thing.
+
+## DEC-057  2026-10-30  a cancel ends the wait for the folder's lock; one timeout fails the folder for the run (S044)
+Tags: safety, copy, filesystems, cancel
+Decision: the agent's choice, not yet confirmed by the user. Amends DEC-055 (5), whose
+60 second limit stays.
+(1) The wait asks for a cancel, or a panic in another copy thread, on each poll, after
+each try for the lock. With the lock free, a verified photo is renamed, as on a filesystem
+with a no-replace rename, so a cancel at one stage gives one outcome on both. With the lock
+busy, the rename does not run, the temp goes and the photo is cancelled.
+(2) The per-process folder mutex stays held through the wait, first, as DEC-055 (2) says.
+The wait a cancel can end is the only long one under it, and a cancel reaches every copy
+thread of the run, so the thread behind the mutex is freed too. Rejected: letting go of the
+mutex for the wait and taking it back. It changes the order of two locks on the path that
+guards against overwriting, to gain nothing inside one run.
+Limit: another `Session` in this process, on the same folder, has its own cancel and stays
+behind the mutex for up to the minute. No front-end runs two at once (status.md, Parked).
+Rejected: a mutex wait that polls for a cancel, as it would also change the no-replace path.
+(3) One timeout on a folder is kept in a list for the copy run. The folder's other photos
+fail with the same reason before the temp is made and the card read. A copy thread behind
+the mutex, its photo verified, fails at once too, even if the lock has come free. Rejected:
+one more try for the lock on each photo. It may copy a few more photos, but a rule of one
+timeout is simple to test and to explain, and a later sync redoes them all. A taken name is
+checked first, so it is still reported as a name collision.
+(4) The list lasts one copy run, not a session or process: the holder may be gone by the
+next card, and each folder waits its minute at most once in a run. Up to four type folders
+can each take a minute. Only a lock timeout goes on the list: an ETIMEDOUT from the rename or
+the open itself is a plain failure of that copy.
+(5) Tests force the fallback and a short limit through a value the copy run takes on its
+start (`RenameWay`), not a stage hook: copy threads then need no hook of their own, and the
+real exFAT path runs the same code under `scripts/test_exfat.sh`. The holder is the helper
+from S043, reached by a symlink as it locks a fixed folder name.
+Why: a user's cancel must not wait a minute, and a card should not be read in full, one
+photo a minute, only to fail the same way. Every failure here is one a later sync redoes.
