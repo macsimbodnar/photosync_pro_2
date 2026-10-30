@@ -986,8 +986,9 @@ fn flush(handle: &File) -> io::Result<()> {
 }
 
 /// Passes on a flush's result, reporting `stage` only once it succeeded. The
-/// stage proves no flush ran: `Ok(())` in the flush's place keeps it. What
-/// proves that is `note_flush`, which the INV-3 tests read.
+/// stage does not show a flush ran: `Ok(())` in the flush's place keeps it.
+/// `note_flush` shows `flush` was called on the right handle, and
+/// `inv3_a_flush_reaches_the_os` that `flush` reaches the OS.
 fn synced(stage: Stage, path: &Path, flushed: io::Result<()>) -> io::Result<()> {
     flushed?;
     at_stage(stage, path);
