@@ -70,6 +70,7 @@ Why: one line.
 - DEC-051 2026-10-30 — the images' watchdog has time limits and says when it gives up (S041)
 - DEC-052 2026-10-30 — TUI: cards changed after a refusal before the session are not remembered
 - DEC-053 2026-10-30 — which sync names are refused, the same on every platform; the Folder line (S031)
+- DEC-054 2026-10-30 — stale temps: the pid in the name decides (S034)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -222,9 +223,8 @@ Decision: agent's pick in S004; the user confirmed all seven points.
 (2) Temp files are `.photosync-tmp-<pid>-<n>-<camera name>` in the target
 type folder, created only if absent. The next sync deletes regular files of
 that name wherever the library scan walks (not in dot or trash folders); a
-folder or symlink of that name is never touched. A second photosync running
-on the same library at that moment would lose its temp file, so that copy
-fails; no photo is lost.
+folder or symlink of that name is never touched. Since S034 the next sync
+deletes only temps whose writer is gone (DEC-054).
 (3) No no-replace rename outside macOS and Linux: every copy there fails
 with an "unsupported" error. Rejected: a compile error (blocks building and
 testing the rest), a replacing rename (INV-2).
@@ -1328,3 +1328,39 @@ longer there)", as a folder is fixed before it is made. "Unknown: cannot check" 
 the lookup itself fails.
 Why: refusing before a card is read costs a retyped name; a name that fails or changes
 later costs a failed sync or a folder that is not what the report says.
+
+## DEC-054  2026-10-30  stale temps: the pid in the name decides (S034)
+Tags: safety, copy, filesystems
+Decision: agent's pick in S034, not yet confirmed by the user.
+(1) A cleanup deletes a temp only if the pid in its name is gone: `kill(pid, 0)`
+answers ESRCH. Any other answer (EPERM, an unknown error) keeps it. libc is already
+a dependency of the core. A zombie and a pid reused by another program count as
+alive, which only leaves a temp for a later sync. Rejected: stating in the specs that
+one library takes one process at a time, as nothing would enforce it.
+(2) This process's own pid counts as gone. A session cleans before its first copy,
+so its own copies are not running, and such a temp is from an earlier run: an
+interrupted one in this process, or a dead process that had this pid. Kept, that temp
+could also block the name of this run's own temp, as temps are created only if absent.
+Rejected: a list of this process's temps in flight, as no front-end runs two sessions
+on one library at once. If one ever does (a GUI), the second's cleanup takes the
+first's live temp: that copy fails and is reported, no photo is lost.
+(3) A name not of the form `<pid>-<n>-<name>`, with a pid above zero that fits an
+`i32`, stays and is not reported: photosync never wrote it, so INV-2 gives no leave to
+delete it. Only a pid above zero goes to `kill`, where zero and below mean groups.
+Before S034 such a name was deleted.
+(4) Kept temps are not reported. Nothing is wrong, and a temp in flight is
+gone when its writer ends.
+(5) Limits. A temp from another computer whose pid is alive here waits for a later
+sync. A writer the pid check cannot see, such as another computer on a shared drive
+or another pid namespace, looks gone, so its copy fails and is reported, as before
+S034. A pid that ends and is reused between the check and the delete could cost that
+copy the same way.
+(6) No lock across processes: the test on exFAT shows none is needed for two
+processes copying different names. Not covered: DEC-018's fallback check and rename,
+where the lock is per process, so on exFAT two photosync processes writing one final
+name in the same instant could replace one with the other. Parked for the user.
+(7) Test fixtures that named pids 1, 5, 12 and 77 now name the test's own pid. Those
+pids may be alive, and then a test that a temp goes, or stays for another reason,
+would fail or prove nothing. What the tests assert did not change.
+Why: a pid is enough to tell a live temp from a stale one, needs no new state on the
+drive (INV-9), and every doubt keeps the file.

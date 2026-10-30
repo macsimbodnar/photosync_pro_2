@@ -473,7 +473,8 @@ pub struct TempCleanup {
 /// thread instead, S019.) First checks the library is still on the device
 /// and volume it was planned on (INV-10), and refuses before writing or
 /// deleting anything if not. Stale temp files in the library are removed
-/// next; so this must not run beside another copy into the same library.
+/// next; so this must not run beside another copy into the same library in
+/// this process (another process's temps are safe, DEC-054).
 /// A `Session` cleans once and copies through `copy_files`. A failure
 /// fails that file only; the outcome lists each file once. A file whose
 /// read fails is copied from its first twin that reads as the planning
@@ -717,8 +718,9 @@ impl From<FailReason> for Stop {
     }
 }
 
-/// Deletes every `.photosync-tmp-*` file under `library`: what an
-/// interrupted sync left behind (the INV-2 exception). Walks what the
+/// Deletes every stale `.photosync-tmp-*` file under `library`: what an
+/// interrupted sync left behind (the INV-2 exception). `stale_temp` says
+/// which: a temp another live process may be writing stays. Walks what the
 /// library scan walks, so a temp inside trash or a dot folder stays. Call it
 /// directly when there is nothing to copy; `copy_plan` calls it itself.
 pub fn remove_stale_temps(library: &Path) -> TempCleanup {
@@ -746,6 +748,9 @@ fn remove_temps_in(dir: &Path, cleanup: &mut TempCleanup) -> io::Result<()> {
         let temp = name.as_encoded_bytes().starts_with(TEMP_PREFIX.as_bytes());
         // A folder or symlink named like a temp file is not ours: never touched.
         if temp && file_type.is_file() {
+            if !stale_temp(&name) {
+                continue;
+            }
             match fs::remove_file(&path) {
                 Ok(()) => cleanup.removed.push(path),
                 Err(source) => cleanup.failures.push(ScanError { path, source }),
@@ -759,6 +764,44 @@ fn remove_temps_in(dir: &Path, cleanup: &mut TempCleanup) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether a temp named `name` was left by a run that is over (DEC-054). Its
+/// writer is the pid in its name. This process's own pid counts as over: a
+/// cleanup runs before the copies of its session. A name that holds no pid is
+/// not one photosync wrote, so nothing shows it is stale.
+fn stale_temp(name: &OsStr) -> bool {
+    temp_pid(name).is_some_and(|pid| pid.cast_unsigned() == std::process::id() || !process_alive(pid))
+}
+
+/// The pid in `.photosync-tmp-<pid>-<n>-<name>`. Above zero only: `kill` takes
+/// zero and below for whole process groups.
+fn temp_pid(name: &OsStr) -> Option<i32> {
+    let rest = name.as_encoded_bytes().strip_prefix(TEMP_PREFIX.as_bytes())?;
+    let mut parts = rest.splitn(3, |&b| b == b'-');
+    let number = |part: &[u8]| !part.is_empty() && part.iter().all(u8::is_ascii_digit);
+    let (pid, n, _) = (parts.next()?, parts.next()?, parts.next()?);
+    if !number(pid) || !number(n) {
+        return None;
+    }
+    std::str::from_utf8(pid).ok()?.parse().ok().filter(|&pid| pid > 0)
+}
+
+/// Whether a process has this pid. Only "no such process" says no: a process
+/// of another user answers EPERM, and any other answer proves nothing, so the
+/// temp stays. A pid reused by another program also says yes, which only
+/// leaves a temp for a later sync.
+#[cfg(unix)]
+fn process_alive(pid: i32) -> bool {
+    // SAFETY: signal 0 sends nothing; it only asks if the process is there.
+    let answered = unsafe { libc::kill(pid, 0) } == 0;
+    answered || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(not(unix))]
+fn process_alive(_: i32) -> bool {
+    // No way to ask here, and a temp left is safe.
+    true
 }
 
 fn write_error(path: &Path) -> impl FnOnce(io::Error) -> FailReason + '_ {
@@ -1919,7 +1962,7 @@ mod tests {
         let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
         fs::create_dir_all(&lib).unwrap();
         card_with_two_files(&card);
-        write_file(&lib, "2026-01-01/RAW/.photosync-tmp-5-0-DSCF0009.RAF", b"x", at(1_700_000_000));
+        write_file(&lib, &format!("2026-01-01/RAW/.photosync-tmp-{}-0-DSCF0009.RAF", std::process::id()), b"x", at(1_700_000_000));
         let good = plan_sync(&lib, &[scan_elsewhere(&card)], &mut Monitor::default()).unwrap();
         let folder = sync_folder(&good, None).unwrap().unwrap();
         let before = manifest(&lib);

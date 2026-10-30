@@ -31,6 +31,8 @@ fn ignored_image_tests_pass_on_real_mounts() {
             "closed_stdout_never_panics_and_keeps_the_exit_code",
             "sources_and_drives_list_the_mounted_card_and_drives",
             "two_cards_on_two_devices_copy_at_once",
+            "a_second_process_leaves_the_live_temp_of_the_first",
+            "a_temp_of_a_killed_process_goes_with_the_next_sync",
         ],
     );
 }
@@ -676,4 +678,147 @@ fn duplicates_never_bury_a_failure_or_a_library_problem_in_the_cli() {
             .starts_with("Result: NOT COMPLETE: 1 failed"),
         "{run:?}"
     );
+}
+
+/// A sync running with its output in `log`, killed if the test ends first:
+/// left stopped, it would hold the images.
+struct Running {
+    child: std::process::Child,
+    log: PathBuf,
+}
+
+impl Running {
+    fn start(card: &Path, library: &Path, log: PathBuf) -> Running {
+        let out = fs::File::create(&log).unwrap();
+        let child = std::process::Command::new(env!("CARGO_BIN_EXE_photosync"))
+            .args(["sync", "--name", "Two", "--source"])
+            .arg(card)
+            .arg("--dest")
+            .arg(library)
+            .stdout(out.try_clone().unwrap())
+            .stderr(out)
+            .spawn()
+            .unwrap();
+        Running { child, log }
+    }
+
+    fn signal(&self, signal: i32) {
+        // SAFETY: plain call; the child is not reaped yet, so its pid is its own.
+        assert_eq!(unsafe { libc::kill(self.child.id() as i32, signal) }, 0);
+    }
+
+    /// Stops the process at a moment it has a temp file on the drive, so what
+    /// runs next surely meets a live temp, however fast the copy. Fails if it
+    /// ends with no such moment: the test would then prove nothing.
+    fn stop_with_a_temp(&self, library: &Path) -> PathBuf {
+        loop {
+            self.signal(libc::SIGSTOP);
+            let mut status = 0;
+            // SAFETY: `status` lives through the call. Blocks until it stops or ends.
+            let waited = unsafe { libc::waitpid(self.child.id() as i32, &mut status, libc::WUNTRACED) };
+            assert_eq!(waited, self.child.id() as i32);
+            assert!(
+                libc::WIFSTOPPED(status),
+                "ended with no temp caught: {}",
+                fs::read_to_string(&self.log).unwrap()
+            );
+            let mut temps = manifest(library).into_keys().filter(|p| is_temp(p));
+            if let Some(temp) = temps.next() {
+                return temp;
+            }
+            self.signal(libc::SIGCONT);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// Waits for it to end: its exit code and output.
+    fn finish(&mut self) -> (i32, String) {
+        let code = self.child.wait().unwrap().code().unwrap_or(-1);
+        (code, fs::read_to_string(&self.log).unwrap())
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn is_temp(path: &Path) -> bool {
+    path.file_name().unwrap().to_string_lossy().starts_with(".photosync-tmp-")
+}
+
+/// Five photos big enough that a copy has its temp on the drive most of the
+/// time, and small enough to share the 16 MB drive image with the other tests.
+fn big_card(card: &Path) -> Vec<(String, Vec<u8>)> {
+    (0..5)
+        .map(|n| {
+            let name = format!("DSCF300{n}.MOV");
+            let bytes: Vec<u8> = (0..512 << 10).map(|i| ((i + n) % 251) as u8).collect();
+            write_file(card, &format!("DCIM/100_FUJI/{name}"), &bytes, at(TAKEN));
+            (name, bytes)
+        })
+        .collect()
+}
+
+/// F09: two terminals, one reader each, one library. The second sync runs
+/// whole while the first has a temp in flight. It must not take that temp for
+/// one left by an interrupted sync, and both finish with no failure.
+#[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
+fn a_second_process_leaves_the_live_temp_of_the_first() {
+    let drive = common::test_drive();
+    let library = common::OnDrive::new(&drive, "s034-live");
+    let dir = TempDir::new();
+    let (big, small) = (dir.0.join("big"), dir.0.join("small"));
+    let photos = big_card(&big);
+    write_file(&small, "DCIM/100_FUJI/DSCF0001.RAF", b"small raw", at(TAKEN));
+    let cards = (manifest(&big), manifest(&small));
+
+    let mut first = Running::start(&big, &library.0, dir.0.join("first.log"));
+    let temp = first.stop_with_a_temp(&library.0);
+    let second = sync(&[&small], &library.0, "Two");
+    assert_eq!(second.code, 0, "{second:?}");
+    assert!(!second.stdout.contains("interrupted"), "{second:?}");
+    assert!(temp.exists(), "the second sync took the live temp: {second:?}");
+    first.signal(libc::SIGCONT);
+    let (code, output) = first.finish();
+
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("(5 copied, 0 already there)."), "{output}");
+    let folder = library.0.join(format!("{} - Two", date_command(TAKEN)));
+    for (name, bytes) in &photos {
+        assert_eq!(&fs::read(folder.join("VIDEO").join(name)).unwrap(), bytes, "{name}");
+    }
+    assert_eq!(fs::read(folder.join("RAW/DSCF0001.RAF")).unwrap(), b"small raw");
+    assert!(!manifest(&library.0).keys().any(|p| is_temp(p)), "a temp stayed");
+    assert_eq!((manifest(&big), manifest(&small)), cards, "INV-1");
+}
+
+/// INV-7, through a real kill: once the process is gone its temp is stale,
+/// the next sync removes it and says so, and finishes the job.
+#[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
+fn a_temp_of_a_killed_process_goes_with_the_next_sync() {
+    let drive = common::test_drive();
+    let library = common::OnDrive::new(&drive, "s034-dead");
+    let dir = TempDir::new();
+    let big = dir.0.join("big");
+    let photos = big_card(&big);
+
+    let mut first = Running::start(&big, &library.0, dir.0.join("first.log"));
+    let temp = first.stop_with_a_temp(&library.0);
+    first.signal(libc::SIGKILL);
+    first.finish();
+    assert!(temp.exists());
+
+    let again = sync(&[&big], &library.0, "Two");
+    assert_eq!(again.code, 0, "{again:?}");
+    assert!(again.stdout.contains("Removed 1 temp file left by an interrupted sync."), "{again:?}");
+    let folder = library.0.join(format!("{} - Two", date_command(TAKEN)));
+    for (name, bytes) in &photos {
+        assert_eq!(&fs::read(folder.join("VIDEO").join(name)).unwrap(), bytes, "{name}");
+    }
+    assert!(!manifest(&library.0).keys().any(|p| is_temp(p)), "a temp stayed");
 }

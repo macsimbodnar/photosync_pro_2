@@ -225,13 +225,14 @@ fn stale_temps_are_removed_once_per_session_before_its_first_copy() {
     let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
     put(&a, &[("DCIM/100_FUJI/DSCF0001.RAF", b"a raw")]);
     put(&b, &[("DCIM/100_FUJI/DSCF0002.RAF", b"b raw")]);
-    let stale = write_file(&lib, "2026-01-01/RAW/.photosync-tmp-1-0-DSCF0009.RAF", b"x", at(T0));
+    let pid = std::process::id();
+    let stale = write_file(&lib, &format!("2026-01-01/RAW/.photosync-tmp-{pid}-0-DSCF0009.RAF"), b"x", at(T0));
     let mut session = Session::new(&lib, None).unwrap();
 
     let first = report(sync(&mut session, &[&a]));
     assert_eq!(first.temps().removed, std::slice::from_ref(&stale));
     assert!(!stale.exists());
-    let in_flight = write_file(&lib, "2026-01-01/RAW/.photosync-tmp-1-1-DSCF0010.RAF", b"y", at(T0));
+    let in_flight = write_file(&lib, &format!("2026-01-01/RAW/.photosync-tmp-{pid}-1-DSCF0010.RAF"), b"y", at(T0));
     let second = report(sync(&mut session, &[&b]));
 
     assert!(second.temps().removed.is_empty(), "{:?}", second.temps());

@@ -531,19 +531,20 @@ fn inv2_existing_files_survive_and_only_stale_temps_are_deleted() {
     ]);
     let date = date_command(T0);
     let session = format!("{date} - Tirana");
+    let pid = std::process::id();
     put(&lib, &[
         (&format!("{session}/JPEG/DSCF0009.JPG"), b"same name, old"),
         (&format!("{session}/RAW/DSCF0100.RAF"), b"earlier sync"),
         ("2025-01-01/RAW/DSCF0001.RAF", b"other raw, same name"),
         ("2025-01-01/notes.txt", b"user notes"),
         ("2025-01-01/.DS_Store", b"finder"),
-        (".Trashes/501/.photosync-tmp-1-0-DSCF0007.RAF", b"in trash, not walked"),
-        ("2025-01-01/.hidden/.photosync-tmp-1-0-DSCF0008.RAF", b"in a dot folder"),
+        (&format!(".Trashes/501/.photosync-tmp-{pid}-0-DSCF0007.RAF"), b"in trash, not walked"),
+        (&format!("2025-01-01/.hidden/.photosync-tmp-{pid}-0-DSCF0008.RAF"), b"in a dot folder"),
         ("2025-01-01/.photosync-tmp-dir/DSCF0006.RAF", b"inside a folder named like a temp"),
     ]);
     let stale = [
-        write_file(&lib, &format!("{session}/RAW/.photosync-tmp-77-3-DSCF0001.RAF"), b"part", at(T0)),
-        write_file(&lib, "2025-01-01/JPEG/.photosync-tmp-12-0-DSCF0002.JPG", b"par", at(T0)),
+        write_file(&lib, &format!("{session}/RAW/.photosync-tmp-{pid}-3-DSCF0001.RAF"), b"part", at(T0)),
+        write_file(&lib, &format!("2025-01-01/JPEG/.photosync-tmp-{pid}-0-DSCF0002.JPG"), b"par", at(T0)),
     ];
     let before = manifest(&lib);
 
@@ -639,7 +640,7 @@ fn folder_from_another_library_is_refused() {
 fn stale_temps_are_removed_even_with_nothing_to_copy() {
     let dir = TempDir::new();
     let lib = dir.0.join("lib");
-    let stale = write_file(&lib, "2026-01-01/RAW/.photosync-tmp-5-0-DSCF0001.RAF", b"x", at(T0));
+    let stale = write_file(&lib, &format!("2026-01-01/RAW/.photosync-tmp-{}-0-DSCF0001.RAF", std::process::id()), b"x", at(T0));
     let keep = write_file(&lib, "2026-01-01/RAW/DSCF0001.RAF", b"x", at(T0));
 
     let cleanup = remove_stale_temps(&lib);
@@ -838,4 +839,73 @@ fn a_file_changed_between_planning_and_copy_fails() {
     let twin = &report.sources()[1].files[0].outcome;
     assert!(matches!(twin, FileOutcome::DuplicateOfFailed { .. }), "{twin:?}");
     assert!(!report.is_complete());
+}
+
+/// F09: the pid in a temp's name says who may still be writing it. A temp of
+/// a process that is alive stays, and one of a process that is gone goes.
+#[cfg(unix)]
+#[test]
+fn cleanup_keeps_the_temp_of_a_live_process_and_removes_that_of_a_dead_one() {
+    struct Running(std::process::Child);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let dir = TempDir::new();
+    let lib = dir.0.join("lib");
+    let live = Running(std::process::Command::new("sleep").arg("600").spawn().unwrap());
+    let mut ended = std::process::Command::new("true").spawn().unwrap();
+    let dead_pid = ended.id();
+    ended.wait().unwrap();
+    let kept = write_file(&lib, &format!("2026-01-01/RAW/.photosync-tmp-{}-0-DSCF0001.RAF", live.0.id()), b"x", at(T0));
+    let stale = write_file(&lib, &format!("2026-01-01/RAW/.photosync-tmp-{dead_pid}-0-DSCF0002.RAF"), b"x", at(T0));
+
+    let cleanup = remove_stale_temps(&lib);
+
+    assert_eq!(cleanup.removed, std::slice::from_ref(&stale));
+    assert!(cleanup.failures.is_empty(), "{:?}", cleanup.failures);
+    assert!(kept.exists() && !stale.exists());
+}
+
+/// A process's own pid is stale: its cleanup runs before its copies, so such
+/// a temp is an earlier run's, of this process or of a dead one with this pid.
+/// Left, it could also block the name of this run's own temp.
+#[test]
+fn cleanup_removes_a_temp_with_its_own_pid() {
+    let dir = TempDir::new();
+    let lib = dir.0.join("lib");
+    let stale = write_file(&lib, &format!("2026-01-01/RAW/.photosync-tmp-{}-0-DSCF0001.RAF", std::process::id()), b"x", at(T0));
+
+    let cleanup = remove_stale_temps(&lib);
+
+    assert_eq!(cleanup.removed, std::slice::from_ref(&stale));
+    assert!(!stale.exists());
+}
+
+/// A name with no pid photosync could have written names no writer, so
+/// nothing shows it is stale: not ours to delete (INV-2). Zero and negatives
+/// matter too: `kill` reads them as whole process groups.
+#[test]
+fn cleanup_leaves_a_temp_whose_name_holds_no_pid() {
+    let dir = TempDir::new();
+    let lib = dir.0.join("lib");
+    let names = [
+        ".photosync-tmp-",
+        ".photosync-tmp-DSCF0001.RAF",
+        ".photosync-tmp-x-0-DSCF0001.RAF",
+        ".photosync-tmp-12-DSCF0001.RAF",
+        ".photosync-tmp-12-x-DSCF0001.RAF",
+        ".photosync-tmp--12-0-DSCF0001.RAF",
+        ".photosync-tmp-0-0-DSCF0001.RAF",
+        ".photosync-tmp-99999999999-0-DSCF0001.RAF",
+    ];
+    let kept: Vec<PathBuf> =
+        names.iter().map(|n| write_file(&lib, &format!("2026-01-01/RAW/{n}"), b"x", at(T0))).collect();
+
+    let cleanup = remove_stale_temps(&lib);
+
+    assert!(cleanup.removed.is_empty() && cleanup.failures.is_empty(), "{cleanup:?}");
+    assert!(kept.iter().all(|t| t.exists()));
 }

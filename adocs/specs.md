@@ -264,7 +264,11 @@ picks. It is simple to use.
   The scan skips them, so a photo found only there is copied again
   (DEC-016). A session deletes photosync's own stale temp files once,
   before its first copy, before any card's copy thread starts, never
-  while one of its copies runs.
+  while one of its copies runs. A temp, `.photosync-tmp-<pid>-<n>-<name>`, is
+  stale if no process has that pid, or this process has it. So two processes
+  on one library leave each other's temps alone. A pid reused by another
+  program only leaves a temp for a later sync, which is safe. A temp whose
+  name holds no pid is left too (DEC-054).
 - A source file counts as already synced if any library file anywhere has
   the same name and size and the same content (hash). Name + size picks
   the candidates, and the hash confirms them. So a photo synced earlier into

@@ -348,7 +348,7 @@ fn s030_a_library_moved_after_planning_refuses_the_sync() {
     let dir = TempDir::new();
     let (a, lib, moved) = (dir.0.join("a"), dir.0.join("lib"), dir.0.join("moved"));
     put(&a, "DCIM/100_FUJI/DSCF0001.RAF", b"a raw");
-    put(&lib, "2026-01-01/RAW/.photosync-tmp-1-0-DSCF0009.RAF", b"partial");
+    put(&lib, &format!("2026-01-01/RAW/.photosync-tmp-{}-0-DSCF0009.RAF", std::process::id()), b"partial");
 
     let mut session = Session::new(&lib, None).unwrap();
     let mut watch = WhenPlanned(|| fs::rename(&lib, &moved).unwrap());
@@ -375,7 +375,7 @@ fn s030_the_session_checks_the_library_before_its_cleanup() {
     let dir = TempDir::new();
     let (a, lib) = (dir.0.join("a"), dir.0.join("lib"));
     put(&a, "DCIM/100_FUJI/DSCF0001.RAF", b"a raw");
-    put(&lib, "2026-01-01/RAW/.photosync-tmp-1-0-DSCF0009.RAF", b"partial");
+    put(&lib, &format!("2026-01-01/RAW/.photosync-tmp-{}-0-DSCF0009.RAF", std::process::id()), b"partial");
     let before = files(&lib);
 
     let mut session = Session::new(&lib, None).unwrap();
@@ -460,7 +460,7 @@ fn s019_stale_temps_are_removed_once_before_any_copy_thread_starts() {
     let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
     put(&a, "DCIM/100_FUJI/DSCF0001.RAF", b"a raw");
     put(&b, "DCIM/100_FUJI/DSCF0101.RAF", b"b raw");
-    let stale = put(&lib, "2026-01-01/RAW/.photosync-tmp-1-0-DSCF0009.RAF", b"partial");
+    let stale = put(&lib, &format!("2026-01-01/RAW/.photosync-tmp-{}-0-DSCF0009.RAF", std::process::id()), b"partial");
 
     let (meet, found) = (Meet::new(2), Arc::new(Mutex::new(Vec::new())));
     let (gone, temp) = (found.clone(), stale.clone());
@@ -482,7 +482,7 @@ fn s019_stale_temps_are_removed_once_before_any_copy_thread_starts() {
     assert!(report.is_complete());
     assert_eq!(report.temps().removed, [stale]);
 
-    let later = put(&lib, "2026-01-01/RAW/.photosync-tmp-1-1-DSCF0010.RAF", b"partial");
+    let later = put(&lib, &format!("2026-01-01/RAW/.photosync-tmp-{}-1-DSCF0010.RAF", std::process::id()), b"partial");
     put(&a, "DCIM/100_FUJI/DSCF0002.RAF", b"a raw two");
     put(&b, "DCIM/100_FUJI/DSCF0102.RAF", b"b raw two");
     session.sync_scans(on_own_cards(&[&a, &b]), &Cancel::new(), &mut Log::default());

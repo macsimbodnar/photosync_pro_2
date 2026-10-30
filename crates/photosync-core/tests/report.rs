@@ -315,7 +315,8 @@ fn nothing_to_copy_still_reports_every_file_and_the_temp_cleanup() {
     let dir = TempDir::new();
     let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
     put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"synced"), ("DCIM/100_FUJI/x.txt", b"ignored")]);
-    put(&lib, &[("2025-01-01/RAW/DSCF0001.RAF", b"synced"), ("2025-01-01/RAW/.photosync-tmp-1-0-a", b"stale")]);
+    let temp = format!("2025-01-01/RAW/.photosync-tmp-{}-0-a", std::process::id());
+    put(&lib, &[("2025-01-01/RAW/DSCF0001.RAF", b"synced"), (temp.as_str(), b"stale")]);
 
     let report = sync(&lib, &[&card], None);
 
@@ -324,7 +325,7 @@ fn nothing_to_copy_still_reports_every_file_and_the_temp_cleanup() {
         buckets(&report.sources()[0]),
         [("DCIM/100_FUJI/DSCF0001.RAF".into(), Bucket::Skipped), ("DCIM/100_FUJI/x.txt".into(), Bucket::Ignored)]
     );
-    assert_eq!(report.temps().removed, [lib.join("2025-01-01/RAW/.photosync-tmp-1-0-a")]);
+    assert_eq!(report.temps().removed, [lib.join(&temp)]);
 }
 
 /// A plan or outcome of other scans would break INV-6, so it is refused.

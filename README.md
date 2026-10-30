@@ -162,7 +162,8 @@ Exit codes:
 - `crates/photosync-core`: all sync logic, UI-free (INV-8). A `Session`
   runs one sync after another into one library and folder: it scans,
   plans, copies (each card on its own thread) and reports each, removes
-  stale temp files once, before any copy starts, knows
+  stale temp files once, before any copy starts (a temp of another
+  running photosync stays), knows
   which photos earlier cards put on the drive, and keeps the worst
   outcome (`Session::verdict`). Front-ends drive it through `Watch`.
 - `crates/photosync`: the `photosync` binary. `app` is the interactive
