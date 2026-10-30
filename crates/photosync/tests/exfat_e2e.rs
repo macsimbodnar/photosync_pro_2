@@ -262,6 +262,21 @@ fn sync_from_a_mounted_card_to_a_drive_end_to_end() {
         clash.stdout.contains("Do not format the card."),
         "{clash:?}"
     );
+    assert!(
+        clash.stdout.contains("start photosync again to sync under another name"),
+        "{clash:?}"
+    );
+    assert_eq!(fs::read(&mov).unwrap(), b"video two");
+
+    // What the result says works (F08, DEC-013): the same photo under another
+    // name is copied, and the rest of the card is not copied twice.
+    let renamed = sync(&[&third], &library, "Tirana two");
+    assert_eq!(renamed.code, 0, "{renamed:?}");
+    assert_eq!(
+        fs::read(library.join(format!("{} - Tirana two/VIDEO/DSCF0002.MOV", date_command(TAKEN))))
+            .unwrap(),
+        b"another video"
+    );
     assert_eq!(fs::read(&mov).unwrap(), b"video two");
 
     // A library on the card: refused with the card's sentence, no report.

@@ -235,7 +235,9 @@ picks. It is simple to use.
   (exit 2), never changed. On every platform: blank, any of
   `/ \ : * ? " < > |`, a control character or Unicode noncharacter, an ending
   space or dot, or `<date> - <name>` over 255 bytes (a name over 242), and any
-  name the library's filesystem finds too long on a lookup (DEC-053).
+  name the library's filesystem finds too long on a lookup (DEC-053). A library
+  whose path with that folder in it is over the system's limit is refused the
+  same way, and the sentence blames the path, not the name (DEC-056).
 - If that folder already exists, new files are added to it (name collisions
   as below).
 - A session or `<TYPE>` folder that is a symlink is never followed: every
@@ -252,7 +254,10 @@ picks. It is simple to use.
 - File names are the camera's own and are never changed. If the target
   folder already holds a different file with the same name (counter wrap or
   reset), the new file is not copied. It is reported as failed with reason
-  "name collision". The user can re-sync it under another name (DEC-013).
+  "name collision". The user can re-sync it under another name (DEC-013). The
+  result says so, and that it means starting photosync again, as the name
+  stays for the session; a result with no collision says to run the same sync
+  again (DEC-056).
 - Two photosync processes on one library keep this too. Where the filesystem
   has no rename that refuses a taken name (exFAT), the check and rename hold a
   kernel lock (`flock`) on the target folder, so their different photos of one
@@ -275,7 +280,8 @@ picks. It is simple to use.
   stale if no process has that pid, or this process has it. So two processes
   on one library leave each other's temps alone. A pid reused by another
   program only leaves a temp for a later sync, which is safe. A temp whose
-  name holds no pid is left too (DEC-054).
+  name holds no pid is left too (DEC-054). One already gone when its turn
+  comes is neither removed nor a failure: another process got there first.
 - A source file counts as already synced if any library file anywhere has
   the same name and size and the same content (hash). Name + size picks
   the candidates, and the hash confirms them. So a photo synced earlier into

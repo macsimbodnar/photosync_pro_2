@@ -17,12 +17,11 @@ not change the order.
 
 ## Open
 
-1. S033  collision result names the way out (F08)
-2. S035  CLI bytes per source (F10)
-3. S037  TUI report cuts long lines (found in S028)
-4. S036  plan the GUI: confirm iced, layout, steps
-5. S025  first run on Linux: build, tests, hand checks (waits for the user)
-6. S017  hardware hand checks on Mac (waits for the user)
+1. S035  CLI bytes per source (F10)
+2. S037  TUI report cuts long lines (found in S028)
+3. S036  plan the GUI: confirm iced, layout, steps
+4. S025  first run on Linux: build, tests, hand checks (waits for the user)
+5. S017  hardware hand checks on Mac (waits for the user)
 
 Later, not yet steps: re-run the adversarial audit after the GUI, covering
 it too; the audit loop stops when a run reports no high and no medium.
@@ -31,8 +30,8 @@ it too; the audit loop stops when a run reports no high and no medium.
 
 Last five; the full record is `plan_done/`.
 
+- S033  collision result names the way out (F08)
 - S043  no-replace fallback holds across processes (found in S034)
 - S034  cleanup leaves live temps (F09)
 - S031  too long a name is refused (F06)
 - S042  refused screen offers only keys that work (S032 fast check)
-- S041  image harness keeps its promises (S029 fast check)

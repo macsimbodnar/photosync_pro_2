@@ -523,6 +523,47 @@ mod tests {
 
     /// The report body neither wraps nor scrolls sideways: at the width of
     /// a plain terminal, the two kinds of skipped and the card must fit.
+    /// F08: the name stays for the session, so the way out is to start again,
+    /// and the result's box must show it whole on a plain terminal.
+    #[test]
+    fn report_screen_shows_the_way_out_of_a_name_collision_at_80_columns() {
+        let source = SourceReport {
+            root: PathBuf::from("/c"),
+            files: vec![FileReport {
+                file: SourceFile {
+                    path: PathBuf::from("/c/DCIM/D.RAF"),
+                    media_type: Some(MediaType::Raw),
+                    size: 10,
+                    modified: std::time::UNIX_EPOCH,
+                },
+                outcome: FileOutcome::Failed(FailReason::NameCollision {
+                    existing: PathBuf::from("/l/D.RAF"),
+                }),
+            }],
+            unreadable: Vec::new(),
+        };
+        let lines = text::source_section(&source);
+        let result = text::result_line(&source.totals(), std::slice::from_ref(&source));
+        let app = App::with_outcome_for_test(Outcome::Report {
+            lines,
+            result,
+            complete: false,
+        });
+        let screen = draw(&app, 80, 24);
+        let top = screen[..5].join(" ");
+        let words: Vec<&str> = top
+            .split(|c: char| c.is_whitespace() || c == '│')
+            .filter(|w| !w.is_empty())
+            .collect();
+        let words = words.join(" ");
+        for part in [
+            "start photosync again to sync under another name",
+            "files already on the drive are skipped.",
+        ] {
+            assert!(words.contains(part), "{part}: {screen:#?}");
+        }
+    }
+
     #[test]
     fn report_screen_shows_duplicates_and_the_card_at_80_columns() {
         let file = |path: &str| SourceFile {

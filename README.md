@@ -97,7 +97,8 @@ library fails, and so does its copy on the other card. A file that reads as
 more or fewer bytes than the scan listed fails too, and nothing is placed. A `--name` that
 cannot be a folder name is refused before any card is read (exit 2): over 242 bytes, too long
 for the drive, ending in a space or a dot, or with any of `/ \ : * ? " < > |` or a control
-character, on every drive, as a drive moves between computers. A report names the
+character, on every drive, as a drive moves between computers. So is one that takes the path
+to the folder over the system's limit, in a very deep library. A report names the
 folder only if it is there. Ctrl-C cancels
 between chunks and still prints the report; a second Ctrl-C quits at once.
 photosync refuses to run as root.
@@ -151,6 +152,7 @@ Exit codes:
 - `0` every photo and video is on the drive (copied, or already there).
 - `1` some files failed or were cancelled, or part of a card could not be
   read. Do not format the card; fix the cause and run the same sync again.
+  After a name collision, start again under another name: the result says so.
 - `2` usage error, or a sync was refused before copying anything and its cards
   did not complete later in the session. Another card of the session may have
   been copied.

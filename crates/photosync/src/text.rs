@@ -477,6 +477,12 @@ pub fn session_result(session: &Session) -> String {
     }
     let syncs = session.runs().len() as u64;
     let totals = session.totals();
+    let reports = || {
+        session.runs().iter().filter_map(|run| match &run.end {
+            RunEnd::Report(report) => Some(report),
+            _ => None,
+        })
+    };
     let mut line = match not_complete(session) {
         None => format!(
             "Result: all {} on the drive ({} copied, {} already there), over {}.",
@@ -485,21 +491,25 @@ pub fn session_result(session: &Session) -> String {
             totals.skipped.files,
             plural(syncs, "sync", "syncs")
         ),
-        Some(each) => format!(
-            "Result: NOT COMPLETE: {} of {} not complete: {each}. Do not format the cards \
-             of those syncs. Fix the cause and sync them again: files already on the \
-             drive are skipped.",
-            session.not_complete().count(),
-            plural(syncs, "sync", "syncs")
-        ),
+        Some(each) => {
+            let collided = reports().flat_map(Report::sources).any(has_collision);
+            let again = if collided {
+                "After a name collision, fix any other cause, then start photosync again to \
+                 sync them under another name"
+            } else {
+                "Fix the cause and sync them again"
+            };
+            format!(
+                "Result: NOT COMPLETE: {} of {} not complete: {each}. Do not format the cards \
+                 of those syncs. {again}: files already on the drive are skipped.",
+                session.not_complete().count(),
+                plural(syncs, "sync", "syncs")
+            )
+        }
     };
-    let reports = session.runs().iter().filter_map(|run| match &run.end {
-        RunEnd::Report(report) => Some(report),
-        _ => None,
-    });
     if let Some(warning) = unread_warning(
         totals.unread.files,
-        &unread_cards(reports.flat_map(Report::sources)),
+        &unread_cards(reports().flat_map(Report::sources)),
     ) {
         line.push(' ');
         line.push_str(&warning);
@@ -1021,11 +1031,28 @@ pub fn result_line(totals: &Tally, sources: &[SourceReport]) -> String {
     // Named here too, so what failed does not hide a card that only had a
     // read error (S024).
     line.push_str(&unread_sentence(totals, sources));
-    line.push_str(
-        " Do not format the card. Fix the cause and run the same sync again: \
-         files already on the drive are skipped.",
-    );
+    // The name stays for a session, in the TUI and with --one-by-one, so another
+    // name means starting again. Short: the TUI's result box holds three rows.
+    let again = if sources.iter().any(has_collision) {
+        "After a name collision, fix any other cause, then start photosync again to sync \
+         under another name"
+    } else {
+        "Fix the cause and run the same sync again"
+    };
+    line.push_str(&format!(
+        " Do not format the card. {again}: files already on the drive are skipped."
+    ));
     line
+}
+
+/// The same sync fails the same way after a name collision (DEC-013).
+fn has_collision(source: &SourceReport) -> bool {
+    source.files.iter().any(|entry| {
+        matches!(
+            entry.outcome,
+            FileOutcome::Failed(FailReason::NameCollision { .. })
+        )
+    })
 }
 
 /// " 1 could not be read on /Volumes/A and was copied from another card:
@@ -1056,6 +1083,12 @@ pub fn refusal(err: &SyncError) -> String {
              is at most {MAX_NAME_BYTES} bytes long (fewer on some drives if it has accents), \
              has none of / \\ : * ? \" < > | and no control character, and does not end in \
              a space or a dot. Nothing was copied."
+        ),
+        SyncError::Folder(FolderError::PathTooLong { library, name }) => format!(
+            "With the name {name:?}, the path of a folder in the library {} is too long for \
+             this computer. Use a shorter name, or a library folder nearer the top of the \
+             drive. Nothing was copied.",
+            p(library)
         ),
         SyncError::Folder(FolderError::Io(e)) => format!(
             "Cannot read {}: {}. Nothing was copied. Check the drive, then run the sync again.",
@@ -2214,6 +2247,46 @@ mod tests {
         assert_eq!(
             result_line(&two.totals(), std::slice::from_ref(&two)),
             "Result: all 2 photos or videos on the drive (1 copied, 1 already there)."
+        );
+    }
+
+    /// F08: the same sync fails the same way after a name collision, so the
+    /// result says what works (DEC-013). Without one, the sentence stays.
+    #[test]
+    fn a_result_with_a_name_collision_names_the_way_out() {
+        let collision = || {
+            entry(
+                "/c/DCIM/A.RAF",
+                FileOutcome::Failed(FailReason::NameCollision {
+                    existing: PathBuf::from("/l/A.RAF"),
+                }),
+            )
+        };
+        let read = || entry("/c/DCIM/B.RAF", FileOutcome::Failed(FailReason::Read(eio())));
+        let result = |files| {
+            let source = SourceReport {
+                root: PathBuf::from("/c"),
+                files,
+                unreadable: Vec::new(),
+            };
+            result_line(&source.totals(), std::slice::from_ref(&source))
+        };
+        let way_out = " Do not format the card. After a name collision, fix any other cause, \
+                       then start photosync again to sync under another name: files already \
+                       on the drive are skipped.";
+        assert_eq!(
+            result(vec![collision()]),
+            format!("Result: NOT COMPLETE: 1 failed, 0 cancelled, 0 unreadable.{way_out}")
+        );
+        assert_eq!(
+            result(vec![collision(), read()]),
+            format!("Result: NOT COMPLETE: 2 failed, 0 cancelled, 0 unreadable.{way_out}")
+        );
+        assert_eq!(
+            result(vec![read()]),
+            "Result: NOT COMPLETE: 1 failed, 0 cancelled, 0 unreadable. Do not format the \
+             card. Fix the cause and run the same sync again: files already on the drive \
+             are skipped."
         );
     }
 

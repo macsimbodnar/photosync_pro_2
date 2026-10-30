@@ -30,6 +30,7 @@ Exit codes:
   0  every photo and video is on the drive (copied, or already there)
   1  some files failed or were cancelled, or part of a card could not be read:
      do not format the card; fix the cause and run the same sync again
+     (after a name collision, start again under another name)
   2  usage error, or the sync was refused before copying anything";
 
 #[derive(Debug, Parser)]

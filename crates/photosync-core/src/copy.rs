@@ -56,6 +56,9 @@ pub enum FolderError {
     /// Not one folder name on every drive, or too long for this one
     /// (`check_name`, `check_name_fits`).
     InvalidName(String),
+    /// The name fits, but the library's path with that folder in it is over
+    /// the system's limit: another name of this length would be refused too.
+    PathTooLong { library: PathBuf, name: String },
     /// The library could not be listed, or a file's mtime has no local date.
     Io(ScanError),
 }
@@ -64,6 +67,9 @@ impl fmt::Display for FolderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FolderError::InvalidName(name) => write!(f, "invalid sync name {name:?}"),
+            FolderError::PathTooLong { library, name } => {
+                write!(f, "path too long for sync name {name:?} in {}", library.display())
+            }
             FolderError::Io(e) => e.fmt(f),
         }
     }
@@ -73,7 +79,7 @@ impl Error for FolderError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             FolderError::Io(e) => Some(e),
-            FolderError::InvalidName(_) => None,
+            FolderError::InvalidName(_) | FolderError::PathTooLong { .. } => None,
         }
     }
 }
@@ -138,15 +144,29 @@ fn is_noncharacter(c: char) -> bool {
 /// limit may not fit, and a lookup says so without writing anything. Any other
 /// answer says nothing about the name, and each sync checks the library.
 pub(crate) fn check_name_fits(library: &Path, name: &str) -> Result<(), FolderError> {
-    let too_long = name.len() > MAX_NAME_BYTES
-        || matches!(
-            fs::symlink_metadata(library.join(format!("0000-00-00 - {name}"))),
-            Err(e) if e.kind() == io::ErrorKind::InvalidFilename
-        );
-    if too_long {
+    if name.len() > MAX_NAME_BYTES {
         return Err(FolderError::InvalidName(name.to_string()));
     }
-    Ok(())
+    let too_long = |folder: &str| {
+        matches!(
+            fs::symlink_metadata(library.join(folder)),
+            Err(e) if e.kind() == io::ErrorKind::InvalidFilename
+        )
+    };
+    let folder = format!("0000-00-00 - {name}");
+    if !too_long(&folder) {
+        return Ok(());
+    }
+    // The same error comes from a whole path over the system's limit. Plain
+    // ASCII of the same length fits every drive, so if that is too long as
+    // well, the path is at fault and not this name (DEC-056).
+    if too_long(&"0".repeat(folder.len())) {
+        return Err(FolderError::PathTooLong {
+            library: library.to_path_buf(),
+            name: name.to_string(),
+        });
+    }
+    Err(FolderError::InvalidName(name.to_string()))
 }
 
 /// The earliest `YYYY-MM-DD - <name>` folder directly in `library`, as the
@@ -751,10 +771,8 @@ fn remove_temps_in(dir: &Path, cleanup: &mut TempCleanup) -> io::Result<()> {
             if !stale_temp(&name) {
                 continue;
             }
-            match fs::remove_file(&path) {
-                Ok(()) => cleanup.removed.push(path),
-                Err(source) => cleanup.failures.push(ScanError { path, source }),
-            }
+            let removal = fs::remove_file(&path);
+            note_temp_removal(path, removal, cleanup);
         } else if !temp
             && file_type.is_dir()
             && !crate::library::skipped_entry(&name)
@@ -764,6 +782,16 @@ fn remove_temps_in(dir: &Path, cleanup: &mut TempCleanup) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn note_temp_removal(path: PathBuf, removal: io::Result<()>, cleanup: &mut TempCleanup) {
+    match removal {
+        Ok(()) => cleanup.removed.push(path),
+        // Another process's cleanup got there first: this one removed nothing,
+        // and nothing is left to report.
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => cleanup.failures.push(ScanError { path, source }),
+    }
 }
 
 /// Whether a temp named `name` was left by a run that is over (DEC-054). Its
@@ -1456,6 +1484,24 @@ mod tests {
         let folder = sync_folder(&plan, Some("Trip")).unwrap().unwrap();
         let outcome = copy_plan(&plan, &folder, &mut Monitor::default()).unwrap();
         (plan, outcome)
+    }
+
+    /// Another process's cleanup got there first: nothing is left to remove,
+    /// so the report must not say a temp could not be removed.
+    #[test]
+    fn a_temp_already_gone_is_neither_removed_nor_failed() {
+        let dir = TempDir::new();
+        let gone = dir.0.join(".photosync-tmp-1-1-DSCF0001.RAF");
+        let mut cleanup = TempCleanup::default();
+        note_temp_removal(gone.clone(), fs::remove_file(&gone), &mut cleanup);
+        assert_eq!(cleanup.removed, Vec::<PathBuf>::new());
+        assert!(cleanup.failures.is_empty(), "{:?}", cleanup.failures);
+
+        // Any other error is still a failure.
+        let denied = Err(io::Error::from_raw_os_error(libc::EACCES));
+        note_temp_removal(gone.clone(), denied, &mut cleanup);
+        assert_eq!(cleanup.failures.len(), 1);
+        assert_eq!(cleanup.failures[0].path, gone);
     }
 
     fn temps_under(dir: &Path) -> Vec<PathBuf> {

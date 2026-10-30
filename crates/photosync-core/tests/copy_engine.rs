@@ -325,6 +325,36 @@ fn a_name_the_filesystem_finds_too_long_is_refused() {
     assert_eq!(refused, too_long);
 }
 
+/// A folder so deep that only a few bytes more fit in a path, made one short
+/// level at a time so no test knows the system's limit.
+fn deepest_folder(top: &Path) -> PathBuf {
+    let mut deep = top.to_path_buf();
+    fs::create_dir_all(&deep).unwrap();
+    loop {
+        let next = deep.join("deep-deep");
+        match fs::create_dir(&next) {
+            Ok(()) => deep = next,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidFilename => return deep,
+            Err(e) => panic!("{e}"),
+        }
+    }
+}
+
+/// A very deep library: the whole path is over the limit, and the same lookup
+/// error must not blame a short name for its length (DEC-056).
+#[test]
+fn a_short_name_in_too_deep_a_library_is_refused_for_the_path() {
+    let dir = TempDir::new();
+    let lib = deepest_folder(&dir.0.join("lib"));
+    match Session::new(&lib, Some("Tirana")) {
+        Err(FolderError::PathTooLong { library, name }) => {
+            assert_eq!(library, lib);
+            assert_eq!(name, "Tirana");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 /// S031: refused on every platform, whatever this drive would take (DEC-053).
 #[test]
 fn a_name_with_a_character_some_drive_refuses_or_changes_is_refused() {

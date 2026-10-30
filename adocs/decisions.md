@@ -72,6 +72,7 @@ Why: one line.
 - DEC-053 2026-10-30 — which sync names are refused, the same on every platform; the Folder line (S031)
 - DEC-054 2026-10-30 — stale temps: the pid in the name decides (S034)
 - DEC-055 2026-10-30 — the exFAT fallback holds a kernel lock on the folder, across processes (S043)
+- DEC-056 2026-10-30 — one sentence for the way out of a name collision; a path too long is not the name's fault (S033)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1323,8 +1324,10 @@ ENAMETOOLONG: HFS+ counts decomposed UTF-16, so 100 U+0390 (213 bytes in all) fi
 APFS and exFAT, not HFS+. The lookup reads only. Rejected: a folder made and removed
 to ask, as a sync writes nothing before it plans.
 (4) What this still lets through: APFS refuses code points Unicode has not assigned
-(U+0378 measured). Knowing them needs a table or a crate and goes stale. Such a name, or
-a library path too long as a whole, fails each file, exit 1, NOT COMPLETE: late, but true.
+(U+0378 measured). Knowing them needs a table or a crate and goes stale. Such a name fails
+each file, exit 1, NOT COMPLETE: late, but true. A library path too long with the session
+folder in it is refused, exit 2, for the path (DEC-056). One that takes the folder but not
+a file under it, or a sync with no name, still fails each file, exit 1 (measured).
 (5) The report's Folder line reads the drive when it is rendered, through
 `SyncFolder::there` (lstat, a real folder only): otherwise "none (not made, or no
 longer there)", as a folder is fixed before it is made. "Unknown: cannot check" if
@@ -1405,3 +1408,27 @@ naming the standard streams under `src`. The test on the real binary depends on 
 for the window, and catches the race only because the pairs are many.
 Why: the kernel drops the lock when a process dies, so a crash leaves nothing stuck, and
 no new file goes on the drive. Every doubt fails a copy that a later sync can redo.
+
+## DEC-056  2026-10-30  one sentence for the way out of a name collision; a path too long is not the name's fault (S033)
+Tags: report, cli, tui, layout
+Decision: the agent's choice, not yet confirmed by the user. (1) With a collision among
+the failures, the result says: "After a name collision, fix any other cause, then start
+photosync again to sync under another name: files already on the drive are skipped." One
+sentence for every front-end, as the name stays for the session in the TUI and with
+`--one-by-one`, so "start again" is true everywhere and no front-end needs its own. It
+replaces "run the same sync again" even with other failures, as another name also picks
+those up. It stays short as the TUI's result box holds three rows: it fits at 80 columns
+(a test holds this) unless the line has more to say, as a session's does. The session's
+result says the same of its syncs. A failed duplicate of a collided file adds nothing: its
+original is in the report. Rejected: a wording per front-end.
+(2) A lookup's ENAMETOOLONG in `check_name_fits` is told apart by asking again with plain
+ASCII of the same length: too long as well means the path is at fault
+(`FolderError::PathTooLong`, its own sentence), and otherwise the name (`InvalidName`, as
+an HFS+ name is). It reads only and needs no unsafe code, and the kernel judges the same
+path, symlinks in it included. Rejected: comparing with `PATH_MAX`, a second copy of the
+kernel's rule; `fstatat` on the library, as it needs the library open and unsafe code.
+(3) Measured on macOS: a library that takes the session folder but not `<TYPE>/<file>`
+under it, or a sync with no name, is not refused: each file fails, exit 1, with the reason.
+Refusing it would mean guessing the longest temp name. True, if late.
+Why: a dead end costs a user whose counter wrapped a useless re-run, and a sentence about
+242 bytes sends a user with a short name looking for the wrong thing.

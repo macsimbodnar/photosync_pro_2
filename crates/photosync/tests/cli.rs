@@ -527,6 +527,33 @@ fn ctrl_c_at_the_prompt_ends_the_session_with_its_summary() {
     drop(pty);
 }
 
+/// A very deep library takes no folder with a short name in it: the sentence
+/// blames the path, as no shorter name rule was broken (DEC-056).
+#[test]
+fn a_library_too_deep_for_the_folder_is_refused_for_its_path() {
+    let dir = TempDir::new();
+    let mut library = dir.0.join("library");
+    fs::create_dir_all(&library).unwrap();
+    while fs::create_dir(library.join("deep-deep")).is_ok() {
+        library.push("deep-deep");
+    }
+    let run = photosync([
+        "sync",
+        "--source",
+        dir.0.join("no-card").to_str().unwrap(),
+        "--dest",
+        library.to_str().unwrap(),
+        "--name",
+        "Tirana",
+    ]);
+    assert_eq!(run.code, 2, "{run:?}");
+    assert_eq!(run.stdout, "", "{run:?}");
+    assert!(run.stderr.contains(library.to_str().unwrap()), "{run:?}");
+    assert!(run.stderr.contains("too long"), "{run:?}");
+    assert!(!run.stderr.contains("242 bytes"), "{run:?}");
+    assert!(run.stderr.contains("Nothing was copied."), "{run:?}");
+}
+
 /// F06: a name that cannot be a folder name is a usage error, exit 2, before
 /// any card is read: the card here does not exist, and is never complained of.
 #[test]

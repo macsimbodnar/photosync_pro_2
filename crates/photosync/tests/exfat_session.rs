@@ -166,8 +166,9 @@ fn one_card_after_another_keeps_the_worst_outcome_on_exfat() {
         tail.ends_with(&format!(
             "\nResult: NOT COMPLETE: 2 of 5 syncs not complete: sync 2 ({}): 1 failed, 0 \
              cancelled, 0 unreadable; sync 4 ({}): refused, nothing copied. Do not format the \
-             cards of those syncs. Fix the cause and sync them again: files already on the \
-             drive are skipped.\n",
+             cards of those syncs. After a name collision, fix any other cause, then start \
+             photosync again to sync them under another name: files already on the drive \
+             are skipped.\n",
             y.display(),
             gone.display()
         )),
