@@ -8,7 +8,7 @@ Updated: 2026-10-30, by Claude (S041 done)
 
 - Last done: S041  image harness keeps its promises (S029 fast check)
 - In progress: none
-- Next: S031  too long a name is refused (F06); then the rest of plan.md's Open list
+- Next: S042  refused screen offers only keys that work; then the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:

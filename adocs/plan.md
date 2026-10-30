@@ -17,14 +17,15 @@ not change the order.
 
 ## Open
 
-1. S031  too long a name is refused (F06)
-2. S034  cleanup leaves live temps (F09)
-3. S033  collision result names the way out (F08)
-4. S035  CLI bytes per source (F10)
-5. S037  TUI report cuts long lines (found in S028)
-6. S036  plan the GUI: confirm iced, layout, steps
-7. S025  first run on Linux: build, tests, hand checks (waits for the user)
-8. S017  hardware hand checks on Mac (waits for the user)
+1. S042  refused screen offers only keys that work (S032 fast check)
+2. S031  too long a name is refused (F06)
+3. S034  cleanup leaves live temps (F09)
+4. S033  collision result names the way out (F08)
+5. S035  CLI bytes per source (F10)
+6. S037  TUI report cuts long lines (found in S028)
+7. S036  plan the GUI: confirm iced, layout, steps
+8. S025  first run on Linux: build, tests, hand checks (waits for the user)
+9. S017  hardware hand checks on Mac (waits for the user)
 
 Later, not yet steps: re-run the adversarial audit after the GUI, covering
 it too; the audit loop stops when a run reports no high and no medium.

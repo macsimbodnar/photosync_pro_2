@@ -68,6 +68,7 @@ Why: one line.
 - DEC-049 2026-10-30 — the gate mounts its own images and runs the real syncs (S029)
 - DEC-050 2026-10-30 — a refused sync whose cards completed later stops counting; the TUI checks the library first (S032)
 - DEC-051 2026-10-30 — the images' watchdog has time limits and says when it gives up (S041)
+- DEC-052 2026-10-30 — TUI: cards changed after a refusal before the session are not remembered
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1281,3 +1282,14 @@ not empty something is wrong, and it should fail loudly.
 That file is outside S041's `touches`, and the skip is needed.
 Why: S029's fast check: the README and DEC-049 (4) claimed a limit on every hdiutil
 call, and the watchdog had none.
+
+## DEC-052  2026-10-30  TUI: cards changed after a refusal before the session are not remembered
+Tags: tui, session
+Decision: the agent's choice under the user's standing instruction, not yet
+confirmed by the user. A refusal before the session starts (missing library,
+bad name; DEC-050) is recorded nowhere. If the user goes back and unpicks a
+card, the session knows nothing of it, and a later sync can end complete
+without naming that card (S032 fast check).
+Why: no card was read and no sentence said it was safe, so this equals
+unpicking a card before starting. Remembering picks would warn about a card
+the user dropped on purpose.
