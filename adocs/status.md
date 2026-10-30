@@ -8,7 +8,7 @@ Updated: 2026-10-30, by Claude (S027 done)
 
 - Last done: S027  name reuse across Unicode forms (F02)
 - In progress: none
-- Next: S030  tests kill the surviving mutants (F05); then the rest of plan.md's Open list
+- Next: S038  duplicate line names the real card; then the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
@@ -27,7 +27,7 @@ Updated: 2026-10-30, by Claude (S027 done)
   - Linux exFAT: `canonicalize` keeps the case it is given, so two library
     spellings that differ only in case get two fallback locks (S013 fast
     check). Fold the case or key by inode there; check in S025.
-  - Linux exFAT: what DEC-044 says of it comes from the kernel's source, not
+  - Linux exFAT: what DEC-044 says of it comes from an agent's recollection of the kernel's fs/exfat (source not read), not
     a run. Check in S025: a folder a Mac made and an accented name typed on
     Linux are expected to give two folders.
   - A freshly formatted card without `DCIM` looks like any USB drive and is

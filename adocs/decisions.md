@@ -1041,7 +1041,8 @@ date, and never overwrites, as a collision fails the file. (2) Not found and
 name too long are "no such folder"; any other lookup error refuses the sync,
 as it says nothing about the folder and a guess could split the trip. (3)
 Same bytes skip the lookup, so an inode that is not stable cannot split a plain
-re-run. Linux exFAT, from the kernel's fs/exfat, NOT measured (check in S025):
+re-run. Linux exFAT, from an agent's recollection of the kernel's fs/exfat (source not
+read), NOT measured (check in S025):
 lookups fold case with the upcase table and do not normalise, and names are
 stored as given. So one form reuses its folder, as listed bytes match; a folder
 a Mac made decomposed and a name typed composed on Linux are two names and two
