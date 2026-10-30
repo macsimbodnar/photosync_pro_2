@@ -8,7 +8,7 @@ Updated: 2026-10-30, by Claude (S033 done)
 
 - Last done: S033  collision result names the way out (F08)
 - In progress: none
-- Next: S035  CLI bytes per source (F10)
+- Next: S044  cancel is heard during the lock wait; then the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:

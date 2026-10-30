@@ -17,11 +17,12 @@ not change the order.
 
 ## Open
 
-1. S035  CLI bytes per source (F10)
-2. S037  TUI report cuts long lines (found in S028)
-3. S036  plan the GUI: confirm iced, layout, steps
-4. S025  first run on Linux: build, tests, hand checks (waits for the user)
-5. S017  hardware hand checks on Mac (waits for the user)
+1. S044  cancel is heard during the lock wait (S043 fast check)
+2. S035  CLI bytes per source (F10)
+3. S037  TUI report cuts long lines (found in S028)
+4. S036  plan the GUI: confirm iced, layout, steps
+5. S025  first run on Linux: build, tests, hand checks (waits for the user)
+6. S017  hardware hand checks on Mac (waits for the user)
 
 Later, not yet steps: re-run the adversarial audit after the GUI, covering
 it too; the audit loop stops when a run reports no high and no medium.
