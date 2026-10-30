@@ -49,6 +49,9 @@ Updated: 2026-10-31, by Claude (S045 done)
     cancel could also wait up to a minute behind the other's lock wait (DEC-057 (2)).
   - `copy_plan` (public, one plan) still copies on one thread; only
     `Session` copies cards at once (DEC-040 (9)). A GUI must use `Session`.
+  - CLI progress measures width in chars, not columns: a wide-character card
+    label (`写真カード`) wraps the line and `\r` leaves rows behind (S035 fast
+    check, read only). A fix needs a width table or unicode-width (DEPS: ask).
   - Test watchdog: a process stuck in the kernel (state U) ignores SIGKILL, so
     `wait` in tests/common/images.rs and scripts/test_exfat.sh would block with
     nothing logged (S041 fast check, read only, not reproduced). Harness only.
