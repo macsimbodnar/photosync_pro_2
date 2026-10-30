@@ -899,6 +899,11 @@ mod tests {
                 .starts_with("Result: NOT COMPLETE: 2 of 3 syncs"),
             "{lines:#?}"
         );
+        // S040: and the end says how many lines to go back for.
+        assert!(
+            lines[lines.len() - 3].ends_with(" problem lines above the duplicates: read them."),
+            "{lines:#?}"
+        );
     }
 
     /// Runs `job` on the real worker and gives the model every message,

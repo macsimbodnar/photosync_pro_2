@@ -235,9 +235,55 @@ fn report_with(report: &Report, header: Vec<String>) -> String {
     out.push("Report".to_string());
     out.extend(header);
     out.extend(report_body(report));
+    let problems = report_problems(
+        report.sources(),
+        library_problems(report.library_failures(), report.temps()),
+    );
+    if let Some(line) = above_duplicates(problems, report.sources().iter()) {
+        out.push(String::new());
+        out.push(line);
+    }
     out.push(String::new());
     out.push(result_line(&report.totals(), report.sources()));
     out.join("\n") + "\n"
+}
+
+/// The lines of the library section that say something went wrong. "Removed
+/// 2 temp files" is not one: nothing is wrong, and a pointer to it would
+/// teach the user to skip the pointer.
+fn library_problems(failures: &[ScanError], temps: &TempCleanup) -> usize {
+    failures.len() + temps.failures.len()
+}
+
+/// The problem lines of one report: each source's, then the library's.
+fn report_problems(sources: &[SourceReport], library_problems: usize) -> usize {
+    let on_cards: usize = sources.iter().map(|s| wrong_lines(s).len()).sum();
+    on_cards + library_problems
+}
+
+/// A line for the end of a report, where a plain terminal or `| tail` shows
+/// it: a long list of duplicates has pushed its `problems` lines off the
+/// screen, and only the count is short enough to always fit (S040). `None`
+/// with no problem, or no duplicate to hide one.
+fn above_duplicates<'r>(
+    problems: usize,
+    mut sources: impl Iterator<Item = &'r SourceReport>,
+) -> Option<String> {
+    (problems > 0 && sources.any(|s| !duplicate_lines(s).is_empty())).then(|| {
+        format!(
+            "{} above the duplicates: read {}.",
+            problem_lines(problems),
+            it_or_them(problems)
+        )
+    })
+}
+
+fn problem_lines(n: usize) -> String {
+    plural(n as u64, "problem line", "problem lines")
+}
+
+fn it_or_them(n: usize) -> &'static str {
+    if n == 1 { "it" } else { "them" }
 }
 
 /// A report's sections, without its title and result line.
@@ -475,44 +521,143 @@ pub fn session_report(session: &Session) -> Option<String> {
             },
         ] => Some(report_in(report, session.library(), session.folder())),
         runs => {
+            let parts: Vec<SyncPart> = runs.iter().map(sync_part).collect();
             let mut out = vec!["Report".to_string()];
             out.extend(library_and_folder(session));
-            // Across syncs too: a backup card's list must not bury what a
-            // later sync reports.
-            let hold = runs.iter().any(|run| match &run.end {
-                RunEnd::Report(report) => could_be_buried(
-                    report.sources(),
-                    &library_section(report.library_failures(), report.temps()),
-                ),
-                RunEnd::Refused(_) | RunEnd::Crashed(_) => true,
-            });
-            for (i, run) in runs.iter().enumerate() {
-                out.push(String::new());
-                out.push(format!("Sync {} of {}: {}", i + 1, runs.len(), cards(run)));
-                match &run.end {
-                    RunEnd::Report(report) => {
-                        let (all_sources, library) = other_sections(report);
-                        out.extend(sections(report.sources(), all_sources, library, hold));
-                        out.push(format!(
-                            "  {}",
-                            result_line(&report.totals(), report.sources())
-                        ));
-                    }
-                    RunEnd::Refused(e) => out.push(format!("  {}", refusal(e))),
-                    RunEnd::Crashed(what) => out.push(format!("  {}", crash(what))),
-                }
-            }
-            if hold {
-                for run in runs {
-                    if let RunEnd::Report(report) = &run.end {
-                        out.extend(held_duplicates(report.sources()));
-                    }
-                }
-            }
-            out.extend(all_syncs(session));
+            out.extend(several_syncs(&parts));
+            out.extend(all_syncs(session, several_syncs_pointer(&parts)));
             Some(out.join("\n") + "\n")
         }
     }
+}
+
+/// One sync, as a report of several shows it. Not `RunEnd`: only a real sync
+/// on two devices makes a `Report`, so a test under plain `cargo test` could
+/// not give this code a sync with duplicates (DEC-048).
+struct SyncPart<'r> {
+    cards: String,
+    end: PartEnd<'r>,
+}
+
+enum PartEnd<'r> {
+    Report {
+        sources: &'r [SourceReport],
+        all_sources: Vec<String>,
+        library: Vec<String>,
+        library_problems: usize,
+        result: String,
+    },
+    /// Refused or crashed: its sentence.
+    Stopped(String),
+}
+
+fn sync_part(run: &Run) -> SyncPart<'_> {
+    let end = match &run.end {
+        RunEnd::Report(report) => {
+            let (all_sources, library) = other_sections(report);
+            PartEnd::Report {
+                sources: report.sources(),
+                all_sources,
+                library,
+                library_problems: library_problems(report.library_failures(), report.temps()),
+                result: result_line(&report.totals(), report.sources()),
+            }
+        }
+        RunEnd::Refused(e) => PartEnd::Stopped(refusal(e)),
+        RunEnd::Crashed(what) => PartEnd::Stopped(crash(what)),
+    };
+    SyncPart {
+        cards: cards(run),
+        end,
+    }
+}
+
+/// Each sync's sections in order, then, when any could be buried, every
+/// duplicate of every sync.
+fn several_syncs(parts: &[SyncPart]) -> Vec<String> {
+    // Across syncs too: a backup card's list must not bury what a later
+    // sync reports.
+    let hold = parts.iter().any(|part| match &part.end {
+        PartEnd::Report {
+            sources, library, ..
+        } => could_be_buried(sources, library),
+        PartEnd::Stopped(_) => true,
+    });
+    let mut out = Vec::new();
+    for (i, part) in parts.iter().enumerate() {
+        out.push(String::new());
+        out.push(format!("Sync {} of {}: {}", i + 1, parts.len(), part.cards));
+        match &part.end {
+            PartEnd::Report {
+                sources,
+                all_sources,
+                library,
+                result,
+                ..
+            } => {
+                out.extend(sections(
+                    sources,
+                    all_sources.clone(),
+                    library.clone(),
+                    hold,
+                ));
+                out.push(format!("  {result}"));
+            }
+            PartEnd::Stopped(sentence) => out.push(format!("  {sentence}")),
+        }
+    }
+    if hold {
+        for part in parts {
+            if let PartEnd::Report { sources, .. } = &part.end {
+                out.extend(held_duplicates(sources));
+            }
+        }
+    }
+    out
+}
+
+/// The problem lines of the syncs that have a report.
+fn problems_in_reports(parts: &[SyncPart]) -> usize {
+    parts
+        .iter()
+        .map(|part| match &part.end {
+            PartEnd::Report {
+                sources,
+                library_problems,
+                ..
+            } => report_problems(sources, *library_problems),
+            PartEnd::Stopped(_) => 0,
+        })
+        .sum()
+}
+
+/// `above_duplicates` for a report of several syncs. A refusal or a crash is
+/// a line above the duplicates there too.
+fn several_syncs_pointer(parts: &[SyncPart]) -> Option<String> {
+    let stopped = parts
+        .iter()
+        .filter(|part| matches!(part.end, PartEnd::Stopped(_)))
+        .count();
+    let sources = parts.iter().flat_map(|part| match &part.end {
+        PartEnd::Report { sources, .. } => sources.iter(),
+        PartEnd::Stopped(_) => [].iter(),
+    });
+    above_duplicates(problems_in_reports(parts) + stopped, sources)
+}
+
+/// The line for the CLI's session summary: a library problem leaves its sync
+/// "complete", so no other line here says it, and a later card's report may
+/// have pushed it off the screen. Refused and crashed syncs are not counted:
+/// they went to stderr, not to a report, and the summary names them.
+fn summary_pointer(parts: &[SyncPart]) -> Option<String> {
+    let problems = problems_in_reports(parts);
+    (problems > 0).then(|| {
+        format!(
+            "{} in the reports above: read {}.",
+            problem_lines(problems),
+            it_or_them(problems)
+        )
+    })
 }
 
 /// The CLI's last words after several syncs, each already reported: one
@@ -527,13 +672,20 @@ pub fn session_summary(session: &Session) -> String {
     for (i, run) in runs.iter().enumerate() {
         out.push(format!("  {}: {}", run_name(i, run), run_state(run)));
     }
-    out.extend(all_syncs(session));
+    let parts: Vec<SyncPart> = runs.iter().map(sync_part).collect();
+    out.extend(all_syncs(session, summary_pointer(&parts)));
     out.join("\n") + "\n"
 }
 
-fn all_syncs(session: &Session) -> Vec<String> {
+/// The totals and the result, with `pointer` between them: right above the
+/// result, so `| tail` shows it even under a table of every type.
+fn all_syncs(session: &Session, pointer: Option<String>) -> Vec<String> {
     let mut out = vec![String::new(), "All syncs".to_string()];
     out.extend(table(&session.by_type(), &session.totals()));
+    if let Some(line) = pointer {
+        out.push(String::new());
+        out.push(line);
+    }
     out.push(String::new());
     out.push(session_result(session));
     out
@@ -1445,6 +1597,222 @@ mod tests {
             .position(|l| l.starts_with("  duplicate in session  "))
             .unwrap();
         assert!(removed < line, "{lines:#?}");
+    }
+
+    fn duplicates_on(card: &str) -> SourceReport {
+        SourceReport {
+            root: PathBuf::from(card),
+            files: vec![entry(
+                &format!("{card}/DCIM/101_FUJI/D.RAF"),
+                FileOutcome::DuplicateInSession {
+                    of: PathBuf::from("/V/O/DCIM/100_FUJI/D.RAF"),
+                },
+            )],
+            unreadable: Vec::new(),
+        }
+    }
+
+    fn scan_error(path: &str) -> ScanError {
+        ScanError {
+            path: PathBuf::from(path),
+            source: eio(),
+        }
+    }
+
+    /// S040: every kind of line a user must read counts, and the number is
+    /// the number of such lines the report prints above the duplicates.
+    #[test]
+    fn the_end_of_a_report_counts_every_problem_line_above_the_duplicates() {
+        let mut card = duplicates_on("/V/A");
+        card.files.extend([
+            entry(
+                "/V/A/DCIM/100_FUJI/F.RAF",
+                FileOutcome::Failed(FailReason::Read(eio())),
+            ),
+            entry("/V/A/DCIM/100_FUJI/C.RAF", FileOutcome::Cancelled),
+            entry(
+                "/V/A/DCIM/100_FUJI/U.RAF",
+                FileOutcome::DuplicateUnread {
+                    of: PathBuf::from("/V/O/DCIM/100_FUJI/U.RAF"),
+                    error: eio(),
+                },
+            ),
+        ]);
+        card.unreadable.push(Unreadable {
+            error: scan_error("/V/A/DCIM/LOCKED"),
+            contents_unknown: false,
+        });
+        let sources = [card];
+        let failures = [scan_error("/l/LOCKED.RAF")];
+        let temps = TempCleanup {
+            removed: vec![PathBuf::from("/l/.photosync-tmp-x")],
+            failures: vec![scan_error("/l/.photosync-tmp-y")],
+        };
+
+        let problems = report_problems(&sources, library_problems(&failures, &temps));
+
+        assert_eq!(
+            above_duplicates(problems, sources.iter()).unwrap(),
+            "6 problem lines above the duplicates: read them."
+        );
+        // The count is what the reader finds: each of those lines is there,
+        // above the first duplicate.
+        let lines = body(&sources, Vec::new(), library_section(&failures, &temps));
+        let first_duplicate = lines
+            .iter()
+            .position(|l| l.starts_with("  duplicate in session  "))
+            .unwrap();
+        let found = lines[..first_duplicate]
+            .iter()
+            .filter(|l| {
+                [
+                    "  failed ",
+                    "  cancelled ",
+                    "  read error ",
+                    "  unreadable ",
+                    "  /l/",
+                ]
+                .iter()
+                .any(|p| l.starts_with(p))
+            })
+            .count();
+        assert_eq!(found, problems, "{lines:#?}");
+    }
+
+    /// No pointer when nothing is wrong, nor when nothing hides what is. A
+    /// removed temp file holds the duplicates back, but it is not a problem.
+    #[test]
+    fn the_end_of_a_report_points_back_only_at_a_problem_duplicates_could_hide() {
+        let clean = [duplicates_on("/V/A")];
+        assert_eq!(
+            above_duplicates(report_problems(&clean, 0), clean.iter()),
+            None
+        );
+
+        let temps = TempCleanup {
+            removed: vec![PathBuf::from("/l/.photosync-tmp-x")],
+            failures: Vec::new(),
+        };
+        assert_eq!(library_problems(&[], &temps), 0);
+
+        let no_duplicates = [SourceReport {
+            root: PathBuf::from("/V/A"),
+            files: vec![entry("/V/A/DCIM/100_FUJI/C.RAF", FileOutcome::Cancelled)],
+            unreadable: Vec::new(),
+        }];
+        assert_eq!(
+            above_duplicates(report_problems(&no_duplicates, 0), no_duplicates.iter()),
+            None
+        );
+
+        // The library alone: the result says "all on the drive", and this
+        // line is the only word of it near the end.
+        let library_only =
+            library_problems(&[scan_error("/l/LOCKED.RAF")], &TempCleanup::default());
+        assert_eq!(
+            above_duplicates(report_problems(&clean, library_only), clean.iter()).unwrap(),
+            "1 problem line above the duplicates: read it."
+        );
+    }
+
+    fn report_part<'r>(sources: &'r [SourceReport]) -> SyncPart<'r> {
+        SyncPart {
+            cards: sources[0].root.display().to_string(),
+            end: PartEnd::Report {
+                sources,
+                all_sources: Vec::new(),
+                library: Vec::new(),
+                library_problems: 0,
+                result: "Result: all 1 photo or video on the drive.".to_string(),
+            },
+        }
+    }
+
+    /// S040: a sync refused or crashed in a session whose other syncs hold
+    /// only duplicates. Nothing but that sync's own sentence could be
+    /// buried, so only the `Stopped` arm holds the lists back.
+    #[test]
+    fn a_stopped_sync_holds_back_the_duplicates_of_the_syncs_around_it() {
+        let (a, b) = ([duplicates_on("/V/A")], [duplicates_on("/V/B")]);
+        for end in [
+            RunEnd::Refused(SyncError::Report(photosync_core::ReportError::SourceTwice(
+                PathBuf::from("/V/S"),
+            ))),
+            RunEnd::Crashed("boom".to_string()),
+        ] {
+            let stopped = Run {
+                sources: vec![PathBuf::from("/V/S")],
+                end,
+            };
+            let parts = [report_part(&a), sync_part(&stopped), report_part(&b)];
+
+            let lines = several_syncs(&parts);
+
+            let at = |part: &str| {
+                lines
+                    .iter()
+                    .position(|l| l.starts_with(part))
+                    .unwrap_or_else(|| panic!("{part}: {lines:#?}"))
+            };
+            let sentence = at("Sync 2 of 3: /V/S") + 1;
+            assert!(!lines[sentence].is_empty(), "{lines:#?}");
+            assert!(sentence < at("Duplicates in session on /V/A"), "{lines:#?}");
+            assert!(sentence < at("  duplicate in session  "), "{lines:#?}");
+            assert!(
+                at("Duplicates in session on /V/A") < at("Duplicates in session on /V/B"),
+                "{lines:#?}"
+            );
+            assert_eq!(
+                several_syncs_pointer(&parts).unwrap(),
+                "1 problem line above the duplicates: read it."
+            );
+        }
+    }
+
+    /// The real `session_report`, on the two ends a test can record: both
+    /// sentences are there. No duplicate, so no pointer.
+    #[test]
+    fn a_session_report_of_stopped_syncs_has_their_sentences_and_no_pointer() {
+        let mut session = Session::new(Path::new("/l"), None).unwrap();
+        let error = SyncError::Report(photosync_core::ReportError::SourceTwice(PathBuf::from(
+            "/V/S",
+        )));
+        let refused = refusal(&error);
+        session.record_refusal(&[PathBuf::from("/V/S")], error);
+        session.record_crash(&[PathBuf::from("/V/T")], "boom".to_string());
+
+        let report = session_report(&session).unwrap();
+
+        assert!(report.contains(&format!("  {refused}\n")), "{report}");
+        assert!(
+            report.contains(&format!("  {}\n", crash("boom"))),
+            "{report}"
+        );
+        assert!(!report.contains("problem line"), "{report}");
+    }
+
+    /// The CLI's summary: a library problem leaves its sync "complete", so
+    /// this line is its only word there. Refusals are on stderr, and named.
+    #[test]
+    fn the_session_summary_points_back_at_problem_lines_in_the_reports() {
+        let clean = [duplicates_on("/V/A")];
+        let mut with_library = report_part(&clean);
+        if let PartEnd::Report {
+            library_problems, ..
+        } = &mut with_library.end
+        {
+            *library_problems = 2;
+        }
+        let stopped = SyncPart {
+            cards: "/V/S".to_string(),
+            end: PartEnd::Stopped("refused".to_string()),
+        };
+
+        assert_eq!(
+            summary_pointer(&[with_library, report_part(&clean)]).unwrap(),
+            "2 problem lines in the reports above: read them."
+        );
+        assert_eq!(summary_pointer(&[report_part(&clean), stopped]), None);
     }
 
     /// A source with nothing but "already on drive" keeps its short report:

@@ -64,6 +64,7 @@ Why: one line.
 - DEC-045 2026-10-30 — a later copy of an earlier sync's photo is resolved in the plan (S038)
 - DEC-046 2026-10-30 — duplicates wait until after every failure and the library (S039)
 - DEC-047 2026-10-30 — how tests see a real flush; root guard outside main (S030)
+- DEC-048 2026-10-30 — the end of a report counts the problem lines above the duplicates (S040)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1122,3 +1123,34 @@ the end of planning, once by really moving the library, once by the existing
 `Fault::Device`. A real change of device needs a second volume, and at that
 moment no test can swap one.
 Why: M02, M03, M08, M13 and M16 passed the whole suite when removed (audit F05).
+
+## DEC-048  2026-10-30  the end of a report counts the problem lines above the duplicates (S040)
+Tags: report, cli, tui, tests
+Decision: agent's pick in S040, not yet confirmed by the user.
+(1) A count, not the problems repeated: the step said pick the smaller. One
+line right above the result, "2 problem lines above the duplicates: read them.",
+so `| tail` shows it. Rejected: repeating them; 500 cancelled lines would bury
+the result the same way.
+(2) A problem line is a line from `wrong_lines`, a library entry or a temp file
+that could not be read or removed. Headings do not count. "Removed 2 temp files"
+does not count: it still holds duplicates back (DEC-046 (1)) but nothing is
+wrong, and a pointer to it would teach the user to skip the pointer.
+(3) No line unless a duplicate is listed: without one, nothing sits between the
+problems and the result.
+(4) The rule covers every report, so a one-sync TUI report stays word for word
+the CLI's and a report of several says it too; there a refused or crashed sync
+counts as one line. The step asked only for the CLI.
+(5) The CLI's summary after several syncs says "N problem lines in the reports
+above: read them." It is not in the step's words, but a library problem leaves
+its sync "complete" and a later card's report pushes it off the screen, which
+DEC-046 (4) did not cover. Refused and crashed syncs do not count there: they
+go to stderr and the summary names them.
+(6) The step asked for a unit test on `session_report` with duplicates-only
+syncs. A test in the binary cannot make one: only a real sync on two devices
+makes a `Report`, and the seam is barred (DEC-027). So `session_report` now maps
+each run to a `SyncPart`, whose sources a test can build, and `several_syncs`
+holds the rendering and the flipped arm. The test gives real `Run`s for the
+refused and crashed ends. Rejected: a core API to build a `Report` or a session
+from parts, as a report must never be built from unchecked inputs.
+Why: the prime rule; a problem must not go unread because a list of safe photos
+pushed it off the screen.

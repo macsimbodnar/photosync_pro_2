@@ -170,3 +170,44 @@ fn one_card_after_another_keeps_the_worst_outcome_on_exfat() {
     let last = &last[last.rfind("Report\n").unwrap()..];
     assert!(last.contains(" (0 copied, "), "{last}");
 }
+
+/// S040: one card after another. The first sync's library problem leaves it
+/// "complete", and the second's report pushes it off the screen: the summary
+/// still points back at it, right above the result.
+#[test]
+fn the_session_summary_points_back_at_a_library_problem_of_an_earlier_sync() {
+    if mounts().is_none() {
+        return;
+    }
+    let dir = TempDir::new();
+    let (first, backup) = (dir.0.join("first"), dir.0.join("backup"));
+    let library = common::OnDrive::new(&common::disk_of_the_binary(), "s040-session");
+    write_file(&first, "DCIM/100_FUJI/DSCF0001.RAF", b"twice", at(TAKEN));
+    write_file(&first, "DCIM/100_FUJI/DSCF9000.RAF", b"new", at(TAKEN));
+    common::lock_in_library(&library.0, "old/DSCF9000.RAF", b"old");
+    write_file(&backup, "DCIM/100_FUJI/DSCF0001.RAF", b"twice", at(TAKEN));
+
+    let args: [&std::ffi::OsStr; 6] = [
+        "sync".as_ref(),
+        "--source".as_ref(),
+        first.as_os_str(),
+        "--dest".as_ref(),
+        library.0.as_os_str(),
+        "--one-by-one".as_ref(),
+    ];
+    let input = format!("{}\nq\n", backup.display());
+    let run = photosync_tty(args, input.as_bytes());
+
+    assert_eq!(run.code, 0, "{run:?}");
+    assert!(
+        run.stdout
+            .contains(&format!("  sync 1 ({}): complete\n", first.display())),
+        "{run:?}"
+    );
+    let last: Vec<&str> = run.stdout.lines().rev().take(3).collect();
+    assert_eq!(
+        last[2], "1 problem line in the reports above: read it.",
+        "{run:?}"
+    );
+    assert!(last[0].starts_with("Result: all 3 "), "{run:?}");
+}

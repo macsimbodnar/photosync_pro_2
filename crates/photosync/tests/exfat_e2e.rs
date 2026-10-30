@@ -495,6 +495,98 @@ fn the_report_shows_duplicates_and_names_the_card() {
     assert!(!again.stdout.contains("100_FUJI/DSCF0001.RAF"), "{again:?}");
 }
 
+/// S040: on a plain terminal the problems can sit hundreds of lines up. The
+/// last lines, what `| tail` shows, say how many there are.
+#[test]
+fn the_last_lines_point_back_at_problems_above_the_duplicates() {
+    let test = "the_last_lines_point_back_at_problems_above_the_duplicates";
+    let Some(_drive) = common::test_drive(test) else {
+        return;
+    };
+    let dir = TempDir::new();
+    let (a, b) = (dir.0.join("a"), dir.0.join("b"));
+    let library = common::OnDrive::new(&common::disk_of_the_binary(), "s040-cli");
+    write_duplicates(&a);
+    write_file(&a, "DCIM/100_FUJI/DSCF8000.RAF", b"from a", at(TAKEN));
+    write_file(&b, "DCIM/100_FUJI/DSCF8000.RAF", b"from b", at(TAKEN));
+    write_file(&a, "DCIM/100_FUJI/DSCF9000.RAF", b"new", at(TAKEN));
+    common::lock_in_library(&library.0, "old/DSCF9000.RAF", b"old");
+
+    let run = sync(&[&a, &b], &library.0, "Back");
+
+    assert_eq!(run.code, 1, "{run:?}");
+    // One name collision and one library entry.
+    let last: Vec<&str> = run.stdout.lines().rev().take(3).collect();
+    assert_eq!(
+        last[2], "2 problem lines above the duplicates: read them.",
+        "{run:?}"
+    );
+    assert!(
+        last[0].starts_with("Result: NOT COMPLETE: 1 failed"),
+        "{run:?}"
+    );
+}
+
+/// S040: a library problem alone leaves "all on the drive" and exit 0, so
+/// the line above the result is the only sign of it at the end.
+#[test]
+fn a_library_problem_alone_is_in_the_last_lines() {
+    let test = "a_library_problem_alone_is_in_the_last_lines";
+    let Some(_drive) = common::test_drive(test) else {
+        return;
+    };
+    let dir = TempDir::new();
+    let card = dir.0.join("card");
+    let library = common::OnDrive::new(&common::disk_of_the_binary(), "s040-lib");
+    write_duplicates(&card);
+    write_file(&card, "DCIM/100_FUJI/DSCF9000.RAF", b"new", at(TAKEN));
+    common::lock_in_library(&library.0, "old/DSCF9000.RAF", b"old");
+
+    let run = sync(&[&card], &library.0, "Back");
+
+    assert_eq!(run.code, 0, "{run:?}");
+    let last: Vec<&str> = run.stdout.lines().rev().take(3).collect();
+    assert_eq!(
+        last[2], "1 problem line above the duplicates: read it.",
+        "{run:?}"
+    );
+    assert!(last[0].starts_with("Result: all "), "{run:?}");
+}
+
+/// S040: with no problem the report does not cry wolf.
+#[test]
+fn a_report_of_duplicates_with_no_problem_points_at_nothing() {
+    let test = "a_report_of_duplicates_with_no_problem_points_at_nothing";
+    let Some(_drive) = common::test_drive(test) else {
+        return;
+    };
+    let dir = TempDir::new();
+    let card = dir.0.join("card");
+    let library = common::OnDrive::new(&common::disk_of_the_binary(), "s040-clean");
+    write_duplicates(&card);
+
+    let run = sync(&[&card], &library.0, "Back");
+
+    assert_eq!(run.code, 0, "{run:?}");
+    assert!(run.stdout.contains("  duplicate in session  "), "{run:?}");
+    assert!(!run.stdout.contains("problem line"), "{run:?}");
+}
+
+/// A backup card's kind of list: 30 photos, each on the card twice.
+fn write_duplicates(card: &Path) {
+    for n in 0..30 {
+        let bytes = format!("photo {n:04}");
+        for folder in ["100_FUJI", "101_FUJI"] {
+            write_file(
+                card,
+                &format!("DCIM/{folder}/DSCF{n:04}.RAF"),
+                bytes.as_bytes(),
+                at(TAKEN),
+            );
+        }
+    }
+}
+
 /// S039, the CLI: the first card has many duplicates, the second a name
 /// collision, and the library a file that cannot be read. All that comes
 /// before the first duplicate line, however long the list. The library is

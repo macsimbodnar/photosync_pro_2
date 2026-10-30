@@ -124,7 +124,12 @@ each duplicate with the card it is on the drive from:
 
 If anything went wrong on any card, or the library has a line of its own,
 the duplicates wait until after all of it, under a line "Duplicates in session
-on <card>", so a backup card's long list buries nothing. Files already on the drive are counted, not listed. On a terminal the progress line is cut to its width. A closed
+on <card>", so a backup card's long list buries nothing. The CLI prints each
+report as its sync ends, so with `--one-by-one` this holds within each report,
+not across them. A report with problem lines above its duplicates says how many
+right above its result ("2 problem lines above the duplicates: read them."), so
+`| tail` shows it, and after several syncs the summary says how many its reports
+hold. Files already on the drive are counted, not listed. On a terminal the progress line is cut to its width. A closed
 stdout (e.g. `| head`) does not stop the sync: photosync says on stderr that
 the report could not be written and keeps the exit code.
 

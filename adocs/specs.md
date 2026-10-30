@@ -282,7 +282,14 @@ picks. It is simple to use.
   after all of those and the tables, under the name of its source's card;
   with none of those, each stays in its card's section (DEC-046). The CLI
   prints a report as each sync ends, so this holds within each report it
-  prints; the TUI's report holds it over the whole session. Files already on
+  prints; the TUI's report holds it over the whole session. When problem
+  lines (a file or entry that went wrong, a library entry or temp file that
+  could not be read or removed, in the TUI's report a refused or crashed
+  sync) sit above duplicates, the report says how many just above its result:
+  "2 problem lines above the duplicates: read them." After several syncs the
+  CLI's summary says how many the reports above hold, as a library problem
+  leaves its sync "complete". A report with no problem has no such line
+  (DEC-048). Files already on
   the drive are counted, not listed. The CLI's report names the library and
   the session folder. After several syncs in a session, the report ends
   with the totals of all of them and the session's result.
