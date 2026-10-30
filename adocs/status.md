@@ -8,7 +8,7 @@ Updated: 2026-10-30, by Claude (S030 done)
 
 - Last done: S030  tests kill the surviving mutants (F05)
 - In progress: none
-- Next: S029  the gate runs a real sync (F04); then the rest of plan.md's Open list
+- Next: S040  the result points back at problems above duplicates; then the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
