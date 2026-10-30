@@ -242,17 +242,74 @@ fn report_with(report: &Report, header: Vec<String>) -> String {
 
 /// A report's sections, without its title and result line.
 fn report_body(report: &Report) -> Vec<String> {
-    let mut out = Vec::new();
-    for source in report.sources() {
-        out.push(String::new());
-        out.extend(source_section(source));
-    }
+    let (all_sources, library) = other_sections(report);
+    body(report.sources(), all_sources, library)
+}
+
+/// A report's "All sources" table, with several sources, and its library
+/// section.
+fn other_sections(report: &Report) -> (Vec<String>, Vec<String>) {
+    let mut all_sources = Vec::new();
     if report.sources().len() > 1 {
-        out.push(String::new());
-        out.push("All sources".to_string());
-        out.extend(table(&report.by_type(), &report.totals()));
+        all_sources.push(String::new());
+        all_sources.push("All sources".to_string());
+        all_sources.extend(table(&report.by_type(), &report.totals()));
     }
-    out.extend(library_section(report.library_failures(), report.temps()));
+    let library = library_section(report.library_failures(), report.temps());
+    (all_sources, library)
+}
+
+/// `report_body`, on what it is made of, so a test can give it what a real
+/// sync cannot make on the test images: an unreadable entry on exFAT.
+fn body(sources: &[SourceReport], all_sources: Vec<String>, library: Vec<String>) -> Vec<String> {
+    let hold = could_be_buried(sources, &library);
+    let mut out = sections(sources, all_sources, library, hold);
+    if hold {
+        out.extend(held_duplicates(sources));
+    }
+    out
+}
+
+/// The sections in their order. With `hold`, without the duplicates: the
+/// caller lists them after everything else.
+fn sections(
+    sources: &[SourceReport],
+    all_sources: Vec<String>,
+    library: Vec<String>,
+    hold: bool,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for source in sources {
+        out.push(String::new());
+        if hold {
+            out.extend(source_head(source));
+        } else {
+            out.extend(source_section(source));
+        }
+    }
+    out.extend(all_sources);
+    out.extend(library);
+    out
+}
+
+/// Whether the report says something a long list of duplicates could bury:
+/// what went wrong on a card, or anything from the library.
+fn could_be_buried(sources: &[SourceReport], library: &[String]) -> bool {
+    !library.is_empty() || sources.iter().any(|s| !wrong_lines(s).is_empty())
+}
+
+/// Each source's duplicates, under its card's name, as they are out of its
+/// section here (S039).
+fn held_duplicates(sources: &[SourceReport]) -> Vec<String> {
+    let mut out = Vec::new();
+    for source in sources {
+        let lines = duplicate_lines(source);
+        if !lines.is_empty() {
+            out.push(String::new());
+            out.push(format!("Duplicates in session on {}", source.root.display()));
+            out.extend(lines);
+        }
+    }
     out
 }
 
@@ -420,12 +477,22 @@ pub fn session_report(session: &Session) -> Option<String> {
         runs => {
             let mut out = vec!["Report".to_string()];
             out.extend(library_and_folder(session));
+            // Across syncs too: a backup card's list must not bury what a
+            // later sync reports.
+            let hold = runs.iter().any(|run| match &run.end {
+                RunEnd::Report(report) => could_be_buried(
+                    report.sources(),
+                    &library_section(report.library_failures(), report.temps()),
+                ),
+                RunEnd::Refused(_) | RunEnd::Crashed(_) => true,
+            });
             for (i, run) in runs.iter().enumerate() {
                 out.push(String::new());
                 out.push(format!("Sync {} of {}: {}", i + 1, runs.len(), cards(run)));
                 match &run.end {
                     RunEnd::Report(report) => {
-                        out.extend(report_body(report));
+                        let (all_sources, library) = other_sections(report);
+                        out.extend(sections(report.sources(), all_sources, library, hold));
                         out.push(format!(
                             "  {}",
                             result_line(&report.totals(), report.sources())
@@ -433,6 +500,13 @@ pub fn session_report(session: &Session) -> Option<String> {
                     }
                     RunEnd::Refused(e) => out.push(format!("  {}", refusal(e))),
                     RunEnd::Crashed(what) => out.push(format!("  {}", crash(what))),
+                }
+            }
+            if hold {
+                for run in runs {
+                    if let RunEnd::Report(report) = &run.end {
+                        out.extend(held_duplicates(report.sources()));
+                    }
                 }
             }
             out.extend(all_syncs(session));
@@ -493,21 +567,39 @@ pub fn session_message(session: &Session) -> Option<String> {
 
 /// The totals per type of one source, then every file that is not OK.
 pub fn source_section(source: &SourceReport) -> Vec<String> {
+    let mut out = source_head(source);
+    // Last: a backup card lists every photo here, and what went wrong must
+    // not get lost among them.
+    out.extend(duplicate_lines(source));
+    out
+}
+
+/// `source_section` without the duplicates.
+fn source_head(source: &SourceReport) -> Vec<String> {
     let mut out = vec![format!("Source {}", source.root.display())];
     out.extend(table(&source.by_type(), &source.totals()));
     out.extend(skipped_kinds_line(source));
     if let Some(line) = ignored_line(source) {
         out.push(line);
     }
-    let is_duplicate =
-        |e: &&FileReport| matches!(e.outcome, FileOutcome::DuplicateInSession { .. });
-    out.extend(
-        source
-            .files
-            .iter()
-            .filter(|e| !is_duplicate(e))
-            .filter_map(problem_line),
-    );
+    out.extend(wrong_lines(source));
+    out
+}
+
+fn is_duplicate(entry: &&FileReport) -> bool {
+    matches!(entry.outcome, FileOutcome::DuplicateInSession { .. })
+}
+
+/// What went wrong on one source: its files' lines and its unreadable
+/// entries. The one list of them, so what `could_be_buried` looks at is
+/// what is printed.
+fn wrong_lines(source: &SourceReport) -> Vec<String> {
+    let mut out: Vec<String> = source
+        .files
+        .iter()
+        .filter(|e| !is_duplicate(e))
+        .filter_map(problem_line)
+        .collect();
     for u in &source.unreadable {
         let unknown = if u.contents_unknown {
             " (contents unknown)"
@@ -520,16 +612,16 @@ pub fn source_section(source: &SourceReport) -> Vec<String> {
             u.error.source
         ));
     }
-    // Last: a backup card lists every photo here, and what went wrong must
-    // not get lost among them.
-    out.extend(
-        source
-            .files
-            .iter()
-            .filter(is_duplicate)
-            .filter_map(problem_line),
-    );
     out
+}
+
+fn duplicate_lines(source: &SourceReport) -> Vec<String> {
+    source
+        .files
+        .iter()
+        .filter(is_duplicate)
+        .filter_map(problem_line)
+        .collect()
 }
 
 /// The table's skipped, split by reason, when there are two to tell apart.
@@ -1220,6 +1312,139 @@ mod tests {
             at("  read error  /V/B/DCIM/101_FUJI/E.RAF") < first,
             "{lines:#?}"
         );
+    }
+
+    /// S039: a backup card lists every photo as a duplicate. Whatever else
+    /// the report says comes first, also what a later source or the library
+    /// says, and each duplicate stays under the name of its source's card.
+    #[test]
+    fn duplicates_come_after_every_failure_of_every_source_and_the_library() {
+        let duplicate = |card: &str, n: u32| {
+            entry(
+                &format!("{card}/DCIM/101_FUJI/DSCF{n:04}.RAF"),
+                FileOutcome::DuplicateInSession {
+                    of: PathBuf::from(format!("/V/A/DCIM/100_FUJI/DSCF{n:04}.RAF")),
+                },
+            )
+        };
+        let unreadable = |path: &str| Unreadable {
+            error: ScanError {
+                path: PathBuf::from(path),
+                source: eio(),
+            },
+            contents_unknown: false,
+        };
+        let mut first: Vec<FileReport> = (0..50).map(|n| duplicate("/V/A", n)).collect();
+        first.push(entry(
+            "/V/A/DCIM/102_FUJI/CANCELLED.RAF",
+            FileOutcome::Cancelled,
+        ));
+        let sources = [
+            SourceReport {
+                root: PathBuf::from("/V/A"),
+                files: first,
+                unreadable: vec![unreadable("/V/A/DCIM/LOCKED_A")],
+            },
+            SourceReport {
+                root: PathBuf::from("/V/B"),
+                files: vec![
+                    duplicate("/V/B", 0),
+                    entry(
+                        "/V/B/DCIM/100_FUJI/FAILED.RAF",
+                        FileOutcome::Failed(FailReason::Read(eio())),
+                    ),
+                    entry(
+                        "/V/B/DCIM/100_FUJI/UNREAD.RAF",
+                        FileOutcome::DuplicateUnread {
+                            of: PathBuf::from("/V/A/DCIM/100_FUJI/UNREAD.RAF"),
+                            error: eio(),
+                        },
+                    ),
+                ],
+                unreadable: vec![unreadable("/V/B/DCIM/LOCKED_B")],
+            },
+        ];
+        let library = library_section(
+            &[ScanError {
+                path: PathBuf::from("/l/LOCKED.RAF"),
+                source: eio(),
+            }],
+            &TempCleanup::default(),
+        );
+
+        let lines = body(&sources, vec!["All sources".to_string()], library);
+
+        let is_duplicate = |l: &String| l.starts_with("  duplicate in session  ");
+        let first_duplicate = lines.iter().position(is_duplicate).unwrap();
+        assert_eq!(lines.iter().filter(|l| is_duplicate(l)).count(), 51);
+        for part in [
+            "  cancelled   /V/A/DCIM/102_FUJI/CANCELLED.RAF",
+            "  unreadable  /V/A/DCIM/LOCKED_A",
+            "Source /V/B",
+            "  failed      /V/B/DCIM/100_FUJI/FAILED.RAF",
+            "  read error  /V/B/DCIM/100_FUJI/UNREAD.RAF",
+            "  unreadable  /V/B/DCIM/LOCKED_B",
+            "All sources",
+            "Library entries that could not be read",
+            "  /l/LOCKED.RAF: ",
+        ] {
+            let at = lines
+                .iter()
+                .position(|l| l.starts_with(part))
+                .unwrap_or_else(|| panic!("{part}: {lines:#?}"));
+            assert!(at < first_duplicate, "{part}: {lines:#?}");
+        }
+        // Each list under its own card, and they are the last lines.
+        let under = |card: &str| {
+            lines
+                .iter()
+                .position(|l| *l == format!("Duplicates in session on {card}"))
+                .unwrap_or_else(|| panic!("{card}: {lines:#?}"))
+        };
+        let (of_a, of_b) = (under("/V/A"), under("/V/B"));
+        assert_eq!(first_duplicate, of_a + 1, "{lines:#?}");
+        assert!(
+            lines[of_a + 1..of_b - 1].iter().all(is_duplicate),
+            "{lines:#?}"
+        );
+        assert_eq!(lines[of_a + 1..of_b - 1].len(), 50, "{lines:#?}");
+        assert_eq!(
+            lines[of_b + 1..],
+            ["  duplicate in session  101_FUJI/DSCF0000.RAF, on drive from /V/A"],
+        );
+    }
+
+    /// With nothing to bury, a duplicate stays in its card's section. A
+    /// removed temp file is a line of the library section, so it counts.
+    #[test]
+    fn duplicates_stay_in_their_section_when_there_is_nothing_to_bury() {
+        let sources = [SourceReport {
+            root: PathBuf::from("/V/B"),
+            files: vec![entry(
+                "/V/B/DCIM/100_FUJI/D.RAF",
+                FileOutcome::DuplicateInSession {
+                    of: PathBuf::from("/V/A/DCIM/100_FUJI/D.RAF"),
+                },
+            )],
+            unreadable: Vec::new(),
+        }];
+        let lines = body(&sources, Vec::new(), Vec::new());
+        assert_eq!(lines[1..], source_section(&sources[0])[..], "{lines:#?}");
+
+        let temps = TempCleanup {
+            removed: vec![PathBuf::from("/l/.photosync-tmp-x")],
+            failures: Vec::new(),
+        };
+        let lines = body(&sources, Vec::new(), library_section(&[], &temps));
+        let removed = lines
+            .iter()
+            .position(|l| l.starts_with("Removed 1 "))
+            .unwrap();
+        let line = lines
+            .iter()
+            .position(|l| l.starts_with("  duplicate in session  "))
+            .unwrap();
+        assert!(removed < line, "{lines:#?}");
     }
 
     /// A source with nothing but "already on drive" keeps its short report:

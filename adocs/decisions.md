@@ -62,6 +62,7 @@ Why: one line.
 - DEC-043 2026-10-30 — how the report shows duplicates and names the card (S028)
 - DEC-044 2026-10-30 — a sync name is matched by the filesystem's lookup, not by bytes (S027)
 - DEC-045 2026-10-30 — a later copy of an earlier sync's photo is resolved in the plan (S038)
+- DEC-046 2026-10-30 — duplicates wait until after every failure and the library (S039)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1065,3 +1066,32 @@ after it (`[B, A]`), is now "already on drive" on A, where it was a duplicate
 of B.
 Why: the line must name the card whose file is on the drive, and a plan that
 says otherwise must be refused, not reported.
+
+## DEC-046  2026-10-30  duplicates wait until after every failure and the library (S039)
+Tags: report, cli, tui
+Decision: agent's pick in S039, under the user's standing instruction, not yet
+confirmed by the user. Amends DEC-043 (1), which put them last only within
+their own source.
+(1) When a report has a line a list could bury (a file or entry that went
+wrong on any card, any library section line, a refused or crashed sync), all
+duplicates move after everything else, before the result line: "Duplicates in
+session on <card>", then that card's lines. The tables come first too.
+(2) With no such line, each duplicate stays in its card's section. Rejected:
+always at the end. One layout and less code, but it means editing
+the_report_shows_duplicates_and_names_the_card, which pins each file in its
+card's section, and the user's rule is not to edit a test to make it pass. The
+user may prefer it; then that test's two section asserts change with it.
+(3) A line keeps its wording and does not name its own source: the heading
+does, as the 80-column test pins the line, and the line already names the card
+it is on the drive from. This is how the agent read "still names its source's
+card" in S039.
+(4) The step named sources, not syncs. In the TUI's session report the
+duplicates of every sync also wait until after every sync, before "All syncs":
+a backup card's sync must not bury a later sync's failure. The CLI prints each
+report as its sync ends, so it cannot; its last lines, the session summary, name
+each sync that was not complete.
+(5) Tests that need a library read problem keep that library next to the test
+binary, off the images: chmod does nothing on exFAT. An unreadable scan entry
+cannot be made on the images at all, so only the unit test on `body` covers it.
+Why: the prime rule; what went wrong must be read before a long list of photos
+that are safe.

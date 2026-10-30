@@ -275,8 +275,14 @@ picks. It is simple to use.
   included),
   cancelled, ignored types, and the entries the scan could not read. Totals
   per source and per type (INV-6). A source with duplicates counts its
-  skipped by reason, and lists each duplicate in session, after what went
-  wrong, with the card it is on the drive from (DEC-043). Files already on
+  skipped by reason, and lists each duplicate in session, with the card it
+  is on the drive from (DEC-043). Duplicates never bury a failure: when a
+  report has a file or entry that went wrong on any card, or a line about
+  the library, or a sync that was refused or crashed, every duplicate comes
+  after all of those and the tables, under the name of its source's card;
+  with none of those, each stays in its card's section (DEC-046). The CLI
+  prints a report as each sync ends, so this holds within each report it
+  prints; the TUI's report holds it over the whole session. Files already on
   the drive are counted, not listed. The CLI's report names the library and
   the session folder. After several syncs in a session, the report ends
   with the totals of all of them and the session's result.

@@ -494,3 +494,76 @@ fn the_report_shows_duplicates_and_names_the_card() {
     }
     assert!(!again.stdout.contains("100_FUJI/DSCF0001.RAF"), "{again:?}");
 }
+
+/// S039, the CLI: the first card has many duplicates, the second a name
+/// collision, and the library a file that cannot be read. All that comes
+/// before the first duplicate line, however long the list. The library is
+/// off the images, as chmod does nothing on exFAT.
+#[test]
+fn duplicates_never_bury_a_failure_or_a_library_problem_in_the_cli() {
+    let test = "duplicates_never_bury_a_failure_or_a_library_problem_in_the_cli";
+    let Some(_drive) = common::test_drive(test) else {
+        return;
+    };
+    let dir = TempDir::new();
+    let (a, b) = (dir.0.join("a"), dir.0.join("b"));
+    let library = common::OnDrive::new(&common::disk_of_the_binary(), "s039-cli");
+    for n in 0..30 {
+        let bytes = format!("photo {n:04}");
+        for folder in ["100_FUJI", "101_FUJI"] {
+            write_file(
+                &a,
+                &format!("DCIM/{folder}/DSCF{n:04}.RAF"),
+                bytes.as_bytes(),
+                at(TAKEN),
+            );
+        }
+    }
+    write_file(&a, "DCIM/100_FUJI/DSCF8000.RAF", b"from a", at(TAKEN));
+    write_file(&b, "DCIM/100_FUJI/DSCF8000.RAF", b"from b", at(TAKEN));
+    write_file(&b, "DCIM/100_FUJI/DSCF0000.RAF", b"photo 0000", at(TAKEN));
+    write_file(&a, "DCIM/100_FUJI/DSCF9000.RAF", b"new", at(TAKEN));
+    let locked = common::lock_in_library(&library.0, "old/DSCF9000.RAF", b"old");
+
+    let run = sync(&[&a, &b], &library.0, "Bury");
+    assert_eq!(run.code, 1, "{run:?}");
+
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    let is_duplicate = |l: &&&str| l.starts_with("  duplicate in session  ");
+    let first_duplicate = lines
+        .iter()
+        .position(|l| is_duplicate(&l))
+        .expect("no duplicate");
+    assert_eq!(lines.iter().filter(is_duplicate).count(), 31, "{run:?}");
+    for part in [
+        format!(
+            "  failed      {}",
+            b.join("DCIM/100_FUJI/DSCF8000.RAF").display()
+        ),
+        "Library entries that could not be read".to_string(),
+        format!("  {}: ", locked.display()),
+    ] {
+        let at = lines.iter().position(|l| l.starts_with(&part));
+        assert!(at.is_some_and(|i| i < first_duplicate), "{part}\n{run:?}");
+    }
+    // Each list under its card's name, with the card it is on the drive from.
+    let of_a = format!("Duplicates in session on {}", a.display());
+    let of_b = format!("Duplicates in session on {}", b.display());
+    let at = |heading: &str| lines.iter().position(|l| *l == heading).expect(heading);
+    assert_eq!(first_duplicate, at(&of_a) + 1, "{run:?}");
+    assert_eq!(
+        lines[at(&of_b) + 1],
+        format!(
+            "  duplicate in session  100_FUJI/DSCF0000.RAF, on drive from {}",
+            a.display()
+        ),
+        "{run:?}"
+    );
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .starts_with("Result: NOT COMPLETE: 1 failed"),
+        "{run:?}"
+    );
+}

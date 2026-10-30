@@ -115,14 +115,16 @@ Every file that was not copied or skipped gets its own line with the
 reason, and so does one copied from its twin ("read error ... copied from
 its twin ..."); a copy whose folder flush failed shows as "in place, flush not
 confirmed". A card with duplicates splits its skipped by reason, and lists
-each duplicate after those lines, with the card it is on the drive from:
+each duplicate with the card it is on the drive from:
 
 ```text
   of the skipped, 0 already on drive, 1 duplicate in session
   duplicate in session  100_FUJI/DSCF0001.RAF, on drive from /Volumes/CARD1
 ```
 
-Files already on the drive are counted, not listed. On a terminal the progress line is cut to its width. A closed
+If anything went wrong on any card, or the library has a line of its own,
+the duplicates wait until after all of it, under a line "Duplicates in session
+on <card>", so a backup card's long list buries nothing. Files already on the drive are counted, not listed. On a terminal the progress line is cut to its width. A closed
 stdout (e.g. `| head`) does not stop the sync: photosync says on stderr that
 the report could not be written and keeps the exit code.
 

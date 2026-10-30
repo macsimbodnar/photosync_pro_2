@@ -132,6 +132,25 @@ impl Drop for OnDrive {
     }
 }
 
+/// A disk outside the images of `scripts/test_exfat.sh`, the one the test
+/// binary is on: chmod does nothing on exFAT, so a library with an unreadable
+/// file must live here, and the cards on the images keep it on another device.
+pub fn disk_of_the_binary() -> PathBuf {
+    let binary = std::env::current_exe().unwrap();
+    fs::canonicalize(binary.parent().unwrap()).unwrap()
+}
+
+/// A library file planning cannot hash: a candidate for any source file of
+/// its name and size, so it is a library read problem (specs, Already-synced
+/// detection).
+#[cfg(unix)]
+pub fn lock_in_library(library: &Path, rel: &str, bytes: &[u8]) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = write_file(library, rel, bytes, at(1_600_000_000));
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    path
+}
+
 /// Removes `path` once copying starts, after planning read it, so its
 /// copy has a read error: chmod does nothing on exFAT, removing does.
 /// Passes every call on to `inner`.

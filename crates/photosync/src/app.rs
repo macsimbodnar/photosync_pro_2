@@ -809,6 +809,98 @@ mod tests {
         }
     }
 
+    /// S039, the TUI: what the report screen is given, from real syncs. In
+    /// a session of one sync and of several, failures and library problems
+    /// of every sync come before the first duplicate line, and the session's
+    /// result stays last. The library is off the images, as chmod does
+    /// nothing on exFAT.
+    #[test]
+    fn duplicates_never_bury_a_failure_or_a_library_problem_in_the_tui() {
+        use crate::common::{OnDrive, disk_of_the_binary, lock_in_library, test_drive};
+        struct Quiet;
+        impl flow::Watch for Quiet {}
+        const TAKEN: u64 = 1_700_000_000;
+
+        let test = "duplicates_never_bury_a_failure_or_a_library_problem_in_the_tui";
+        if test_drive(test).is_none() {
+            return;
+        }
+        let dir = TempDir::new();
+        let library = OnDrive::new(&disk_of_the_binary(), "s039-app");
+        let card = |name: &str| dir.0.join(name);
+        let (a, b, backup, late) = (card("a"), card("b"), card("backup"), card("late"));
+        for folder in ["100_FUJI", "101_FUJI"] {
+            write_file(
+                &a,
+                &format!("DCIM/{folder}/DSCF0001.RAF"),
+                b"twice",
+                at(TAKEN),
+            );
+        }
+        write_file(&a, "DCIM/100_FUJI/DSCF8000.RAF", b"from a", at(TAKEN));
+        write_file(&b, "DCIM/100_FUJI/DSCF8000.RAF", b"from b", at(TAKEN));
+        write_file(&a, "DCIM/100_FUJI/DSCF9000.RAF", b"new", at(TAKEN));
+        let locked = lock_in_library(&library.0, "old/DSCF9000.RAF", b"old");
+        write_file(&backup, "DCIM/100_FUJI/DSCF0001.RAF", b"twice", at(TAKEN));
+        write_file(&late, "DCIM/100_FUJI/DSCF8000.RAF", b"from c", at(TAKEN));
+
+        let collided = |card: &Path| {
+            format!(
+                "  failed      {}",
+                card.join("DCIM/100_FUJI/DSCF8000.RAF").display()
+            )
+        };
+        let lines_of = |app: &App| match app.outcome() {
+            Some(Outcome::Report { lines, .. }) => lines.clone(),
+            other => panic!("no report: {other:?}"),
+        };
+        let first_duplicate = |lines: &[String]| {
+            lines
+                .iter()
+                .position(|l| l.starts_with("  duplicate in session  "))
+                .unwrap_or_else(|| panic!("no duplicate: {lines:#?}"))
+        };
+        let before = |lines: &[String], part: &str| {
+            let at = lines.iter().position(|l| l.starts_with(part));
+            assert!(
+                at.is_some_and(|i| i < first_duplicate(lines)),
+                "{part}: {lines:#?}"
+            );
+        };
+
+        let mut session = Session::new(&library.0, None).unwrap();
+        let cancel = Cancel::new();
+        session.sync(&[a.clone(), b.clone()], &cancel, &mut Quiet);
+        let mut app = App::new();
+        app.show(&session);
+        let lines = lines_of(&app);
+        before(&lines, &collided(&b));
+        before(&lines, "Library entries that could not be read");
+        before(&lines, &format!("  {}: ", locked.display()));
+
+        // A later sync's failure is not buried by an earlier sync's list:
+        // the backup card, all duplicates, comes before it.
+        session.sync(std::slice::from_ref(&backup), &cancel, &mut Quiet);
+        session.sync(std::slice::from_ref(&late), &cancel, &mut Quiet);
+        app.show(&session);
+        let lines = lines_of(&app);
+        before(&lines, &collided(&b));
+        before(&lines, &format!("  {}: ", locked.display()));
+        before(&lines, &format!("Sync 3 of 3: {}", late.display()));
+        before(&lines, &collided(&late));
+        let heading = format!("Duplicates in session on {}", backup.display());
+        assert!(lines.iter().any(|l| *l == heading), "{heading}: {lines:#?}");
+        let all_syncs = lines.iter().position(|l| l == "All syncs").unwrap();
+        assert!(first_duplicate(&lines) < all_syncs, "{lines:#?}");
+        assert!(
+            lines
+                .last()
+                .unwrap()
+                .starts_with("Result: NOT COMPLETE: 2 of 3 syncs"),
+            "{lines:#?}"
+        );
+    }
+
     /// Runs `job` on the real worker and gives the model every message,
     /// then the channel's end, as the TUI's loop does.
     fn run_job(app: &mut App, job: Job) {
