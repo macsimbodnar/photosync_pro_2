@@ -4,18 +4,18 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-30, by Claude (S028 done)
+Updated: 2026-10-30, by Claude (S027 done)
 
-- Last done: S028  report shows duplicates and the card (F03)
+- Last done: S027  name reuse across Unicode forms (F02)
 - In progress: none
-- Next: S027  name reuse across Unicode forms (F02); then the rest of plan.md's Open list
+- Next: S030  tests kill the surviving mutants (F05); then the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
   - Decisions the agents picked that the user has not confirmed yet:
     DEC-005 (folder date = earliest new file), DEC-026 to DEC-028,
     DEC-030 to DEC-032, DEC-034, DEC-035 (1)-(3), DEC-036 to DEC-040,
-    DEC-042, DEC-043.
+    DEC-042, DEC-043, DEC-044.
     Each says "not yet confirmed by the user" in decisions.md.
   - The GUI no longer waits for S025 (user, 2026-10-30: do all that needs no
     input or hardware). The audit re-runs after the GUI.
@@ -27,6 +27,9 @@ Updated: 2026-10-30, by Claude (S028 done)
   - Linux exFAT: `canonicalize` keeps the case it is given, so two library
     spellings that differ only in case get two fallback locks (S013 fast
     check). Fold the case or key by inode there; check in S025.
+  - Linux exFAT: what DEC-044 says of it comes from the kernel's source, not
+    a run. Check in S025: a folder a Mac made and an accented name typed on
+    Linux are expected to give two folders.
   - A freshly formatted card without `DCIM` looks like any USB drive and is
     offered as a destination (S007 fast check). Telling them apart needs
     DiskArbitration (Mac) or udev (Linux).

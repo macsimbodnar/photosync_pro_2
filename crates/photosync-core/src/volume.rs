@@ -172,13 +172,13 @@ pub(crate) fn device_id(_: &fs::Metadata) -> io::Result<u64> {
 }
 
 #[cfg(unix)]
-fn same_inode(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+pub(crate) fn same_inode(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     a.ino() == b.ino()
 }
 
 #[cfg(not(unix))]
-fn same_inode(_: &fs::Metadata, _: &fs::Metadata) -> bool {
+pub(crate) fn same_inode(_: &fs::Metadata, _: &fs::Metadata) -> bool {
     false
 }
 

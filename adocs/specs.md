@@ -204,7 +204,12 @@ picks. It is simple to use.
   of that first plan.
 - With a name: if a folder `<any date> - <name>` already exists in the
   library, it is reused (the earliest, if several; DEC-017), so a re-run
-  after an interruption lands in the same folder.
+  after an interruption lands in the same folder. The filesystem decides
+  what is the same name: a dated folder is reused if `<its date> - <name>`,
+  as the user spelt it, resolves to it. So another Unicode form of the name
+  reuses the folder where the filesystem does not tell the forms apart
+  (macOS), and so does another case on a case-insensitive drive. Where the
+  filesystem tells them apart, it is another name (DEC-044).
 - The capture date is the file's modification time as the camera wrote it,
   read as local time.
 - `<name>` is the optional name the user gives the sync, e.g. "Tirana":

@@ -17,18 +17,17 @@ not change the order.
 
 ## Open
 
-1. S027  name reuse across Unicode forms (F02)
-2. S030  tests kill the surviving mutants (F05)
-3. S029  the gate runs a real sync (F04)
-4. S032  refused then fixed is not NOT COMPLETE (F07)
-5. S031  too long a name is refused (F06)
-6. S034  cleanup leaves live temps (F09)
-7. S033  collision result names the way out (F08)
-8. S035  CLI bytes per source (F10)
-9. S037  TUI report cuts long lines (found in S028)
-10. S036  plan the GUI: confirm iced, layout, steps
-11. S025  first run on Linux: build, tests, hand checks (waits for the user)
-12. S017  hardware hand checks on Mac (waits for the user)
+1. S030  tests kill the surviving mutants (F05)
+2. S029  the gate runs a real sync (F04)
+3. S032  refused then fixed is not NOT COMPLETE (F07)
+4. S031  too long a name is refused (F06)
+5. S034  cleanup leaves live temps (F09)
+6. S033  collision result names the way out (F08)
+7. S035  CLI bytes per source (F10)
+8. S037  TUI report cuts long lines (found in S028)
+9. S036  plan the GUI: confirm iced, layout, steps
+10. S025  first run on Linux: build, tests, hand checks (waits for the user)
+11. S017  hardware hand checks on Mac (waits for the user)
 
 Later, not yet steps: re-run the adversarial audit after the GUI, covering
 it too; the audit loop stops when a run reports no high and no medium.
@@ -37,8 +36,8 @@ it too; the audit loop stops when a run reports no high and no medium.
 
 Last five; the full record is `plan_done/`.
 
+- S027  name reuse across Unicode forms (F02)
 - S028  report shows duplicates and the card (F03)
 - S026  short read fails, never copied (F01)
 - S019  copy several cards at once, one thread per card (split from S010)
 - S024  twins on another device; one-sync result names unread cards (S023 fast check)
-- S023  twin-fallback reporting fixes (S021 fast check)

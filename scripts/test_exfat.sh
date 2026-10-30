@@ -8,7 +8,9 @@
 # binary's end-to-end test syncs the card to it, on three devices as strict
 # INV-10 requires. Two more small images are two cards for the twin tests
 # (PHOTOSYNC_TEST_TWIN_A, PHOTOSYNC_TEST_TWIN_B): a twin must be on another
-# device than the file it stands in for (DEC-038). All images are made in a
+# device than the file it stands in for (DEC-038). One HFS+ image runs the
+# name tests again (`hfs_tests`): HFS+, like exFAT, lists a name decomposed.
+# All images are made in a
 # temp dir outside the repo and detached at the end, even on failure; if a
 # detach fails, the script says so and removes nothing.
 set -euo pipefail
@@ -29,6 +31,7 @@ skip=(
     unreadable_files_are_failures_and_the_rest_is_listed        # source_scan
     unreadable_dcim_is_an_error                                 # source_scan
     unreadable_root_is_an_error                                 # source_scan
+    a_lookup_the_library_refuses_is_an_error                    # copy_engine
     inv1_scan_with_failures_leaves_source_manifest_unchanged    # source_scan
     inv6_holds_per_source_over_every_kind_of_outcome            # report
     unreadable_scan_entries_are_listed_and_only_folders_have_unknown_contents  # report
@@ -38,6 +41,15 @@ skip=(
     volume::tests::read_only_volume_is_not_a_destination                      # unit
     volume::tests::volume_whose_dcim_cannot_be_checked_is_a_failure_not_a_destination
     plan::tests::inv10_library_whose_volume_top_cannot_be_checked_is_refused   # unit
+)
+
+# Run on HFS+ too, by exact name, and counted: a misspelt name would run
+# nothing and pass.
+hfs_tests=(
+    accented_name_rerun_on_a_later_date_lands_in_the_first_folder
+    name_in_another_spelling_reuses_a_folder_only_if_the_filesystem_resolves_it
+    only_the_folder_the_name_resolves_to_is_reused
+    name_too_long_for_a_lookup_reuses_nothing_and_is_not_an_error
 )
 
 if [[ "$(uname)" != "Darwin" ]]; then
@@ -53,6 +65,7 @@ card="$work/card"
 library="$work/lib"
 twin_a="$work/twin_a"
 twin_b="$work/twin_b"
+hfs="$work/hfs"
 # Whole-disk devices of attached images whose file is under $1. A failing
 # `hdiutil info` prints a placeholder, so the caller counts it as left.
 attached_under() {
@@ -72,7 +85,7 @@ cleanup() {
     # Every mount point is detached and checked, attached or not: one
     # attach may have mounted before it failed.
     local point mounts left=()
-    for point in "$twin_b" "$twin_a" "$library" "$card" "$mnt"; do
+    for point in "$hfs" "$twin_b" "$twin_a" "$library" "$card" "$mnt"; do
         if mounts=$(mount) && [[ $mounts == *" on $point "* ]]; then
             hdiutil detach "$point" -quiet || hdiutil detach "$point" -force -quiet || true
         fi
@@ -115,6 +128,18 @@ attach_exfat() {
     fi
 }
 
+# Makes an HFS+ image named `$1` of size `$2` and mounts it at `$3`.
+attach_hfs() {
+    local name="$1" size="$2" point="$3"
+    mkdir "$point"
+    hdiutil create -size "$size" -fs HFS+ -volname "$name" "$work/$name.dmg" -ov -quiet
+    hdiutil attach "$work/$name.dmg" -nobrowse -mountpoint "$point" -quiet
+    if ! mount | grep -F " on $point " | grep -q "(hfs"; then
+        echo "test_exfat.sh: $point is not mounted as HFS+" >&2
+        exit 1
+    fi
+}
+
 attach_exfat PSEXFAT 64m "$mnt"
 echo "exFAT image mounted at $mnt"
 attach_exfat PSCARD 16m "$card"
@@ -125,7 +150,10 @@ echo "library drive image mounted at $library"
 attach_exfat PSTWINA 16m "$twin_a"
 attach_exfat PSTWINB 16m "$twin_b"
 echo "twin card images mounted at $twin_a and $twin_b"
+attach_hfs PSHFS 64m "$hfs"
+echo "HFS+ image mounted at $hfs"
 
+failed=0
 args=()
 for name in ${skip[@]+"${skip[@]}"}; do
     args+=(--skip "$name")
@@ -133,4 +161,14 @@ done
 TMPDIR="$mnt" PHOTOSYNC_TEST_CARD="$card" PHOTOSYNC_TEST_LIBRARY="$library" \
     PHOTOSYNC_TEST_TWIN_A="$twin_a" PHOTOSYNC_TEST_TWIN_B="$twin_b" \
     cargo test --manifest-path "$repo/Cargo.toml" -p photosync-core -p photosync \
-    --no-fail-fast -- --exact ${args[@]+"${args[@]}"}
+    --no-fail-fast -- --exact ${args[@]+"${args[@]}"} || failed=$?
+
+# Run even if the above failed, so a failure on one format hides no other.
+if ! TMPDIR="$hfs" cargo test --manifest-path "$repo/Cargo.toml" -p photosync-core \
+    --test copy_engine --no-fail-fast -- --exact "${hfs_tests[@]}" | tee "$work/hfs.log"; then
+    failed=1
+elif ! grep -q "test result: ok. ${#hfs_tests[@]} passed" "$work/hfs.log"; then
+    echo "test_exfat.sh: expected ${#hfs_tests[@]} tests to pass on HFS+" >&2
+    failed=1
+fi
+exit "$failed"

@@ -60,6 +60,7 @@ Why: one line.
 - DEC-041 2026-10-29 — the TUI shows the app as "phoosync pro 2"
 - DEC-042 2026-10-30 — a file that reads another length than scanned fails (S026)
 - DEC-043 2026-10-30 — how the report shows duplicates and names the card (S028)
+- DEC-044 2026-10-30 — a sync name is matched by the filesystem's lookup, not by bytes (S027)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1024,3 +1025,26 @@ this way. A path without `DCIM` is shown whole. A `DCIM` folder inside a
 card's `DCIM` would show that folder as the card: its path still leads there.
 Why: the report must say why a card's file was skipped and which card's file
 is on the drive, without burying a failure.
+
+## DEC-044  2026-10-30  a sync name is matched by the filesystem's lookup, not by bytes (S027)
+Tags: layout, unicode
+Decision: agent's pick in S027, not yet confirmed by the user. The approach is
+the one the step prefers. A dated folder is reused if its name is the sync's
+name byte for byte, or if `<its date> - <name>`, as spelt, has the same device
+and inode as the listed entry (lstat, so never through a symlink). Rejected:
+a normalisation table or crate (DEPS, and it could not know each filesystem's
+rule). Measured on macOS images: exFAT and HFS+ list `Tirane\u{308}` for a
+folder made as `Tiran\u{eb}`, APFS lists what it was given; all three resolve
+both forms to one inode. Consequences, also the agent's: (1) another case now
+reuses the folder on a case-insensitive drive; it already did on the same
+date, and never overwrites, as a collision fails the file. (2) Not found and
+name too long are "no such folder"; any other lookup error refuses the sync,
+as it says nothing about the folder and a guess could split the trip. (3)
+Same bytes skip the lookup, so an inode that is not stable cannot split a plain
+re-run. Linux exFAT, from the kernel's fs/exfat, NOT measured (check in S025):
+lookups fold case with the upcase table and do not normalise, and names are
+stored as given. So one form reuses its folder, as listed bytes match; a folder
+a Mac made decomposed and a name typed composed on Linux are two names and two
+folders. No photo is lost or copied twice: already-synced detection goes by file
+name, size and hash, in any folder.
+Why: only the filesystem knows which names it treats as one folder.

@@ -110,6 +110,141 @@ fn rerun_with_later_new_files_lands_in_the_same_named_folder() {
     assert_eq!(copied_to(&second), [session.join("DSCF0002.RAF")]);
 }
 
+const NFC: &str = "Tiran\u{eb}";
+const NFD: &str = "Tirane\u{308}";
+
+/// The names in `lib`, as the filesystem lists them: HFS+ and exFAT on macOS
+/// list `NFD` whichever form the folder was made in.
+fn listed(lib: &Path) -> Vec<String> {
+    let mut names: Vec<String> =
+        fs::read_dir(lib).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    names.sort();
+    names
+}
+
+/// F02. Under plain `cargo test` on APFS this passes either way, as APFS
+/// lists the form it was given; `scripts/test_exfat.sh` runs it on exFAT and
+/// HFS+, where the listing differs from the name.
+#[test]
+fn accented_name_rerun_on_a_later_date_lands_in_the_first_folder() {
+    let dir = TempDir::new();
+    let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+    fs::create_dir_all(&lib).unwrap();
+    write_file(&card, "DCIM/100_FUJI/DSCF0001.RAF", b"day one", at(T0));
+    let (_, first) = sync(&card, &lib, Some(NFC));
+    assert_eq!(first.copied.len(), 1);
+    write_file(&card, "DCIM/100_FUJI/DSCF0002.RAF", b"a month on", at(T0 + 30 * 86_400));
+    let (_, second) = sync(&card, &lib, Some(NFC));
+    assert_eq!(second.copied.len(), 1);
+
+    let folders = listed(&lib);
+    assert_eq!(folders.len(), 1, "one trip split across folders: {folders:?}");
+    let date = date_command(T0);
+    assert!(folders[0].starts_with(&date), "{folders:?}");
+    let raw = lib.join(&folders[0]).join("RAW");
+    assert_eq!(fs::read(raw.join("DSCF0001.RAF")).unwrap(), b"day one");
+    assert_eq!(fs::read(raw.join("DSCF0002.RAF")).unwrap(), b"a month on");
+}
+
+/// The filesystem decides, not a table of ours: what it resolves to the
+/// listed folder is that folder, what it does not is another name. A library
+/// on Linux ext4 takes the second arm, macOS the first for the two forms.
+#[test]
+fn name_in_another_spelling_reuses_a_folder_only_if_the_filesystem_resolves_it() {
+    for (made, given) in [(NFC, NFD), (NFD, NFC), ("Tirana", "tirana")] {
+        let dir = TempDir::new();
+        let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+        put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+        fs::create_dir_all(lib.join(format!("2026-06-01 - {made}"))).unwrap();
+        let resolves = fs::symlink_metadata(lib.join(format!("2026-06-01 - {given}"))).is_ok();
+        #[cfg(target_os = "macos")]
+        assert!(resolves || made == "Tirana", "macOS filesystems ignore the form: {given:?}");
+        let plan = plan(&card, &lib);
+
+        let want = if resolves {
+            lib.join(&listed(&lib)[0])
+        } else {
+            lib.join(format!("{} - {given}", date_command(T0)))
+        };
+        assert_eq!(folder(&plan, Some(given)).path(), want, "{made:?} then {given:?}");
+    }
+}
+
+/// The lookup must say which folder it found: same date is not same folder.
+#[test]
+fn only_the_folder_the_name_resolves_to_is_reused() {
+    let dir = TempDir::new();
+    let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+    put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    for other in ["2026-06-01 - Other", "2026-05-01 - Tirana", "2026-05-02 - Tirane"] {
+        fs::create_dir_all(lib.join(other)).unwrap();
+    }
+    fs::create_dir_all(lib.join(format!("2026-06-01 - {NFC}"))).unwrap();
+    // Named as the sync is, in the other form, but not folders.
+    fs::write(lib.join(format!("2026-03-01 - {NFD}")), b"a file").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("elsewhere", lib.join(format!("2026-04-01 - {NFD}"))).unwrap();
+    let plan = plan(&card, &lib);
+    let spelt_as_listed = listed(&lib)
+        .into_iter()
+        .find(|f| f.starts_with("2026-06-01 - Tiran"))
+        .unwrap();
+
+    assert_eq!(folder(&plan, Some(NFC)).path(), lib.join(spelt_as_listed));
+}
+
+/// A symlink under the sync's name points at another folder: following it
+/// would put the sync in a folder of another name.
+#[cfg(unix)]
+#[test]
+fn a_symlink_with_the_name_does_not_make_its_target_the_folder() {
+    let dir = TempDir::new();
+    let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+    put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    fs::create_dir_all(lib.join("2026-06-01 - Other")).unwrap();
+    std::os::unix::fs::symlink("2026-06-01 - Other", lib.join("2026-06-01 - Tirana")).unwrap();
+    let plan = plan(&card, &lib);
+
+    assert_eq!(
+        folder(&plan, Some("Tirana")).path(),
+        lib.join(format!("{} - Tirana", date_command(T0)))
+    );
+}
+
+/// Too long for the filesystem is an answer, "no such folder", not an error:
+/// S031 refuses such a name, and until then it fails as it did.
+#[test]
+fn name_too_long_for_a_lookup_reuses_nothing_and_is_not_an_error() {
+    let dir = TempDir::new();
+    let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+    put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    fs::create_dir_all(lib.join("2026-06-01 - Tirana")).unwrap();
+    let plan = plan(&card, &lib);
+    let long = "x".repeat(300);
+
+    assert_eq!(
+        folder(&plan, Some(&long)).path(),
+        lib.join(format!("{} - {long}", date_command(T0)))
+    );
+}
+
+/// A lookup that fails says nothing about the folder, so the sync does not
+/// go on as if the name were new: that would split the trip unseen.
+#[cfg(unix)]
+#[test]
+fn a_lookup_the_library_refuses_is_an_error() {
+    let dir = TempDir::new();
+    let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+    put(&card, &[("DCIM/100_FUJI/DSCF0001.RAF", b"raw")]);
+    fs::create_dir_all(lib.join("2026-06-01 - Other")).unwrap();
+    let plan = plan(&card, &lib);
+    // May list the library, not look anything up in it.
+    let _locked = Mode::set(&lib, 0o400);
+
+    let err = sync_folder(&plan, Some("Tirana")).unwrap_err();
+    assert!(matches!(&err, FolderError::Io(e) if e.path == lib), "{err:?}");
+}
+
 #[test]
 fn nothing_to_copy_and_no_named_folder_gives_no_folder() {
     let dir = TempDir::new();

@@ -66,7 +66,11 @@ The X-T5 over a USB cable shows up as a card only in its "USB card reader"
 connection mode, not in the default PTP mode. `--source` can be given
 several times; the cards are copied at once, each on its own thread (two
 sources on one card are read one after the other), into one sync folder,
-`<library>/<date>[ - <name>]/<RAW|JPEG|HEIF|VIDEO>/`. The progress line
+`<library>/<date>[ - <name>]/<RAW|JPEG|HEIF|VIDEO>/`. A name reuses the
+folder that has it, whatever its date; the filesystem decides what is the
+same name, so "Tiranë" finds its folder on an exFAT or HFS+ drive, where
+macOS lists it decomposed, and "tirana" finds "Tirana" on a
+case-insensitive drive. The progress line
 counts each card, and a cancel stops them all. Two cards' different photos
 of the same name give one copy and one name collision, never an overwrite. A photo on two cards
 (backup slots) is copied once; the other card's copy is a "duplicate in
@@ -219,6 +223,8 @@ card of the session, with scripted keys on ratatui's `TestBackend`.
 cards on the twin images (below) to that drive at once, one thread per card.
 `tests/exfat_session.rs` runs `sync --one-by-one` over five cards in one
 session, one of them failing, typed at its prompt on a pseudo-terminal.
+The script also mounts an HFS+ image and runs the sync name tests in
+`tests/copy_engine.rs` on it; HFS+, like exFAT, lists a name decomposed.
 The binary's unit tests `text::tests::a_session_names_the_card_a_file_was_copied_from_its_twin_for`
 and `app::tests::the_result_box_names_the_card_a_file_was_copied_from_its_twin_for`
 run a session whose first sync copies a photo from its twin (the planned

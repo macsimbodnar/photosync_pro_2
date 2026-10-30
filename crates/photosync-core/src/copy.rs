@@ -18,7 +18,7 @@ use crate::hash::{CHUNK, Hash, hash_file};
 use crate::plan::{Planned, SyncPlan};
 use crate::progress::{Cancel, Monitor, Phase, Tracker};
 use crate::source::{ScanError, SourceFile};
-use crate::volume::{device_id, volume_root};
+use crate::volume::{device_id, same_inode, volume_root};
 
 /// Every temp file photosync writes starts with this. The library scan skips
 /// it, and the next sync deletes it.
@@ -108,7 +108,11 @@ pub(crate) fn check_name(name: &str) -> Result<(), FolderError> {
     Ok(())
 }
 
-/// The earliest `YYYY-MM-DD - <name>` folder directly in `library`.
+/// The earliest `YYYY-MM-DD - <name>` folder directly in `library`, as the
+/// filesystem sees the name: HFS+ and exFAT on macOS list `Tirane\u{308}` for
+/// a folder made as `Tiran\u{eb}`, so comparing bytes would miss it. No
+/// normalisation table of ours can know each filesystem's rule, so a dated
+/// folder is looked up as the user spelt the name (DEC-044).
 fn existing_named(library: &Path, name: &str) -> io::Result<Option<String>> {
     let mut found = Vec::new();
     for entry in fs::read_dir(library)? {
@@ -116,15 +120,40 @@ fn existing_named(library: &Path, name: &str) -> io::Result<Option<String>> {
         let Ok(folder) = entry.file_name().into_string() else {
             continue; // not UTF-8, so not a name the user typed
         };
-        let dated = folder
-            .strip_suffix(name)
-            .and_then(|f| f.strip_suffix(" - "))
-            .is_some_and(is_date);
-        if dated && entry.file_type()?.is_dir() {
+        let Some(date) = folder.get(..10).filter(|d| is_date(d)) else {
+            continue;
+        };
+        let Some(listed_name) = folder.strip_prefix(date).and_then(|f| f.strip_prefix(" - ")) else {
+            continue;
+        };
+        // Same bytes need no lookup: inode numbers on some filesystems are
+        // not stable, and they must not be able to split a plain re-run.
+        let same = listed_name == name
+            || same_entry(&library.join(&folder), &library.join(format!("{date} - {name}")))?;
+        if same && entry.file_type()?.is_dir() {
             found.push(folder);
         }
     }
     Ok(found.into_iter().min())
+}
+
+/// Whether both paths are one entry. Symlinks are not followed: a symlink is
+/// never a session folder (DEC-020).
+fn same_entry(a: &Path, b: &Path) -> io::Result<bool> {
+    let (Some(a), Some(b)) = (lookup(a)?, lookup(b)?) else {
+        return Ok(false);
+    };
+    Ok(same_inode(&a, &b) && device_id(&a)? == device_id(&b)?)
+}
+
+/// `None` when the filesystem says no such entry can be there. Any other
+/// error says nothing about the entry, and is not taken for a no.
+fn lookup(path: &Path) -> io::Result<Option<fs::Metadata>> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => Ok(Some(meta)),
+        Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidFilename) => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 fn is_date(s: &str) -> bool {
