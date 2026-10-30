@@ -962,7 +962,7 @@ fn fill_and_verify(
     if expected.is_some_and(|planned| planned != read) {
         return Err(FailReason::SourceChanged.into());
     }
-    synced(Stage::FileSynced, temp, out.sync_all()).map_err(write_error(temp))?;
+    synced(Stage::FileSynced, temp, flush(&out)).map_err(write_error(temp))?;
     drop(out);
     synced(Stage::DirSynced, temp, sync_dir(dir)).map_err(write_error(dir))?;
     // The read may come from the OS cache (DEC-012).
@@ -975,12 +975,19 @@ fn fill_and_verify(
 
 fn sync_dir(dir: &Path) -> io::Result<()> {
     injected(Fault::SyncDir)?;
-    File::open(dir)?.sync_all()
+    flush(&File::open(dir)?)
+}
+
+/// The one way a copy reaches the disk (INV-3), for a file and for a folder.
+fn flush(handle: &File) -> io::Result<()> {
+    handle.sync_all()?;
+    note_flush(handle);
+    Ok(())
 }
 
 /// Passes on a flush's result, reporting `stage` only once it succeeded. The
-/// flush is an argument, so dropping the flush drops the stage too, and the
-/// INV-3 test sees it.
+/// stage proves no flush ran: `Ok(())` in the flush's place keeps it. What
+/// proves that is `note_flush`, which the INV-3 tests read.
 fn synced(stage: Stage, path: &Path, flushed: io::Result<()>) -> io::Result<()> {
     flushed?;
     at_stage(stage, path);
@@ -1215,6 +1222,34 @@ fn adopt_hooks(hooks: Hooks) {
 #[cfg(not(test))]
 fn adopt_hooks(_: Hooks) {}
 
+// TEST ONLY: what each flush that returned Ok held, read from the handle, not
+// from what the caller says it flushed. Per thread, so a test sees its own
+// copy when that copy runs on the calling thread. A normal build keeps nothing.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Flushed {
+    inode: u64,
+    /// The file's size when flushed; `None` for a folder.
+    file_size: Option<u64>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static FLUSHED: std::cell::RefCell<Vec<Flushed>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_flush(handle: &File) {
+    #[cfg(test)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = handle.metadata().unwrap();
+        let file_size = (!meta.is_dir()).then_some(meta.len());
+        FLUSHED.with(|f| f.borrow_mut().push(Flushed { inode: meta.ino(), file_size }));
+    }
+    #[cfg(not(test))]
+    let _ = handle;
+}
+
 /// An I/O error a test hook can make the next read or folder flush return,
 /// or every device read of the INV-10 re-check from then on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1422,6 +1457,73 @@ mod tests {
                 Stage::RenameSynced,
             ]
         );
+    }
+
+    /// S030 (M02, M03): the stages above stay when a flush is replaced by
+    /// `Ok(())`, so this reads what each real flush held. The folders above
+    /// come first, for a new folder's entry; then the whole temp file, its
+    /// folder, and after the rename the folder again. Folders are flushed
+    /// through the handle `sync_dir` opens, so the inodes say which.
+    #[test]
+    fn inv3_each_real_flush_holds_the_whole_copy_or_its_folder() {
+        use std::os::unix::fs::MetadataExt;
+        let inode = |path: &Path| fs::metadata(path).unwrap().ino();
+        let dir = TempDir::new();
+        let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+        fs::create_dir_all(&lib).unwrap();
+        // Two chunks: a flush after the first would hold part of the file.
+        let raw: Vec<u8> = (0..CHUNK + CHUNK / 2).map(|i| (i % 251) as u8).collect();
+        write_file(&card, "DCIM/100_FUJI/DSCF0001.RAF", &raw, at(1_700_000_000));
+        let flushes = || FLUSHED.with(|f| f.borrow().len());
+        FLUSHED.with(|f| f.borrow_mut().clear());
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let temp = std::rc::Rc::new(std::cell::Cell::new(0));
+        let (log, temp_seen) = (seen.clone(), temp.clone());
+        set_hook(move |stage, path| {
+            // Now, not after the rename: exFAT may number a renamed file anew.
+            if stage == Stage::FileSynced {
+                temp_seen.set(fs::metadata(path).unwrap().ino());
+            }
+            log.borrow_mut().push((stage, flushes()));
+        });
+        let (_, outcome) = sync(&card, &lib);
+        clear_hook();
+
+        let target = &outcome.copied[0].to;
+        let raw_dir = target.parent().unwrap();
+        let folder = |path: &Path| Flushed { inode: inode(path), file_size: None };
+        let whole = Flushed { inode: temp.get(), file_size: Some(raw.len() as u64) };
+        assert_eq!(
+            FLUSHED.with(|f| f.borrow().clone()),
+            [folder(raw_dir.parent().unwrap()), folder(&lib), whole, folder(raw_dir), folder(raw_dir)]
+        );
+        // Each stage comes right after its flush, and verifying and renaming
+        // come after the file's and its folder's.
+        let mut seen = seen.borrow().clone();
+        seen.dedup();
+        assert_eq!(
+            seen,
+            [
+                (Stage::Written, 2),
+                (Stage::FileSynced, 3),
+                (Stage::DirSynced, 4),
+                (Stage::Verified, 4),
+                (Stage::Renamed, 4),
+                (Stage::RenameSynced, 5),
+            ]
+        );
+    }
+
+    /// S030: `note_flush` runs after the flush, so the test above would not
+    /// see a flush taken out of `flush` itself. The OS refuses to flush a
+    /// pipe: only a real flush returns that error.
+    #[test]
+    fn inv3_a_flush_reaches_the_os() {
+        let (reader, _writer) = io::pipe().unwrap();
+        let pipe = File::from(std::os::fd::OwnedFd::from(reader));
+        FLUSHED.with(|f| f.borrow_mut().clear());
+        assert!(flush(&pipe).is_err(), "a pipe was flushed: no flush reached the OS");
+        assert_eq!(FLUSHED.with(|f| f.borrow().len()), 0, "noted a flush that failed");
     }
 
     #[test]

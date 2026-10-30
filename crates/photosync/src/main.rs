@@ -28,15 +28,20 @@ use photosync_core::{Cancel, RunEnd, Session, Volumes, default_search_roots, dis
 use args::{Cli, Command, EXIT_INCOMPLETE, EXIT_OK, EXIT_REFUSED, Search, SyncArgs, exit_code};
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    if system::refuses_user(system::effective_uid()) {
+    ExitCode::from(run(Cli::parse(), system::effective_uid()))
+}
+
+/// The command `cli` names, for the user `euid`. Not in `main`, so a test
+/// reaches the refusal: no test runs as root (DEC-047).
+fn run(cli: Cli, euid: u32) -> u8 {
+    if system::refuses_user(euid) {
         system::say(
             "photosync does not run as root: root can write to system volumes. \
              Run it again as your normal user, without sudo.",
         );
-        return ExitCode::from(EXIT_REFUSED);
+        return EXIT_REFUSED;
     }
-    ExitCode::from(match cli.command {
+    match cli.command {
         None => interactive(),
         Some(Command::Sources(search)) => list(
             &search,
@@ -49,7 +54,7 @@ fn main() -> ExitCode {
             "No drive to sync to found. Plug in your external drive.",
         ),
         Some(Command::Sync(args)) => sync(&args),
-    })
+    }
 }
 
 fn search_roots() -> Result<Vec<PathBuf>, u8> {
@@ -318,6 +323,35 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(print_report(&mut out, "Report\n", EXIT_OK), EXIT_OK);
         assert_eq!(out, b"Report\n");
+    }
+
+    /// S030 (M13): root gets the refusal whatever the command, and the same
+    /// command as another user runs. No command last: past a removed guard
+    /// it would open the TUI, so it is reached only if the others held.
+    #[test]
+    fn root_is_refused_before_any_command_runs() {
+        let dir = crate::common::TempDir::new();
+        let (card, lib) = (dir.0.join("card"), dir.0.join("lib"));
+        std::fs::create_dir_all(&lib).unwrap();
+        let parse = |args: &[&str]| Cli::parse_from(args);
+        let root = dir.0.to_str().unwrap();
+        let drives = ["photosync", "drives", "--search-root", root];
+        let sources = ["photosync", "sources", "--search-root", root];
+        assert_eq!(run(parse(&drives), 501), EXIT_OK);
+        assert_eq!(run(parse(&sources), 501), EXIT_OK);
+
+        assert_eq!(run(parse(&drives), 0), EXIT_REFUSED);
+        assert_eq!(run(parse(&sources), 0), EXIT_REFUSED);
+        let sync = [
+            "photosync",
+            "sync",
+            "--source",
+            card.to_str().unwrap(),
+            "--dest",
+            lib.to_str().unwrap(),
+        ];
+        assert_eq!(run(parse(&sync), 0), EXIT_REFUSED);
+        assert_eq!(run(parse(&["photosync"]), 0), EXIT_REFUSED);
     }
 
     /// S022: a Ctrl-C while the next cards are looked for (Enter, then

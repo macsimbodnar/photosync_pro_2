@@ -246,6 +246,10 @@ The tests turn on photosync-core's `test-support` feature (through a
 dev-dependency of the crate on itself) for a seam that fakes a source's
 device. A normal `cargo build` never has it.
 
+Unit tests in `copy` also read what each real flush held, the file or its
+folder, and that a flush reaches the OS. That record exists only under
+`cfg(test)` (DEC-047).
+
 ```sh
 scripts/test_exfat.sh
 ```

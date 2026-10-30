@@ -159,6 +159,16 @@ mod tests {
         assert!(!refuses_user(501));
     }
 
+    /// `main` hands this to the root refusal: it must be who we really are.
+    #[cfg(unix)]
+    #[test]
+    fn effective_uid_is_what_the_system_says() {
+        let out = std::process::Command::new("id").arg("-u").output().unwrap();
+        assert!(out.status.success(), "id failed: {out:?}");
+        let id: u32 = String::from_utf8(out.stdout).unwrap().trim().parse().unwrap();
+        assert_eq!(effective_uid(), id);
+    }
+
     /// The only test in this binary that installs the handler: a second
     /// SIGINT would kill the test process.
     #[cfg(unix)]

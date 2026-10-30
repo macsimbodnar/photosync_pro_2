@@ -13,7 +13,7 @@ use super::*;
 use crate::common::{TempDir, at, manifest, scan_card, write_file};
 use crate::progress::{Event, EventKind, Phase};
 use crate::report::{FileOutcome, Report};
-use crate::session::{RunEnd, Session, Verdict, Watch};
+use crate::session::{RunEnd, Session, SyncError, Verdict, Watch};
 use crate::source::SourceScan;
 
 const T0: u64 = 1_761_650_000;
@@ -231,6 +231,170 @@ fn s019_two_cards_are_read_at_once_with_progress_per_card_in_one_stream() {
     for s in &last.progress.sources {
         assert_eq!(s.done, s.total, "{s:?}");
     }
+}
+
+/// The most files in flight at once. Fails if one card ever has two, cards
+/// told apart by `card_of`.
+fn most_in_flight(events: &Log, card_of: impl Fn(&Path) -> u8) -> usize {
+    let (mut in_flight, mut most) = (Vec::new(), 0);
+    for e in events.0.iter().filter(|e| e.progress.phase == Phase::Copying) {
+        match &e.kind {
+            EventKind::FileStarted(path) => {
+                assert!(!in_flight.contains(&card_of(path)), "two files of one card at once: {path:?}");
+                in_flight.push(card_of(path));
+                most = most.max(in_flight.len());
+            }
+            EventKind::FileDone(path) => in_flight.retain(|c| *c != card_of(path)),
+            _ => {}
+        }
+    }
+    most
+}
+
+/// The threads that wrote files whose temp name holds one of `names`.
+fn writers(seen: &Seen, names: &[&str]) -> HashSet<ThreadId> {
+    let seen = seen.lock().unwrap();
+    let wrote = |p: &PathBuf| names.iter().any(|n| p.to_string_lossy().contains(n));
+    seen.iter().filter(|(_, s, p)| *s == Stage::Written && wrote(p)).map(|(t, _, _)| *t).collect()
+}
+
+/// S030 (M16): two sources on one card are read one file at a time (DEC-040
+/// (1)). The first file waits at its first chunk, so a thread of the other
+/// source would have its file in flight by then.
+#[test]
+fn s030_two_sources_on_one_card_are_read_one_file_at_a_time() {
+    let dir = TempDir::new();
+    let (a, b, lib) = (dir.0.join("a"), dir.0.join("b"), dir.0.join("lib"));
+    let (raw_a, raw_b) = (big(1), big(2));
+    put(&a, "DCIM/100_FUJI/DSCF0001.RAF", &raw_a);
+    put(&a, "DCIM/100_FUJI/DSCF0002.JPG", b"a jpeg");
+    put(&b, "DCIM/100_FUJI/DSCF0101.RAF", &raw_b);
+    put(&b, "DCIM/100_FUJI/DSCF0102.JPG", b"b jpeg");
+    fs::create_dir_all(&lib).unwrap();
+
+    let seen = Seen::default();
+    let log = seen.clone();
+    let _hook = hook(move |stage, path| {
+        if first_time(&log, stage, path) && stage == Stage::Written && named(path, "DSCF0001.RAF") {
+            thread::sleep(Duration::from_millis(200));
+        }
+    });
+    let mut events = Log::default();
+    let mut session = Session::new(&lib, None).unwrap();
+    session.sync_scans(vec![scan_card(&a, 1), scan_card(&b, 1)], &Cancel::new(), &mut events);
+
+    let report = last_report(&session);
+    assert!(report.is_complete(), "{report:?}");
+    assert_inv6(report, &[&a, &b]);
+    let folder = session.folder().unwrap().path();
+    assert_eq!(fs::read(folder.join("RAW/DSCF0001.RAF")).unwrap(), raw_a);
+    assert_eq!(fs::read(folder.join("RAW/DSCF0101.RAF")).unwrap(), raw_b);
+    assert_eq!(most_in_flight(&events, |_| 1), 1);
+    let all = ["DSCF0001", "DSCF0002", "DSCF0101", "DSCF0102"];
+    assert_eq!(writers(&seen, &all), HashSet::from([thread::current().id()]), "one card, this thread");
+}
+
+/// S030 (M16): beside another card, two sources on one card still share one
+/// thread, and that thread runs at the same time as the other card's: they
+/// meet inside a first file of each.
+#[test]
+fn s030_two_sources_on_one_card_share_a_thread_beside_another_card() {
+    let dir = TempDir::new();
+    let (a1, a2, b, lib) = (dir.0.join("a1"), dir.0.join("a2"), dir.0.join("b"), dir.0.join("lib"));
+    put(&a1, "DCIM/100_FUJI/DSCF0001.RAF", &big(1));
+    put(&a2, "DCIM/100_FUJI/DSCF0201.RAF", &big(3));
+    put(&b, "DCIM/100_FUJI/DSCF0101.RAF", &big(2));
+    fs::create_dir_all(&lib).unwrap();
+
+    let (meet, seen) = (Meet::new(2), Seen::default());
+    let log = seen.clone();
+    let _hook = hook(move |stage, path| {
+        let meeting = named(path, "DSCF0001.RAF") || named(path, "DSCF0101.RAF");
+        if first_time(&log, stage, path) && stage == Stage::Written && meeting {
+            assert!(meet.meet(|| {}), "the two cards were not read at the same time");
+        }
+    });
+    let mut events = Log::default();
+    let mut session = Session::new(&lib, None).unwrap();
+    let scans = vec![scan_card(&a1, 1), scan_card(&a2, 1), scan_card(&b, 2)];
+    session.sync_scans(scans, &Cancel::new(), &mut events);
+
+    let report = last_report(&session);
+    assert!(report.is_complete(), "{report:?}");
+    assert_inv6(report, &[&a1, &a2, &b]);
+    assert_eq!(most_in_flight(&events, |p| u8::from(p.starts_with(&b))), 2);
+    let (card_a, card_b) = (writers(&seen, &["DSCF0001", "DSCF0201"]), writers(&seen, &["DSCF0101"]));
+    assert_eq!((card_a.len(), card_b.len()), (1, 1), "one thread per card");
+    assert!(card_a.is_disjoint(&card_b));
+}
+
+/// Calls `then` once, when planning has ended: the last moment before the
+/// session's own INV-10 check.
+struct WhenPlanned<F>(F);
+
+impl<F: FnMut() + Send> Watch for WhenPlanned<F> {
+    fn event(&mut self, event: Event) {
+        if event.progress.phase == Phase::Planning && matches!(event.kind, EventKind::Finished) {
+            (self.0)();
+        }
+    }
+}
+
+/// S030 (M08): a library moved away after planning refuses the sync, by the
+/// session's check (INV-10). Past that check it would run, and fail file by
+/// file instead.
+#[test]
+fn s030_a_library_moved_after_planning_refuses_the_sync() {
+    let dir = TempDir::new();
+    let (a, lib, moved) = (dir.0.join("a"), dir.0.join("lib"), dir.0.join("moved"));
+    put(&a, "DCIM/100_FUJI/DSCF0001.RAF", b"a raw");
+    put(&lib, "2026-01-01/RAW/.photosync-tmp-1-0-DSCF0009.RAF", b"partial");
+
+    let mut session = Session::new(&lib, None).unwrap();
+    let mut watch = WhenPlanned(|| fs::rename(&lib, &moved).unwrap());
+    let run = session.sync_scans(vec![scan_card(&a, 1)], &Cancel::new(), &mut watch);
+
+    match &run.end {
+        RunEnd::Refused(SyncError::Copy(CopyError::Library(e))) => {
+            assert_eq!(e.path, lib);
+            assert_eq!(e.source.kind(), io::ErrorKind::NotFound);
+        }
+        other => panic!("expected the library refused, got {other:?}"),
+    }
+    assert_eq!(run.verdict(), Verdict::Refused);
+    assert_eq!(files(&moved).len(), 1, "the moved library changed");
+}
+
+/// S030 (M08): the session's check is what guards its stale temp cleanup
+/// (INV-10, DEC-027). `copy_files` checks again only for its own writes, so
+/// past a missed check the cleanup deletes from a library that may have
+/// moved. The device read fails as one of a moved drive would. The next
+/// sync finds it back: the cleanup, not yet run, runs then.
+#[test]
+fn s030_the_session_checks_the_library_before_its_cleanup() {
+    let dir = TempDir::new();
+    let (a, lib) = (dir.0.join("a"), dir.0.join("lib"));
+    put(&a, "DCIM/100_FUJI/DSCF0001.RAF", b"a raw");
+    put(&lib, "2026-01-01/RAW/.photosync-tmp-1-0-DSCF0009.RAF", b"partial");
+    let before = files(&lib);
+
+    let mut session = Session::new(&lib, None).unwrap();
+    let mut watch = WhenPlanned(|| FAULT.with(|f| f.set(Some(Fault::Device))));
+    let run = session.sync_scans(vec![scan_card(&a, 1)], &Cancel::new(), &mut watch);
+    FAULT.with(|f| f.set(None));
+
+    match &run.end {
+        RunEnd::Refused(SyncError::Copy(CopyError::Library(e))) => {
+            assert_eq!(e.source.raw_os_error(), Some(libc::EIO));
+        }
+        other => panic!("expected the library refused, got {other:?}"),
+    }
+    assert_eq!(files(&lib), before, "wrote or deleted before the check");
+
+    session.sync_scans(vec![scan_card(&a, 1)], &Cancel::new(), &mut Log::default());
+    assert!(last_report(&session).is_complete());
+    assert!(temps_in(&lib).is_empty(), "the cleanup never ran");
+    assert_eq!(session.verdict(), Verdict::Refused, "a later sync hid the refusal");
 }
 
 /// Two cards with a different photo of the same name (a counter reset),

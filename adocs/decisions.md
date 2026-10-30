@@ -63,6 +63,7 @@ Why: one line.
 - DEC-044 2026-10-30 — a sync name is matched by the filesystem's lookup, not by bytes (S027)
 - DEC-045 2026-10-30 — a later copy of an earlier sync's photo is resolved in the plan (S038)
 - DEC-046 2026-10-30 — duplicates wait until after every failure and the library (S039)
+- DEC-047 2026-10-30 — how tests see a real flush; root guard outside main (S030)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1095,3 +1096,29 @@ binary, off the images: chmod does nothing on exFAT. An unreadable scan entry
 cannot be made on the images at all, so only the unit test on `body` covers it.
 Why: the prime rule; what went wrong must be read before a long list of photos
 that are safe.
+
+## DEC-047  2026-10-30  how tests see a real flush; root guard outside main (S030)
+Tags: tests, safety, inv-3
+Decision: agent's pick in S030, not yet confirmed by the user.
+(1) Every INV-3 flush goes through one small function, `copy::flush`. Under
+`cfg(test)` it notes what the handle holds (inode, size, or folder), read from
+the handle after `sync_all` returned Ok. No feature, no public API: the unit
+tests in `copy` are the only readers, so INV-8 and `no_test_seam` are not
+touched, and a normal build keeps nothing. Rejected: the `test-support`
+feature (integration tests do not need this, and workspace builds would link
+it into the binary, DEC-027); a replaceable flush function (the test would no
+longer run the real flush).
+(2) A note cannot prove the flush in the same function ran. So
+`inv3_a_flush_reaches_the_os` flushes a pipe, which the OS refuses: taking
+`sync_all` out of `flush` makes that call succeed. Still not seen: whether
+the disk kept the data, which needs a physical unplug (S017, optional).
+(3) `main` is now `run(Cli::parse(), effective_uid())`, and `run` holds the
+root refusal, so a test passes euid 0 without being root. Still a hand check:
+that `main` passes the real uid. `effective_uid` is tested against `id -u`, and
+`sudo photosync drives` stays in S017 and S025. Rejected: an environment
+switch to fake the uid, which any caller could use.
+(4) The session's own INV-10 check is reached in tests through a `Watch` at
+the end of planning, once by really moving the library, once by the existing
+`Fault::Device`. A real change of device needs a second volume, and at that
+moment no test can swap one.
+Why: M02, M03, M08, M13 and M16 passed the whole suite when removed (audit F05).
