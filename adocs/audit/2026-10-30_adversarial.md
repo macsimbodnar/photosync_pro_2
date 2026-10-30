@@ -19,7 +19,7 @@ copies nothing and overwrites nothing.
 
 ## 2026-10-30_adversarial-F01  Medium  A file that reads shorter than scanned is reported as copied, and the sync as complete
 
-Status: closed
+Status: planned
 
 **Evidence**: `crates/photosync-core/src/copy.rs:899-917`: `fill_and_verify` stops
 at the first `Ok(0)` and never compares the bytes read with `file.size`. The only
