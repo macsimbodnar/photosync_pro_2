@@ -161,7 +161,7 @@ picks. It is simple to use.
   - A closed stdout never stops a sync nor panics: the exit code stays
     within 0/1/2.
   - GUI: a native Rust GUI in iced (DEC-065), being built step by step: today its window
-    and the cards screen; the other screens are a bare title until their steps (S052 on), so
+    and the cards and drive screens; the other screens are a bare title until their steps (S053 on), so
     it cannot copy yet. What follows is what it must become. It
     must need no change to the core beyond new API, which keeps INV-8 true.
     It is its own binary, `photosync-gui`, over the same model, worker and
@@ -187,8 +187,8 @@ picks. It is simple to use.
     stderr and to a window that offers only Quit. Nothing it says is cut: every word
     wraps, and what is too tall scrolls. A result too tall for its box, at most 240 high,
     scrolls in that box, with the report and buttons still in sight; a refusal too tall
-    scrolls with the buttons in sight (DEC-071). Each screen and each report opens at its top
-    (DEC-073). Until a look for volumes has answered, the list screens say it is looking, show no
+    scrolls with the buttons in sight (DEC-071). Each screen, each report and each new look's list opens at its top
+    (DEC-073, DEC-075). Until a look for volumes has answered, the list screens say it is looking, show no
     old row, and Next waits; a stuck card never freezes the window, and an older look's answer
     is dropped (DEC-073). Each screen is checked with no window, on
     its words and on a picture read after it is drawn (DEC-066).

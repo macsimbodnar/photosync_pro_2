@@ -3,12 +3,42 @@
 //! screen only through `words`, and `tests/gui_split.rs` holds that (DEC-066 (4), (7), DEC-072 (4)).
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Text, button, checkbox, row, text};
+use iced::widget::{Text, button, checkbox, column, container, row, scrollable, text};
 use iced::{Alignment, Element, Length, Theme};
 
 /// Words on the screen, never cut.
 pub fn words<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
     text(content).wrapping(Wrapping::WordOrGlyph)
+}
+
+/// Why the last click did nothing, in the colour the TUI gives it.
+pub fn hint<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
+    words(content).style(text::warning)
+}
+
+/// Words in a box of at most `most` high that scroll inside it, so they can never push
+/// what is under them off the window, and nothing has to be measured (DEC-071 (3), (4)).
+pub fn word_box<'a, M: 'a>(id: &'static str, content: String, most: f32) -> Element<'a, M> {
+    let inside = scrollable(words(content).width(Length::Fill))
+        .id(id)
+        .spacing(8);
+    container(inside)
+        .width(Length::Fill)
+        .max_height(most)
+        .into()
+}
+
+/// The not-safe banner: its line, and under it its reason in a box (DEC-071 (2)).
+pub fn red_banner<'a, M: 'a>(line: &'a str, reason: Option<Element<'a, M>>) -> Element<'a, M> {
+    let mut inside = column![words(line)].spacing(4);
+    if let Some(reason) = reason {
+        inside = inside.push(reason);
+    }
+    container(inside)
+        .style(container::danger)
+        .width(Length::Fill)
+        .padding(8)
+        .into()
 }
 
 /// A button; with no message it is drawn held, and a click sends nothing.

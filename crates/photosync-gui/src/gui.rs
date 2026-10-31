@@ -7,14 +7,15 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use iced::futures::channel::oneshot;
-use iced::widget::{column, row, scrollable};
+use iced::widget::scrollable::RelativeOffset;
+use iced::widget::{column, operation, row, scrollable};
 use iced::{Element, Font, Length, Size, Subscription, Task, Theme, window};
 use photosync_core::Volumes;
-use photosync_front::app::{App, Effect, Key, Msg, Screen};
+use photosync_front::app::{App, Effect, Exit, Key, Msg, Outcome, Screen};
 use photosync_front::system::say;
 
 use crate::png;
-use crate::widgets::{action, list_row, words};
+use crate::widgets::{action, hint, list_row, red_banner, word_box, words};
 
 /// The name the user sees (DEC-069 (1)).
 pub const TITLE: &str = "phoosync pro 2";
@@ -23,6 +24,14 @@ pub const WINDOW: Size = Size::new(900.0, 650.0);
 pub const LEAST: Size = Size::new(640.0, 480.0);
 /// What is said while the newest look is out (DEC-073 (2)).
 pub const LOOKING: &str = "Looking for cards and drives. A stuck card can hold this up: take it out, or press Look again.";
+
+/// The banner's line (DEC-071 (2)).
+pub const NOT_SAFE: &str = "Not every photo is known to be on the drive: do not format the card.";
+/// The scrollables' fixed ids, as `Scrollable::diff` never looks at an id (DEC-073 (1)).
+pub const BODY: &str = "body";
+pub const BANNER: &str = "banner";
+/// The most the banner's box takes: five rows (DEC-071 (3)).
+const BANNER_MOST: f32 = 104.0;
 
 /// How volumes are found: injected, so tests give literal folders (DEC-068 (5)).
 pub type Discover = Arc<dyn Fn() -> Volumes + Send + Sync>;
@@ -33,6 +42,7 @@ pub type Discover = Arc<dyn Fn() -> Volumes + Send + Sync>;
 pub enum M {
     Row(PathBuf),
     Next,
+    Back,
     LookAgain,
     Quit,
     /// A look's thread has ended.
@@ -41,6 +51,9 @@ pub enum M {
     /// A frame was drawn, while `--smoke-png` waits for one.
     SmokeFrame,
     SmokeShot(window::Screenshot),
+    /// A wheel to the body's end: the Emulator has no wheel (DEC-073 (1)).
+    #[cfg(test)]
+    ScrollEndForTest,
 }
 
 /// What `--smoke-png` still has to do.
@@ -143,11 +156,29 @@ impl Gui {
 
     fn pick(&mut self, path: &PathBuf) -> Task<M> {
         // A row of a list that has changed since this click was drawn is no row.
-        let Some(row) = self.app.sources().iter().position(|p| p == path) else {
+        let on_cards = self.app.screen() == Screen::Sources;
+        let rows = if on_cards {
+            self.app.sources()
+        } else {
+            self.app.drives()
+        };
+        let Some(row) = rows.iter().position(|p| p == path) else {
             return Task::none();
         };
         self.cursor_to(row);
-        self.key(Key::Char(' '))
+        if on_cards {
+            self.key(Key::Char(' '))
+        } else {
+            // Next chooses the drive, as Enter does in the TUI (DEC-068 (2)).
+            Task::none()
+        }
+    }
+
+    /// What makes a scrollable's offset belong to something else. The look too: its
+    /// sentence has no room to scroll, and the rows after it would open wherever the old
+    /// ones were left.
+    fn place(&self) -> (Screen, u64, bool) {
+        (self.app.screen(), self.app.outcome_id(), self.looking())
     }
 
     fn smoke_frame(&mut self) -> Task<M> {
@@ -181,9 +212,28 @@ impl Gui {
 }
 
 pub fn update(gui: &mut Gui, message: M) -> Task<M> {
+    let before = gui.place();
+    let task = step(gui, message);
+    if gui.place() == before {
+        return task;
+    }
+    // Batched, not chained: a look's task can wait on a stuck card for ever.
+    Task::batch([
+        task,
+        operation::snap_to(BODY, RelativeOffset::START),
+        operation::snap_to(BANNER, RelativeOffset::START),
+    ])
+}
+
+fn step(gui: &mut Gui, message: M) -> Task<M> {
     let held = gui.looking();
+    let screen = gui.app.screen();
+    let on_a_list = matches!(screen, Screen::Sources | Screen::Drive);
     match message {
-        // Held in `update` too: a click drawn before the look began can still arrive.
+        // Held here too: a click drawn on what was shown before can still arrive. Its key
+        // would type in a field, and Esc on the cards would quit.
+        M::Row(_) | M::Next | M::LookAgain | M::Quit | M::Back if !on_a_list => Task::none(),
+        M::Back if screen != Screen::Drive => Task::none(),
         M::Row(_) | M::Next if held => Task::none(),
         M::Row(path) => gui.pick(&path),
         M::Next => gui.key(Key::Enter),
@@ -196,54 +246,128 @@ pub fn update(gui: &mut Gui, message: M) -> Task<M> {
         M::CloseRequested => gui.key(Key::CtrlC),
         M::SmokeFrame => gui.smoke_frame(),
         M::SmokeShot(shot) => gui.smoke_shot(&shot),
+        M::Back => gui.key(Key::Esc),
+        #[cfg(test)]
+        M::ScrollEndForTest => operation::snap_to_end(BODY),
     }
 }
 
 pub fn view(gui: &Gui) -> Element<'_, M> {
     match gui.app.screen() {
         Screen::Sources => cards(gui),
-        // Each comes with its own step, S052 on.
+        Screen::Drive => drives(gui),
+        // Each comes with its own step, S053 on.
         _ => column![words(TITLE).size(24)].padding(16).into(),
     }
 }
 
 fn cards(gui: &Gui) -> Element<'_, M> {
-    let looking = gui.looking();
+    let app = &gui.app;
+    // The next card goes straight to the check, with no drive screen in between.
+    let heading = if app.in_session() {
+        format!("Sync {}: pick the next card", app.syncs() + 1)
+    } else {
+        "1/5  Pick the cards to copy from".to_string()
+    };
+    let rows = app.sources().iter().enumerate().map(|(at, source)| {
+        list_row(
+            app.is_picked(source),
+            at == app.cursor(),
+            source.display().to_string(),
+            M::Row(source.clone()),
+        )
+    });
+    let next = (!gui.looking()).then_some(M::Next);
+    let buttons = row![
+        action("Next", next),
+        action("Look again", Some(M::LookAgain)),
+        action("Quit", Some(M::Quit)),
+    ];
+    list_screen(gui, heading, rows, buttons)
+}
+
+fn drives(gui: &Gui) -> Element<'_, M> {
+    let app = &gui.app;
+    let rows = app.drives().iter().enumerate().map(|(at, drive)| {
+        list_row(
+            app.drive() == Some(drive.as_path()),
+            at == app.cursor(),
+            drive.display().to_string(),
+            M::Row(drive.clone()),
+        )
+    });
+    let next = (!gui.looking()).then_some(M::Next);
+    let buttons = row![
+        action("Next", next),
+        action("Back", Some(M::Back)),
+        action("Look again", Some(M::LookAgain)),
+        action("Quit", Some(M::Quit)),
+    ];
+    list_screen(
+        gui,
+        "2/5  Pick the drive to copy to".to_string(),
+        rows,
+        buttons,
+    )
+}
+
+/// Rows and notes scroll; all else is fixed, so the banner, the hint and the buttons
+/// never leave (DEC-068 (7)). Rows come first, so notes never take their room.
+fn list_screen<'a>(
+    gui: &'a Gui,
+    heading: String,
+    rows: impl Iterator<Item = Element<'a, M>>,
+    buttons: iced::widget::Row<'a, M>,
+) -> Element<'a, M> {
     let mut body = column![].spacing(6).width(Length::Fill);
-    if looking {
+    if gui.looking() {
         // No rows and no notes: they are of an older look (DEC-073 (2)).
         body = body.push(words(LOOKING));
-    } else if gui.app.sources().is_empty() {
-        body = body.push(words(gui.app.empty_list_note()));
-    }
-    if !looking {
-        for (at, source) in gui.app.sources().iter().enumerate() {
-            body = body.push(list_row(
-                gui.app.is_picked(source),
-                at == gui.app.cursor(),
-                source.display().to_string(),
-                M::Row(source.clone()),
-            ));
+    } else {
+        let mut rows = rows.peekable();
+        if rows.peek().is_none() {
+            body = body.push(words(gui.app.empty_list_note()));
+        }
+        for list_row in rows {
+            body = body.push(list_row);
         }
         for note in gui.app.notes() {
             body = body.push(words(note.as_str()));
         }
     }
-    let buttons = row![
-        action("Next", (!looking).then_some(M::Next)),
-        action("Look again", Some(M::LookAgain)),
-        action("Quit", Some(M::Quit)),
-    ]
-    .spacing(10);
-    column![
-        words(TITLE).size(24),
-        words("1/5  Pick the cards to copy from"),
-        scrollable(body).spacing(8).height(Length::Fill),
-        buttons,
-    ]
-    .spacing(12)
-    .padding(16)
-    .into()
+    let mut screen = column![words(TITLE).size(24), words(heading)]
+        .spacing(12)
+        .padding(16);
+    if let Some(reason) = banner(&gui.app.exit(), gui.app.outcome()) {
+        let reason = (!reason.is_empty()).then(|| word_box(BANNER, reason, BANNER_MOST));
+        screen = screen.push(red_banner(NOT_SAFE, reason));
+    }
+    screen = screen.push(scrollable(body).id(BODY).spacing(8).height(Length::Fill));
+    if let Some(words) = gui.app.hint() {
+        screen = screen.push(hint(hint_words(words)));
+    }
+    screen.push(buttons.spacing(10)).into()
+}
+
+/// The model's hints name the TUI's keys; here a key is a button (DEC-068 (3)). A test
+/// goes over every hint the screens reach, so a changed hint fails.
+fn hint_words(words: &str) -> String {
+    words.replace("press r", "click Look again")
+}
+
+/// What the banner's box says, and `None` with nothing to warn of (DEC-071 (2)).
+pub fn banner(exit: &Exit, outcome: Option<&Outcome>) -> Option<String> {
+    if exit.code == 0 {
+        return None;
+    }
+    // One failed sync has no message, and it is the commonest case.
+    let words = exit.message.clone().or_else(|| {
+        outcome.map(|outcome| match outcome {
+            Outcome::Report { result, .. } => result.clone(),
+            Outcome::Refused { sentence } => sentence.clone(),
+        })
+    });
+    Some(words.unwrap_or_default())
 }
 
 pub fn subscription(gui: &Gui) -> Subscription<M> {

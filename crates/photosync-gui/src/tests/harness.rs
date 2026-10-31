@@ -14,6 +14,7 @@ use iced::{Size, Theme};
 use iced_test::core::Settings;
 use iced_test::emulator::{Emulator, Event, Mode};
 use iced_test::futures::futures::channel::mpsc::{self as emulator_channel, TryRecvError};
+use iced_test::selector::Candidate;
 use iced_test::{Instruction, Simulator};
 use photosync_core::{ScanError, Volumes};
 
@@ -176,24 +177,82 @@ pub(crate) fn picture_at(gui: &Gui, size: Size, step: &str, name: &str) -> PathB
     wanted
 }
 
+/// Every text on the screen, in or out of sight.
+pub(crate) fn all_words(gui: &Gui, size: Size) -> Vec<String> {
+    let mut seen = Vec::new();
+    // Selects nothing, so the walk goes over the whole tree.
+    let _ = screen(gui, size).find(|candidate: Candidate<'_>| {
+        if let Candidate::Text { content, .. } = candidate {
+            seen.push(content.to_string());
+        }
+        None::<()>
+    });
+    seen
+}
+
+/// One thing `play_steps` does.
+pub(crate) enum Step {
+    /// An Emulator line that must pass.
+    Line(&'static str),
+    /// One that must fail: a click on words out of sight.
+    Fails(&'static str),
+    /// The body to its end.
+    ScrollEnd,
+}
+
 /// Runs the real program with no window, tasks and threads included, and each of `lines`
 /// in turn, as `click "Next"` or `expect "Report"`: `expect` passes for words out of
 /// sight, `click` does not (DEC-072 (5)). Each line waits for all tasks. Gives the
 /// state at the end.
-pub(crate) fn play(discover: Discover, lines: &[&str]) -> Gui {
+pub(crate) fn play(discover: Discover, lines: &[&'static str]) -> Gui {
+    let steps: Vec<Step> = lines.iter().map(|line| Step::Line(line)).collect();
+    play_steps(discover, steps)
+}
+
+/// `play`, with lines that must fail and scrolling. `emu.update` runs its task unwaited
+/// when nothing is pending, so a scroll goes on when its one action has been performed.
+pub(crate) fn play_steps(discover: Discover, steps: Vec<Step>) -> Gui {
     let program = gui::program(discover, None);
     let (events, mut heard) = emulator_channel::channel(1);
     let mut emulator = Emulator::new(events, &program, Mode::Zen, WINDOW);
-    let mut lines = lines.iter();
+    let mut steps = steps.into_iter();
     let started = Instant::now();
+    let (mut go_on, mut must_fail, mut scrolling) = (false, false, false);
     loop {
-        match heard.try_recv() {
-            Ok(Event::Action(action)) => emulator.perform(&program, action),
-            Ok(Event::Failed(line)) => panic!("line failed: {line}"),
-            Ok(Event::Ready) => match lines.next() {
-                Some(line) => emulator.run(&program, Instruction::parse(line).unwrap()),
+        if go_on {
+            go_on = false;
+            must_fail = false;
+            match steps.next() {
                 None => return emulator.into_state().0,
-            },
+                Some(Step::Line(line)) => {
+                    emulator.run(&program, Instruction::parse(line).unwrap());
+                }
+                Some(Step::Fails(line)) => {
+                    must_fail = true;
+                    emulator.run(&program, Instruction::parse(line).unwrap());
+                }
+                Some(Step::ScrollEnd) => {
+                    scrolling = true;
+                    emulator.update(&program, M::ScrollEndForTest);
+                }
+            }
+        }
+        match heard.try_recv() {
+            Ok(Event::Action(action)) => {
+                emulator.perform(&program, action);
+                if scrolling {
+                    scrolling = false;
+                    go_on = true;
+                }
+            }
+            Ok(Event::Failed(line)) => {
+                assert!(must_fail, "line failed: {line}");
+                go_on = true;
+            }
+            Ok(Event::Ready) => {
+                assert!(!must_fail, "a line that should have failed passed");
+                go_on = true;
+            }
             Err(TryRecvError::Closed) => panic!("the runtime stopped"),
             Err(TryRecvError::Empty) => {
                 assert!(started.elapsed() < LIMIT, "nothing happened for too long");

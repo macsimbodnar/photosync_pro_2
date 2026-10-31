@@ -7,7 +7,7 @@ separate folders under one folder per sync, optionally named
 first, then Linux.
 
 Status: early development. The CLI and the TUI work. A GUI is being built: `photosync-gui`
-opens its window and lists the cards, and it cannot copy yet. What
+opens its window and lists the cards and the drives, and it cannot copy yet. What
 it must do is in `adocs/specs.md`, and the plan is in `adocs/plan.md`.
 
 ## Usage
@@ -271,7 +271,7 @@ then repeat the sync. Write down each command's output and exit code.
 `cargo test --workspace` runs them with no window. `src/tests/harness.rs` has what each
 screen's test uses: `screen_check` finds its words and writes
 `target/gui_screens/<step>_<screen>.png` to read; `play` runs the real program, tasks and
-threads included. One test opens a real window, so it is ignored and never in the gate. By hand,
+threads included; `play_steps` adds a line that must fail and scrolling to the end. One test opens a real window, so it is ignored and never in the gate. By hand,
 with the mouse off the window, as a hovered button changes the picture:
 
 ```sh

@@ -91,6 +91,7 @@ Why: one line.
 - DEC-072 2026-10-31 — how the GUI's tests stay honest: the window test apart, rows the source check can read, a cancel that cannot miss (S036, plan review)
 - DEC-073 2026-10-31 — the GUI's scroll starts at the top of each screen; looking for volumes is a state of its own (S036, plan review)
 - DEC-074 2026-10-31 — small choices of the GUI's first step: screens to come, arguments, smoke timing, harness picture (S051)
+- DEC-075 2026-10-31 — small choices of the cards and drive screens: stale clicks, scroll reset, the drive's mark, a box's end (S052)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1831,3 +1832,17 @@ Decision: the agent's choice, not yet confirmed by the user.
 (6) The looking sentence of DEC-073 (2) says "press Look again": that names a button, not a key, so S052's check for `press` leaves that sentence out (S052 amended).
 (7) Measured: clean release of `photosync-gui` 19.25 s, 5981152 bytes, 4712216 stripped, beside DEC-065 (3)'s 19.3 s, 6371136 and 5365368. `Cargo.lock` 111 to 387 entries, all platforms counted; the spike's lock with iced_test had 344: the rest come only with `x11` and `wayland` on Linux, which the spike's lock left out, read from the difference, not traced crate by crate. Not one version of the 111 changed.
 Why: each is the least that keeps the screen honest, and a later step would ask why.
+
+## DEC-075  2026-10-31  small choices of the cards and drive screens: stale clicks, scroll reset, the drive's mark, a box's end (S052)
+Tags: gui, tests
+Decision: the agent's choice, not yet confirmed by the user. Amends DEC-072 (5), DEC-073 (1).
+(1) `update` drops a click left from the screen before. A row, Next, Look again, Quit and Back do nothing off the list screens, and Back only on the drive screen. Events of one frame go to one view, so a second message can land on the next screen: there a key would type in a field, and Esc on the cards would quit. Each later step opens this for its own screen. Rejected: a screen number in each message, as a human's second click comes frames later and only these harmful landings need a stop. So two Nexts in one frame would still take the first drive; nothing is copied before the check, which names the library.
+(2) DEC-072 (5)'s test of a box's end, `translation.y + bounds.height >= content_bounds.height`, fails at the end: measured 790 + 104 of 894.4, as iced rounds a translation to a whole pixel. So it compares with `content_bounds.height.floor()`.
+(3) DEC-073 (1) chains the scroll reset; here it is batched with the message's task, as a look's task can wait on a stuck card for ever, and a chained reset would wait with it.
+(4) DEC-073 (1) compares screen and outcome; here looking too. The looking sentence has no room to scroll, and the rows after it would open wherever the old ones were left.
+(5) The chosen drive (`app.drive()`) has the ticked box, the row under the cursor the grey bar, as the TUI's `(*)` and `>`. A click on a row only moves the bar: Next chooses, as Enter does there (DEC-068 (2)). A radio is left out, as it draws its own words (DEC-072 (4)).
+(6) `hint_words` swaps only what these screens reach: "press r" for "click Look again", never "press Look again", so the check for `press` stays whole. S053 adds "(Esc)". The hint stands in the fixed part, over the buttons, in the theme's warning colour.
+(7) In a session the cards' heading is the TUI's "Sync N: pick the next card".
+(8) With a code not 0 and no words at all, the banner is its line alone, with no box.
+(9) What the tests do not prove. The banner's own reset is sent but no test sees it: the Emulator has no wheel and no way to a session here. A chosen drive below the fold after Back, past about 25 drives, leaves its bar out of sight, as the body opens at its top. Neither is reached by a usual run.
+Why: each keeps a click or a scroll from landing where the user did not mean it, and a later step would ask why.
