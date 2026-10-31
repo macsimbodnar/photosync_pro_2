@@ -25,8 +25,8 @@ use photosync_front::app::{Effect, Exit, Key, Msg, Outcome, Screen};
 use crate::args::{Options, parse};
 use crate::common::TempDir;
 use crate::gui::{
-    self, BANNER, BODY, Discover, Gui, LEAST, LOOKING, M, NOT_SAFE, TITLE, WINDOW, banner, update,
-    view,
+    self, BANNER, BODY, DRIVE_GONE, Discover, Gui, LEAST, LOOKING, M, NOT_SAFE, PICK_A_DRIVE,
+    TITLE, WINDOW, banner, update, view,
 };
 use crate::png;
 use crate::widgets::{row_under_cursor, words};
@@ -467,6 +467,7 @@ fn the_drive_screen_shows_its_rows_and_buttons_and_marks_the_chosen_drive() {
     let unmarked = picture_at(&gui, WINDOW, "harness", "drive_unmarked");
     let unmarked = fs::read(unmarked).unwrap();
 
+    click(&mut gui, DRIVE_A);
     click(&mut gui, "Next");
     assert_eq!(gui.app.drive().unwrap().to_str(), Some(DRIVE_A));
     let _ = key(&mut gui, Key::Esc);
@@ -476,12 +477,13 @@ fn the_drive_screen_shows_its_rows_and_buttons_and_marks_the_chosen_drive() {
     assert_ne!(
         unmarked,
         fs::read(marked).unwrap(),
-        "only the chosen drive changed between these two"
+        "only the mark changed between these two"
     );
 
-    // The mark stays on the chosen drive while the cursor shows what Next takes.
+    // The mark moves at once. The model hears of the drive on Next, as its library goes with it.
     click(&mut gui, DRIVE_B);
     assert_eq!(gui.app.cursor(), 1);
+    assert_eq!(mark_of(&gui), Some(DRIVE_B));
     assert_eq!(gui.app.drive().unwrap().to_str(), Some(DRIVE_A));
     let words = [
         TITLE,
@@ -511,6 +513,390 @@ fn a_click_on_a_drive_moves_the_cursor_and_ticks_no_card() {
     assert!(gui.app.drive().is_none(), "Next chooses it");
     let _ = update(&mut gui, M::Row(PathBuf::from("/Volumes/GONE")));
     assert_eq!(gui.app.cursor(), 1, "a row that has gone is no row");
+}
+
+// The drive's mark is what Next takes (S063, DEC-077).
+
+const AA_FIRST: &str = "/Volumes/AA_FIRST";
+
+fn mark_of(gui: &Gui) -> Option<&str> {
+    gui.marked_drive().and_then(|path| path.to_str())
+}
+
+/// On the drive screen of a held discovery, and the first look answered.
+fn held_on_the_drive_screen(
+    drives: &[&str],
+) -> (Gui, mpsc::Receiver<mpsc::Sender<photosync_core::Volumes>>) {
+    let (discover, looks) = blocked_discovery();
+    let (mut gui, _) = Gui::boot(discover, None);
+    next_look(&looks)
+        .send(volumes(&[CARD_A], drives, &[]))
+        .unwrap();
+    settle(&mut gui);
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Drive);
+    (gui, looks)
+}
+
+/// Look again, answered with these drives.
+fn look_gives(
+    gui: &mut Gui,
+    looks: &mpsc::Receiver<mpsc::Sender<photosync_core::Volumes>>,
+    drives: &[&str],
+) {
+    click(gui, "Look again");
+    next_look(looks)
+        .send(volumes(&[CARD_A], drives, &[]))
+        .unwrap();
+    settle(gui);
+}
+
+/// The picture of this state, to compare.
+fn picture(gui: &Gui, name: &str) -> Vec<u8> {
+    fs::read(picture_at(gui, WINDOW, "harness", name)).unwrap()
+}
+
+#[test]
+fn choose_a_go_back_click_b_and_the_one_mark_moves_at_once_and_next_takes_b() {
+    let mut fresh = on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut fresh, DRIVE_B);
+    let only_b = picture(&fresh, "s063_only_b");
+
+    let mut gui = on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut gui, DRIVE_A);
+    let only_a = picture(&gui, "s063_only_a");
+    assert_ne!(only_a, only_b);
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.drive().unwrap().to_str(), Some(DRIVE_A));
+    let _ = key(&mut gui, Key::Esc);
+    assert_eq!(gui.app.screen(), Screen::Drive);
+    assert_eq!(mark_of(&gui), Some(DRIVE_A));
+    assert_eq!(picture(&gui, "s063_back_on_a"), only_a);
+
+    click(&mut gui, DRIVE_B);
+    assert_eq!(mark_of(&gui), Some(DRIVE_B), "at once, with no Next");
+    assert_eq!(
+        picture(&gui, "s063_a_then_b"),
+        only_b,
+        "nothing is left on A: not a tick, not a bar"
+    );
+    let words = [
+        TITLE,
+        DRIVE_HEADING,
+        DRIVE_A,
+        DRIVE_B,
+        "Next",
+        "Back",
+        "Look again",
+        "Quit",
+    ];
+    screen_check(&gui, "S063", "drive_marked", &words);
+
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Library);
+    assert_eq!(gui.app.drive().unwrap().to_str(), Some(DRIVE_B));
+    assert_eq!(gui.app.library(), "/Volumes/DRIVE_B/Photos");
+}
+
+#[test]
+fn with_no_click_next_takes_the_marked_drive_and_keeps_an_edited_library() {
+    let mut gui = on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut gui, DRIVE_B);
+    click(&mut gui, "Next");
+    let _ = key(&mut gui, Key::Char('2'));
+    let _ = key(&mut gui, Key::Esc);
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.drive().unwrap().to_str(), Some(DRIVE_B));
+    assert_eq!(gui.app.library(), "/Volumes/DRIVE_B/Photos2");
+}
+
+#[test]
+fn clicks_there_and_back_are_no_change_of_drive() {
+    let mut gui = on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut gui, DRIVE_A);
+    click(&mut gui, "Next");
+    let _ = key(&mut gui, Key::Char('2'));
+    let _ = key(&mut gui, Key::Esc);
+    click(&mut gui, DRIVE_B);
+    click(&mut gui, DRIVE_A);
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.library(), "/Volumes/DRIVE_A/Photos2");
+}
+
+#[test]
+fn a_new_drive_sorted_first_leaves_the_chosen_mark_and_next_takes_it() {
+    let (mut gui, looks) = held_on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut gui, DRIVE_B);
+    click(&mut gui, "Next");
+    let _ = key(&mut gui, Key::Esc);
+    look_gives(&mut gui, &looks, &[AA_FIRST, DRIVE_A, DRIVE_B]);
+    assert_eq!(mark_of(&gui), Some(DRIVE_B));
+    assert_eq!(gui.app.cursor(), 2);
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.drive().unwrap().to_str(), Some(DRIVE_B));
+    assert_eq!(gui.app.library(), "/Volumes/DRIVE_B/Photos");
+}
+
+#[test]
+fn a_new_drive_sorted_first_leaves_a_clicked_mark_and_next_takes_it() {
+    let (mut gui, looks) = held_on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut gui, DRIVE_B);
+    look_gives(&mut gui, &looks, &[AA_FIRST, DRIVE_A, DRIVE_B]);
+    assert_eq!(mark_of(&gui), Some(DRIVE_B));
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.drive().unwrap().to_str(), Some(DRIVE_B));
+}
+
+#[test]
+fn a_click_then_back_and_next_keeps_the_mark() {
+    let mut gui = on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut gui, DRIVE_A);
+    click(&mut gui, "Next");
+    let _ = key(&mut gui, Key::Esc);
+    click(&mut gui, DRIVE_B);
+    click(&mut gui, "Back");
+    click(&mut gui, "Next");
+    assert_eq!(mark_of(&gui), Some(DRIVE_B), "as a radio button keeps it");
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.drive().unwrap().to_str(), Some(DRIVE_B));
+}
+
+#[test]
+fn a_chosen_drive_gone_has_no_mark_and_next_is_held_with_a_hint() {
+    let (mut gui, looks) = held_on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    let none_marked = picture(&gui, "s063_none_marked");
+    click(&mut gui, DRIVE_A);
+    click(&mut gui, "Next");
+    let _ = key(&mut gui, Key::Esc);
+    look_gives(&mut gui, &looks, &[DRIVE_B]);
+
+    // One drive is left, and it still does not stand in for the one chosen.
+    assert_eq!(mark_of(&gui), None);
+    assert_eq!(gui.app.drive(), None);
+    assert!(clicks(&gui, "Next").is_empty(), "Next is held");
+    let _ = update(&mut gui, M::Next);
+    assert_eq!(gui.app.screen(), Screen::Drive, "a click drawn before");
+    let words = [
+        TITLE,
+        DRIVE_HEADING,
+        DRIVE_B,
+        DRIVE_GONE,
+        "Next",
+        "Back",
+        "Look again",
+        "Quit",
+    ];
+    screen_check(&gui, "S063", "drive_gone", &words);
+
+    // Plugged in again it is a row like any other, to be clicked: the hint no longer says gone.
+    look_gives(&mut gui, &looks, &[DRIVE_A, DRIVE_B]);
+    assert_eq!(mark_of(&gui), None);
+    assert!(!says(&gui, DRIVE_GONE));
+    assert!(says(&gui, PICK_A_DRIVE));
+    assert_eq!(
+        picture(&gui, "s063_gone_and_back"),
+        none_marked,
+        "as a first visit"
+    );
+    look_gives(&mut gui, &looks, &[DRIVE_A]);
+    assert_eq!(
+        mark_of(&gui),
+        None,
+        "the one left is the one that went, not yet picked again"
+    );
+    assert!(clicks(&gui, "Next").is_empty());
+
+    click(&mut gui, DRIVE_A);
+    assert!(!says(&gui, PICK_A_DRIVE));
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Library);
+    assert_eq!(gui.app.drive().unwrap().to_str(), Some(DRIVE_A));
+}
+
+#[test]
+fn a_clicked_drive_gone_before_next_has_no_mark() {
+    let (mut gui, looks) = held_on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut gui, DRIVE_B);
+    look_gives(&mut gui, &looks, &[DRIVE_A]);
+    assert_eq!(mark_of(&gui), None);
+    assert!(says(&gui, DRIVE_GONE));
+    assert!(clicks(&gui, "Next").is_empty());
+}
+
+#[test]
+fn a_chosen_drive_gone_while_on_the_cards_has_no_mark_on_return() {
+    let (mut gui, looks) = held_on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut gui, DRIVE_A);
+    click(&mut gui, "Next");
+    let _ = key(&mut gui, Key::Esc);
+    click(&mut gui, "Back");
+    look_gives(&mut gui, &looks, &[DRIVE_B]);
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Drive);
+    assert_eq!(mark_of(&gui), None);
+    assert!(says(&gui, DRIVE_GONE));
+    assert!(clicks(&gui, "Next").is_empty());
+}
+
+#[test]
+fn every_drive_gone_has_the_empty_lists_words_and_next_stays() {
+    let (mut gui, looks) = held_on_the_drive_screen(&[DRIVE_A]);
+    click(&mut gui, "Next");
+    let _ = key(&mut gui, Key::Esc);
+    look_gives(&mut gui, &looks, &[]);
+    assert_eq!(mark_of(&gui), None);
+    assert!(!says(&gui, DRIVE_GONE), "there is no other to click");
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Drive);
+    let hint = format!("{NO_DRIVE} Then click Look again.");
+    let words = [
+        NO_DRIVE,
+        hint.as_str(),
+        "Next",
+        "Back",
+        "Look again",
+        "Quit",
+    ];
+    screen_check(&gui, "S063", "drive_all_gone", &words);
+    look_gives(&mut gui, &looks, &[DRIVE_B]);
+    assert_eq!(mark_of(&gui), None, "not the one that went");
+    assert!(says(&gui, DRIVE_GONE));
+}
+
+#[test]
+fn a_look_holds_the_mark_and_next_until_it_answers() {
+    let (mut gui, looks) = held_on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut gui, DRIVE_B);
+    click(&mut gui, "Look again");
+    let out = next_look(&looks);
+    assert!(clicks(&gui, "Next").is_empty());
+    let _ = update(&mut gui, M::Next);
+    assert_eq!(gui.app.screen(), Screen::Drive);
+    assert!(
+        !says(&gui, PICK_A_DRIVE),
+        "the list is not shown to pick from"
+    );
+    let words = [
+        TITLE,
+        DRIVE_HEADING,
+        LOOKING,
+        "Next",
+        "Back",
+        "Look again",
+        "Quit",
+    ];
+    screen_check(&gui, "S063", "drive_looking", &words);
+    out.send(volumes(&[CARD_A], &[DRIVE_A, DRIVE_B], &[]))
+        .unwrap();
+    settle(&mut gui);
+    assert_eq!(mark_of(&gui), Some(DRIVE_B));
+}
+
+#[test]
+fn a_double_click_on_the_cards_next_takes_no_drive_unseen() {
+    let mut gui = booted(literal(&[CARD_A], &[DRIVE_A, DRIVE_B]));
+    let next = clicks(&gui, "Next");
+    click(&mut gui, "Next");
+    // The second click of the double, drawn on the cards, lands here.
+    for message in next {
+        let _ = update(&mut gui, message);
+    }
+    assert_eq!(gui.app.screen(), Screen::Drive);
+    assert_eq!(gui.app.drive(), None);
+    assert_eq!(mark_of(&gui), None);
+    assert!(clicks(&gui, "Next").is_empty(), "Next is held");
+    let words = [
+        TITLE,
+        DRIVE_HEADING,
+        DRIVE_A,
+        DRIVE_B,
+        PICK_A_DRIVE,
+        "Next",
+        "Back",
+        "Look again",
+        "Quit",
+    ];
+    screen_check(&gui, "S063", "drive_first_visit", &words);
+
+    click(&mut gui, DRIVE_B);
+    assert_eq!(clicks(&gui, "Next").len(), 1);
+    assert!(!says(&gui, PICK_A_DRIVE));
+}
+
+#[test]
+fn the_only_drive_is_marked_and_next_takes_it() {
+    let mut gui = on_the_drive_screen(&[DRIVE_A]);
+    assert_eq!(mark_of(&gui), Some(DRIVE_A));
+    assert!(!says(&gui, PICK_A_DRIVE));
+    let words = [
+        TITLE,
+        DRIVE_HEADING,
+        DRIVE_A,
+        "Next",
+        "Back",
+        "Look again",
+        "Quit",
+    ];
+    screen_check(&gui, "S063", "drive_one", &words);
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.drive().unwrap().to_str(), Some(DRIVE_A));
+}
+
+#[test]
+fn a_second_drive_appearing_takes_the_offered_mark_away() {
+    let (mut gui, looks) = held_on_the_drive_screen(&[DRIVE_B]);
+    assert_eq!(mark_of(&gui), Some(DRIVE_B));
+    look_gives(&mut gui, &looks, &[DRIVE_A, DRIVE_B]);
+    assert_eq!(mark_of(&gui), None, "nobody picked it");
+    assert!(clicks(&gui, "Next").is_empty());
+}
+
+#[test]
+fn the_gone_hint_and_a_long_banner_leave_the_rows_and_next_at_the_least_size() {
+    let dir = TempDir::new();
+    let card = dir.0.join("CARD").display().to_string();
+    let drive = dir.0.join("DRIVE").display().to_string();
+    let other = dir.0.join("OTHER").display().to_string();
+    fs::create_dir_all(&card).unwrap();
+    fs::create_dir_all(&drive).unwrap();
+    let (discover, looks) = blocked_discovery();
+    let (mut gui, _) = Gui::boot(discover, None);
+    next_look(&looks)
+        .send(volumes(&[&card], &[&drive], &[]))
+        .unwrap();
+    settle(&mut gui);
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    for c in "/not_there".repeat(100).chars() {
+        assert!(key(&mut gui, Key::Char(c)).is_none());
+    }
+    for pressed in [
+        Key::Enter,
+        Key::Enter,
+        Key::Enter,
+        Key::Enter,
+        Key::Esc,
+        Key::Esc,
+        Key::Esc,
+    ] {
+        assert!(key(&mut gui, pressed).is_none());
+    }
+    assert_eq!(gui.app.screen(), Screen::Drive);
+    click(&mut gui, "Look again");
+    next_look(&looks)
+        .send(volumes(&[&card], &[&other], &[]))
+        .unwrap();
+    settle(&mut gui);
+    let message = gui.app.exit().message.unwrap();
+    let words = [
+        NOT_SAFE,
+        message.as_str(),
+        other.as_str(),
+        DRIVE_GONE,
+        "Next",
+        "Back",
+    ];
+    screen_check(&gui, "S063", "drive_gone_banner", &words);
 }
 
 #[test]
@@ -548,6 +934,7 @@ fn back_returns_to_the_cards_with_the_cards_still_picked() {
 #[test]
 fn a_drive_picked_again_keeps_an_edited_library_and_a_new_one_sets_photos() {
     let mut gui = on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut gui, DRIVE_A);
     click(&mut gui, "Next");
     assert_eq!(gui.app.library(), "/Volumes/DRIVE_A/Photos");
 
@@ -624,6 +1011,11 @@ fn long_paths_and_a_wide_label_show_whole() {
     let mut ui = screen(&gui, LEAST);
     let found = ui.find(long_drive.as_str()).unwrap();
     assert!(found.bounds().height > 30.0, "it wrapped: {found:?}");
+    drop(ui);
+
+    click(&mut gui, long_drive.as_str());
+    let words = [TITLE, long_drive.as_str(), wide, "Next"];
+    screen_check(&gui, "S063", "drive_long_path_marked", &words);
 }
 
 fn hundred_notes() -> Vec<String> {
@@ -1300,6 +1692,7 @@ fn a_second_picture_in_the_folder_fails_the_comparison() {
 #[test]
 fn walking_the_cursor_ends_on_a_screen_whose_key_moves_nothing() {
     let mut gui = on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut gui, DRIVE_A);
     click(&mut gui, "Next");
     assert_eq!(gui.app.screen(), Screen::Library);
     let (walked, heard) = mpsc::channel();
@@ -1316,6 +1709,7 @@ fn walking_the_cursor_ends_on_a_screen_whose_key_moves_nothing() {
 #[test]
 fn a_stale_row_on_a_screen_with_no_list_ends_and_does_nothing() {
     let mut gui = on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut gui, DRIVE_A);
     click(&mut gui, "Next");
     let (walked, heard) = mpsc::channel();
     thread::spawn(move || {

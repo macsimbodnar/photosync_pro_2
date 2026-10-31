@@ -766,6 +766,10 @@ impl App {
     }
 
     fn volumes(&mut self, volumes: Volumes) {
+        // Enter takes the row under the cursor, so a drive that sorts in above must not
+        // slide another under it. The cards' rule is the index, as it was.
+        let on_drives = self.screen == Screen::Drive;
+        let under_cursor = self.drives.get(self.cursor).cloned().filter(|_| on_drives);
         self.notes = volumes
             .failures
             .iter()
@@ -786,7 +790,12 @@ impl App {
             Screen::Drive => self.drives.len(),
             _ => self.sources.len(),
         };
-        self.cursor = self.cursor.min(len.saturating_sub(1));
+        let row_of = |d: &PathBuf| self.drives.iter().position(|x| x == d);
+        let kept = under_cursor
+            .as_ref()
+            .and_then(row_of)
+            .or_else(|| self.drive.as_ref().filter(|_| on_drives).and_then(row_of));
+        self.cursor = kept.unwrap_or(self.cursor).min(len.saturating_sub(1));
     }
 
     /// The exit code and what to print once the front-end has quit: the
@@ -1459,6 +1468,78 @@ mod tests {
         // The channel closing after it changes nothing.
         app.update(Msg::WorkerGone);
         assert_eq!(app.exit().message.unwrap(), message);
+    }
+
+    /// S063: Enter takes the row under the cursor, so a drive that sorts in above must not
+    /// slide another drive under it.
+    #[test]
+    fn a_look_keeps_the_cursor_on_the_chosen_drive_by_path() {
+        let mut app = app(&["/V/CARD"], &["/V/M", "/V/N"]);
+        keys(&mut app, &[Key::Enter, Key::Down, Key::Enter]);
+        assert_eq!(app.drive(), Some(Path::new("/V/N")));
+        keys(&mut app, &[Key::Char('!'), Key::Esc]);
+        assert_eq!(app.screen(), Screen::Drive);
+        assert_eq!(app.cursor(), 1);
+
+        app.update(Msg::Volumes(found(&["/V/CARD"], &["/V/A", "/V/M", "/V/N"])));
+        assert_eq!(app.cursor(), 2, "still on /V/N");
+        keys(&mut app, &[Key::Enter]);
+        assert_eq!(app.drive(), Some(Path::new("/V/N")));
+        assert_eq!(app.library(), "/V/N/Photos!", "the drive did not change");
+    }
+
+    /// S063: the same for a row not chosen yet, and for a drive that sorts in below.
+    #[test]
+    fn a_look_keeps_the_cursor_on_its_row_by_path() {
+        let mut app = app(&["/V/CARD"], &["/V/M", "/V/N"]);
+        keys(&mut app, &[Key::Enter, Key::Down]);
+        app.update(Msg::Volumes(found(&["/V/CARD"], &["/V/A", "/V/M", "/V/N"])));
+        assert_eq!(app.cursor(), 2);
+        app.update(Msg::Volumes(found(&["/V/CARD"], &["/V/M", "/V/N", "/V/Z"])));
+        assert_eq!(app.cursor(), 1);
+        keys(&mut app, &[Key::Enter]);
+        assert_eq!(app.drive(), Some(Path::new("/V/N")));
+    }
+
+    /// S063: the cursor's row is gone, and the chosen drive is not: it goes there.
+    #[test]
+    fn a_look_that_takes_the_cursors_row_puts_it_on_the_chosen_drive() {
+        let mut app = app(&["/V/CARD"], &["/V/M", "/V/N", "/V/O", "/V/P"]);
+        keys(
+            &mut app,
+            &[Key::Enter, Key::Down, Key::Enter, Key::Esc, Key::Down],
+        );
+        assert_eq!(app.drive(), Some(Path::new("/V/N")));
+        assert_eq!(app.cursor(), 2);
+        app.update(Msg::Volumes(found(&["/V/CARD"], &["/V/M", "/V/N", "/V/P"])));
+        assert_eq!(app.cursor(), 1, "on /V/N, by its path");
+    }
+
+    /// S063: a chosen drive gone: no drive is chosen, and the cursor stays in the list.
+    #[test]
+    fn a_look_that_takes_the_chosen_drive_leaves_none_chosen() {
+        let mut app = app(&["/V/CARD"], &["/V/M", "/V/N"]);
+        keys(&mut app, &[Key::Enter, Key::Down, Key::Enter, Key::Esc]);
+        app.update(Msg::Volumes(found(&["/V/CARD"], &["/V/M"])));
+        assert_eq!(app.drive(), None);
+        assert_eq!(app.cursor(), 0);
+    }
+
+    /// S063: the path rule is the drive screen's. The cards keep theirs.
+    #[test]
+    fn a_look_on_the_cards_keeps_the_cards_rule() {
+        let mut app = app(&["/V/A", "/V/B"], &["/V/M", "/V/N"]);
+        keys(
+            &mut app,
+            &[Key::Enter, Key::Down, Key::Enter, Key::Esc, Key::Esc],
+        );
+        assert_eq!(app.screen(), Screen::Sources);
+        keys(&mut app, &[Key::Down]);
+        app.update(Msg::Volumes(found(
+            &["/V/0", "/V/A", "/V/B"],
+            &["/V/M", "/V/N"],
+        )));
+        assert_eq!(app.cursor(), 1, "by its index");
     }
 
     #[test]

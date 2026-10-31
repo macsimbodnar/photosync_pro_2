@@ -139,7 +139,9 @@ picks. It is simple to use.
     or a library folder that is not there, is refused before the session
     starts, with no card read, and can be fixed; that refusal offers no next
     card, as there is no session yet. After that, the library
-    and the name stay. The TUI never makes the folder (DEC-050). A sync with no source picked does not
+    and the name stay. The TUI never makes the folder (DEC-050). On the drive list a new look keeps the
+    cursor on its drive by path, or if that one went, on the chosen drive, so a drive that sorts in above
+    never slides another under it (DEC-077). A sync with no source picked does not
     start. A panic in the sync's thread leaves the screen as it is, and
     the sync is recorded in the session as not complete (DEC-031,
     DEC-034). No screen cuts what it says: at 80 columns a long note, card
@@ -190,7 +192,12 @@ picks. It is simple to use.
     scrolls with the buttons in sight (DEC-071). Each screen, each report and each new look's list opens at its top
     (DEC-073, DEC-075). Until a look for volumes has answered, the list screens say it is looking, show no
     old row, and Next waits; a stuck card never freezes the window, and an older look's answer
-    is dropped (DEC-073). Each screen is checked with no window, on
+    is dropped (DEC-073). The drive list has one mark, and it is what Next takes: a click moves it at once, as
+    a radio button does, and the library is reset only when Next takes another drive than the last. It stays on its drive by
+    path across a look. With two or more drives listed and none picked there is no mark, and Next is held with a
+    hint, so a double click on the cards' Next takes no drive unseen; the only drive listed is marked. A picked
+    drive a look does not find has no mark and no stand-in, even one drive left: Next is held with a hint until
+    a click. With no drive listed, Next stays and says why (DEC-077). Each screen is checked with no window, on
     its words and on a picture read after it is drawn (DEC-066).
 
 ### Sources

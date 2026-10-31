@@ -61,7 +61,7 @@ pub fn list_row<'a, M: Clone + 'a>(
     button(line)
         .on_press(message)
         .width(Length::Fill)
-        // Next with none ticked takes this row, so it must show (DEC-068 (2)).
+        // Next with no card ticked takes this row, so it must show (DEC-068 (2)).
         .style(if under_cursor {
             row_under_cursor
         } else {

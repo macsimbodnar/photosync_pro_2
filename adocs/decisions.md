@@ -93,6 +93,7 @@ Why: one line.
 - DEC-074 2026-10-31 — small choices of the GUI's first step: screens to come, arguments, smoke timing, harness picture (S051)
 - DEC-075 2026-10-31 — small choices of the cards and drive screens: stale clicks, scroll reset, the drive's mark, a box's end (S052)
 - DEC-076 2026-10-31 — the GUI harness's checks fail when a thing is not seen; a click must answer; the row under the cursor has light words (S062)
+- DEC-077 2026-10-31 — the drive screen has one mark, and it is what Next takes; a look keeps the drive cursor by path (S063)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1751,7 +1752,7 @@ Why: the least change that lets the existing suite stay byte for byte the proof.
 
 ## DEC-068  2026-10-31  the GUI drives the model by its keys, and hears the worker by waking and draining (S036)
 Tags: gui, architecture, session, concurrency
-Decision: the agent's choice under the user's standing instruction, not yet confirmed by the user. Amended by DEC-071 and DEC-073.
+Decision: the agent's choice under the user's standing instruction, not yet confirmed by the user. Amended by DEC-071, DEC-073 and DEC-077.
 (1) One `App::checking_library()` per run, so the library check stays (DEC-050 (7)), so one session (the Parked note on two sessions in one process), and a `Session` through `worker::spawn` (DEC-040 (9)), never `copy_plan`.
 (2) No rule in the GUI. Each widget sends what the TUI's key does, and `app.rs` needs no new message:
     cards: tick a row = cursor to it, then `Key::Char(' ')`. Next = `Enter`. Look again = `Char('r')`. Quit = `Char('q')`. As in the TUI, Next with none ticked takes the row under the cursor, so that row is drawn highlighted.
@@ -1836,7 +1837,7 @@ Why: each is the least that keeps the screen honest, and a later step would ask 
 
 ## DEC-075  2026-10-31  small choices of the cards and drive screens: stale clicks, scroll reset, the drive's mark, a box's end (S052)
 Tags: gui, tests
-Decision: the agent's choice, not yet confirmed by the user. Amends DEC-072 (5), DEC-073 (1).
+Decision: the agent's choice, not yet confirmed by the user. Amends DEC-072 (5), DEC-073 (1). (5) replaced by DEC-077, (1) amended by it.
 (1) `update` drops a click left from the screen before. A row, Next, Look again, Quit and Back do nothing off the list screens, and Back only on the drive screen. Events of one frame go to one view, so a second message can land on the next screen: there a key would type in a field, and Esc on the cards would quit. Each later step opens this for its own screen. Rejected: a screen number in each message, as a human's second click comes frames later and only these harmful landings need a stop. So two Nexts in one frame would still take the first drive; nothing is copied before the check, which names the library.
 (2) DEC-072 (5)'s test of a box's end, `translation.y + bounds.height >= content_bounds.height`, fails at the end: measured 790 + 104 of 894.4, as iced rounds a translation to a whole pixel. So it compares with `content_bounds.height.floor()`.
 (3) DEC-073 (1) chains the scroll reset; here it is batched with the message's task, as a look's task can wait on a stuck card for ever, and a chained reset would wait with it.
@@ -1860,3 +1861,16 @@ Decision: the agent's choice, not yet confirmed by the user. From a review that 
 (7) `screen_check` writes `<step>_<screen>_least.png` beside `<step>_<screen>.png`, and each is read. `picture_at` stays for other cuts.
 (8) The row under the cursor: the theme's `background.strongest` pair, `background.strong` on hover, not `button::secondary`. Measured, WCAG ratio in `Theme::Dark`: secondary 4.87 words on bar, 4.01 bar on window; now 6.09 and 2.27, hover 6.02 and 1.83. So the review's dark text on mid grey was so, and over AA's 4.5, but thin letters read worse than every other row's, and its dark words flipped against the rest. A test holds at least 5.5 and 1.5, thresholds of the agent's. `background.weak` reads better (7.45) but its bar shows less (1.48).
 Why: a check that can pass with the fault in place is worse than none, and later screens build on these.
+
+## DEC-077  2026-10-31  the drive screen has one mark, and it is what Next takes; a look keeps the drive cursor by path (S063)
+Tags: gui, tui
+Decision: the agent's choice under the user's standing instruction, not yet confirmed by the user. From the S052 fast check. Amends DEC-068 (2), (the drive row) DEC-075 (1), replaces DEC-075 (5).
+(1) DEC-075 (5)'s tick on the chosen drive and bar under the cursor could stand on two rows, and Next took the bar, overwriting the library. Now one row is marked, with the tick and the bar together. A click moves it at once, as a radio button does. Still no `radio`, as DEC-072 (4) says. The tick and the bar stay both, so the row looks as a card's does.
+(2) The mark lives in `Gui`, not `App`, the one rule of the GUI outside the model: a window has no cursor to show what Next takes, and the TUI needs no such state. `Gui::marked_drive` is what the view draws and Next takes; Next walks the model's cursor to that row and sends `Enter`, so the library rule stays in one place. Rejected: a click that tells the model at once, as a click on B and back on A would reset an edited library, and "reset only when the drive really changed" would not hold.
+(3) With two or more drives and none picked there is no mark and Next is held, drawn held and dropped in `update` too, as the second click of a double on the cards' Next was drawn before this list. The only drive listed is marked, as there is no choice to see: a double click does pass over it. It can be wrong only if it is not the drive meant, and the check names the library before anything is copied. A second drive appearing takes an unpicked mark away. Next being held needs a reason in sight, so `PICK_A_DRIVE` stands over the buttons from the first visit, in the hint's colour.
+(4) A picked drive a look did not find (`lost_drive`) has no mark, and nothing stands in for it, even one drive left, until a click. It stays lost if it comes back: the row is there to click, and the sentence goes from `DRIVE_GONE` to `PICK_A_DRIVE`. Why: a mark that appears by itself is what this step removes. A clicked drive not yet taken counts as picked.
+(5) With no drive listed Next stays clickable and gives the model's `NO_DRIVE` hint, as DEC-075 and its test have it, a drive gone or not. `DRIVE_GONE` is not said there: "Click another" has nothing to click. It stays on the drive screen, so that is the hold in that one case.
+(6) `App::volumes` on the drive screen keeps the cursor on its row by path; if that row went, on the chosen drive; else by index, clamped, as before. The step asks only for the chosen drive. The row under the cursor comes first as a TUI user who moved the cursor off the chosen drive and pressed `r` should not see it jump. In the step's case they are one row. The cards keep the index, excluded by S063. No TUI test changed. The TUI keeps no hold: its `>` always shows what Enter takes, so a double Enter on its cards still takes the row, seen or not, and a chosen drive gone still leaves the cursor on a row. For the user to take or leave.
+(7) Tests that pinned the replaced rule changed with it, none weakened: `the_drive_screen_shows_...` asserts the mark moved; four tests that pressed Next on two drives click a drive first.
+(8) DEC-075 (9) holds still: past about 25 drives a marked row can stand below the fold when the body opens at its top, with Next live. Not reached by a usual run.
+Why: what is marked and what Next takes must be one thing, or the library is overwritten for a drive nobody saw marked.

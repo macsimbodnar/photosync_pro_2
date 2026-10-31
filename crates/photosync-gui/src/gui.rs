@@ -1,7 +1,8 @@
 //! `Gui`, its messages, and the plain functions iced runs. Each widget sends what the
-//! TUI's key does, so every rule stays in `App` (DEC-068 (2)).
+//! TUI's key does, so every rule stays in `App` (DEC-068 (2)), but for the drive's mark,
+//! as a window has no cursor to show what Next takes (DEC-077).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -24,6 +25,11 @@ pub const WINDOW: Size = Size::new(900.0, 650.0);
 pub const LEAST: Size = Size::new(640.0, 480.0);
 /// What is said while the newest look is out (DEC-073 (2)).
 pub const LOOKING: &str = "Looking for cards and drives. A stuck card can hold this up: take it out, or press Look again.";
+
+/// Why the drive screen's Next is held (DEC-077).
+pub const PICK_A_DRIVE: &str = "Click the drive to copy to.";
+pub const DRIVE_GONE: &str =
+    "The drive you picked is gone. Click another, or plug it in and click Look again.";
 
 /// The banner's line (DEC-071 (2)).
 pub const NOT_SAFE: &str = "Not every photo is known to be on the drive: do not format the card.";
@@ -75,6 +81,12 @@ pub struct Gui {
     /// The model said to quit. iced's exit cannot be seen by a test.
     pub quit: bool,
     smoke: Option<Smoke>,
+    /// The drive picked on the drive screen: what `marked_drive` shows and Next takes. The
+    /// model hears only on Next, as its library goes with the drive, and clicks there and
+    /// back are no change of drive.
+    picked_drive: Option<PathBuf>,
+    /// A picked drive a look did not find, until the next click. Nothing stands in for it.
+    lost_drive: Option<PathBuf>,
 }
 
 impl Gui {
@@ -93,9 +105,40 @@ impl Gui {
             quit: false,
             // Two: the first may be of the frame before the answer.
             smoke: smoke_png.map(|path| Smoke { path, frames: 2 }),
+            picked_drive: None,
+            lost_drive: None,
         };
         let task = gui.look();
         (gui, task)
+    }
+
+    /// The one marked row, and what Next takes. With nothing picked, the only drive listed
+    /// has no choice to see, unless it is left after a picked one went (DEC-077).
+    pub fn marked_drive(&self) -> Option<&Path> {
+        if let Some(picked) = &self.picked_drive {
+            return Some(picked);
+        }
+        match self.app.drives() {
+            [only] if self.lost_drive.is_none() => Some(only),
+            _ => None,
+        }
+    }
+
+    /// Why the drive screen's Next is held. An empty list has its own sentence, and its
+    /// Next says why as the cards' does, so that is no hold, a drive gone or not.
+    fn next_held_because(&self) -> Option<&'static str> {
+        let drives = self.app.drives();
+        let held = self.app.screen() == Screen::Drive
+            && !self.looking()
+            && !drives.is_empty()
+            && self.marked_drive().is_none();
+        if !held {
+            return None;
+        }
+        match &self.lost_drive {
+            Some(lost) if !drives.contains(lost) => Some(DRIVE_GONE),
+            _ => Some(PICK_A_DRIVE),
+        }
     }
 
     /// The newest look has not answered: nothing shown can be trusted yet.
@@ -125,6 +168,13 @@ impl Gui {
             if number == self.newest_look {
                 self.answered_look = number;
                 self.app.update(Msg::Volumes(volumes));
+                if self
+                    .picked_drive
+                    .as_ref()
+                    .is_some_and(|picked| !self.app.drives().contains(picked))
+                {
+                    self.lost_drive = self.picked_drive.take();
+                }
             } else {
                 self.dropped_looks += 1;
             }
@@ -176,9 +226,27 @@ impl Gui {
         if on_cards {
             self.key(Key::Char(' '))
         } else {
-            // Next chooses the drive, as Enter does in the TUI (DEC-068 (2)).
+            self.picked_drive = Some(path.clone());
+            self.lost_drive = None;
             Task::none()
         }
+    }
+
+    /// Next on the drive screen takes the marked row. Anything else is unseen: the second
+    /// click of a double on the cards' Next lands here, drawn before this list was.
+    fn take_marked_drive(&mut self) -> Task<M> {
+        let Some(marked) = self.marked_drive().map(Path::to_path_buf) else {
+            if self.app.drives().is_empty() {
+                return self.key(Key::Enter);
+            }
+            return Task::none();
+        };
+        let row = self.app.drives().iter().position(|d| *d == marked);
+        if !row.is_some_and(|row| self.cursor_to(row)) {
+            return Task::none();
+        }
+        self.picked_drive = Some(marked);
+        self.key(Key::Enter)
     }
 
     /// What makes a scrollable's offset belong to something else. The look too: its
@@ -243,6 +311,7 @@ fn step(gui: &mut Gui, message: M) -> Task<M> {
         M::Back if screen != Screen::Drive => Task::none(),
         M::Row(_) | M::Next if held => Task::none(),
         M::Row(path) => gui.pick(&path),
+        M::Next if screen == Screen::Drive => gui.take_marked_drive(),
         M::Next => gui.key(Key::Enter),
         M::LookAgain => gui.key(Key::Char('r')),
         M::Quit => gui.key(Key::Char('q')),
@@ -295,15 +364,19 @@ fn cards(gui: &Gui) -> Element<'_, M> {
 
 fn drives(gui: &Gui) -> Element<'_, M> {
     let app = &gui.app;
-    let rows = app.drives().iter().enumerate().map(|(at, drive)| {
+    let marked = gui.marked_drive();
+    let rows = app.drives().iter().map(|drive| {
+        // One mark: the tick and the bar are never on two rows.
+        let here = marked == Some(drive.as_path());
         list_row(
-            app.drive() == Some(drive.as_path()),
-            at == app.cursor(),
+            here,
+            here,
             drive.display().to_string(),
             M::Row(drive.clone()),
         )
     });
-    let next = (!gui.looking()).then_some(M::Next);
+    let can_go = !gui.looking() && (marked.is_some() || app.drives().is_empty());
+    let next = can_go.then_some(M::Next);
     let buttons = row![
         action("Next", next),
         action("Back", Some(M::Back)),
@@ -350,6 +423,9 @@ fn list_screen<'a>(
         screen = screen.push(red_banner(NOT_SAFE, reason));
     }
     screen = screen.push(scrollable(body).id(BODY).spacing(8).height(Length::Fill));
+    if let Some(why) = gui.next_held_because() {
+        screen = screen.push(hint(why));
+    }
     if let Some(words) = gui.app.hint() {
         screen = screen.push(hint(hint_words(words)));
     }
