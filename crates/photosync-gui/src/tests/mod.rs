@@ -16,27 +16,32 @@ use iced::event::Status;
 use iced::keyboard::key::Named;
 use iced::widget::{Space, button, column, container, row, scrollable, text_input};
 use iced::{Color, Element, Length, Size, Theme, keyboard, window};
-use iced_test::Simulator;
 use iced_test::core::Settings;
 use iced_test::emulator::{Emulator, Event, Mode};
 use iced_test::futures::futures::channel::mpsc::{self as emulator_channel, TryRecvError};
 use iced_test::futures::futures::executor::LocalPool;
 use iced_test::futures::futures::task::LocalSpawnExt;
 use iced_test::futures::subscription::{self, Tracker};
+use iced_test::instruction::Expectation;
 use iced_test::selector::{self, Target};
-use photosync_core::{Counts, Event as CoreEvent, EventKind, Phase, Progress, SourceProgress};
+use iced_test::{Instruction, Simulator};
+use photosync_core::{
+    Counts, Event as CoreEvent, EventKind, FailReason, FileOutcome, FileReport, MediaType, Phase,
+    Progress, RunEnd, SourceFile, SourceProgress, SourceReport,
+};
 use photosync_front::app::{Effect, Exit, Job, Key, Msg, Outcome, Screen};
-use photosync_front::{flow, text};
+use photosync_front::{flow, text, worker};
 
 use crate::args::{Options, parse};
 use crate::common::TempDir;
 use crate::gui::{
     self, BANNER, BODY, CANCELLING, CARDS_ONLY_READ, CHECKING, CLOSE_AGAIN, DO_NOT_FORMAT,
     DRIVE_GONE, Discover, Gui, LEAST, LIBRARY_HELP, LOOKING, M, NAME_HELP, NOT_SAFE, PICK_A_DRIVE,
-    SCANNING, THE_DATE_TO_COME, TITLE, WINDOW, WorkerSend, banner, card_line, share, update, view,
+    REPORT_HEADING, RESULT, SCANNING, THE_DATE_TO_COME, TITLE, WINDOW, WorkerSend, banner,
+    card_line, report_screen, share, update, view,
 };
 use crate::png;
-use crate::widgets::{row_under_cursor, words};
+use crate::widgets::{result_style, row_under_cursor, words};
 use harness::*;
 use one_picture::same_picture;
 
@@ -1385,6 +1390,22 @@ fn a_long_library_in_the_refusal_leaves_the_drive_screens_buttons() {
 /// A real session of 40 syncs, each ended by the crash message, left on its next card's
 /// list. So the result names every one, as no sync has to run for it. No copy is made.
 fn forty_named_syncs() -> (Gui, TempDir) {
+    let (mut gui, dir, _session) = forty_refused_syncs();
+    assert!(matches!(
+        key(&mut gui, Key::Char('n')),
+        Some(Effect::Discover)
+    ));
+    assert!(key(&mut gui, Key::Char(' ')).is_none());
+    assert!(key(&mut gui, Key::Enter).is_none());
+    assert!(key(&mut gui, Key::Esc).is_none());
+    assert_eq!(gui.app.screen(), Screen::Sources);
+    assert_eq!(gui.app.syncs(), 40);
+    assert_eq!(gui.app.exit().code, 1);
+    (gui, dir)
+}
+
+/// 40 syncs that crashed, on the screen of the last, and the session they are in.
+fn forty_refused_syncs() -> (Gui, TempDir, flow::Shared) {
     let dir = TempDir::new();
     let drive = dir.0.join("DRIVE");
     fs::create_dir_all(drive.join("Photos")).unwrap();
@@ -1394,10 +1415,11 @@ fn forty_named_syncs() -> (Gui, TempDir) {
     click(&mut gui, "Next");
     assert!(key(&mut gui, Key::Enter).is_none());
     assert!(key(&mut gui, Key::Enter).is_none());
+    let mut session = None;
     for sync in 0..40 {
         assert_eq!(gui.app.screen(), Screen::Confirm, "sync {sync}");
         match key(&mut gui, Key::Enter) {
-            Some(Effect::Start(_job)) => {}
+            Some(Effect::Start(job)) => session = Some(job.session),
             other => panic!("no start: {other:?}"),
         }
         assert!(
@@ -1406,6 +1428,9 @@ fn forty_named_syncs() -> (Gui, TempDir) {
                 .is_none()
         );
         assert_eq!(gui.app.screen(), Screen::Refused);
+        if sync == 39 {
+            break;
+        }
         assert!(matches!(
             key(&mut gui, Key::Char('n')),
             Some(Effect::Discover)
@@ -1413,11 +1438,7 @@ fn forty_named_syncs() -> (Gui, TempDir) {
         assert!(key(&mut gui, Key::Char(' ')).is_none());
         assert!(key(&mut gui, Key::Enter).is_none());
     }
-    assert!(key(&mut gui, Key::Esc).is_none());
-    assert_eq!(gui.app.screen(), Screen::Sources);
-    assert_eq!(gui.app.syncs(), 40);
-    assert_eq!(gui.app.exit().code, 1);
-    (gui, dir)
+    (gui, dir, session.unwrap())
 }
 
 #[test]
@@ -2961,6 +2982,7 @@ fn the_words_here_are_the_tuis_words() {
         NAME_HEADING,
         CHECK_HEADING,
         REFUSED_HEADING,
+        REPORT_HEADING,
     ] {
         assert!(tui.contains(words), "{words}");
     }
@@ -4318,4 +4340,946 @@ fn after_esc_typing_and_enter_go_on_with_no_click() {
     assert_eq!(gui.app.screen(), Screen::Confirm);
     assert_eq!(gui.app.library(), "/Volumes/DRIVE_A/Photos123");
     assert_eq!(gui.app.name(), "Tirana!");
+}
+
+// The report, the refused screen and the next card (S055).
+
+const NEXT_CARD: &str = "Next card";
+const REPORT_BUTTONS: [&str; 2] = [NEXT_CARD, "Quit"];
+const REFUSED_IN_SESSION: [&str; 3] = [REFUSED_BACK, NEXT_CARD, "Quit"];
+/// The most the result's box takes, its padding in (DEC-071 (4)).
+const RESULT_BOX_MOST: f32 = 240.0;
+const RESULT_PADDING: f32 = 16.0;
+const ONE_ROW: f32 = 20.8;
+
+fn photo(path: &str) -> SourceFile {
+    SourceFile {
+        path: PathBuf::from(path),
+        media_type: Some(MediaType::Raw),
+        size: 10,
+        modified: std::time::UNIX_EPOCH,
+    }
+}
+
+fn a_report_of(source: SourceReport) -> (Vec<String>, String) {
+    let result = text::result_line(&source.totals(), std::slice::from_ref(&source));
+    let mut lines = vec![
+        "Report".to_string(),
+        "Library /Volumes/DRIVE_A/Photos".to_string(),
+        "Folder  /Volumes/DRIVE_A/Photos/2026-10-31 - Tirana".to_string(),
+        String::new(),
+    ];
+    lines.extend(text::source_section(&source));
+    lines.push(String::new());
+    lines.push(result.clone());
+    (lines, result)
+}
+
+fn a_complete_report() -> (Vec<String>, String) {
+    let files = (1..=3)
+        .map(|n| FileReport {
+            file: photo(&format!("/Volumes/CARD_A/DCIM/100_FUJI/DSCF000{n}.RAF")),
+            outcome: FileOutcome::Copied {
+                to: PathBuf::from(format!("/Volumes/DRIVE_A/Photos/DSCF000{n}.RAF")),
+            },
+        })
+        .collect();
+    a_report_of(SourceReport {
+        root: PathBuf::from(CARD_A),
+        files,
+        unreadable: Vec::new(),
+    })
+}
+
+fn a_failed_report() -> (Vec<String>, String) {
+    a_report_of(SourceReport {
+        root: PathBuf::from(CARD_A),
+        files: vec![FileReport {
+            file: photo("/Volumes/CARD_A/DCIM/100_FUJI/DSCF0001.RAF"),
+            outcome: FileOutcome::Failed(FailReason::NameCollision {
+                existing: PathBuf::from("/Volumes/DRIVE_A/Photos/DSCF0001.RAF"),
+            }),
+        }],
+        unreadable: Vec::new(),
+    })
+}
+
+const CARD_OF_ONE_NAME: &str = "/Volumes/写真カード";
+const TWO_PROBLEMS: &str = "2 problem lines above the duplicates: read them.";
+const COMPLETED_LATER: &str = "  The library cannot be read. Its cards completed later.";
+const NAMES_TWO: &str = "Result: NOT COMPLETE: 2 of 3 syncs not complete: sync 1 (/Volumes/CARD_A): 1 failed, 0 cancelled, 0 unreadable; sync 3 (/Volumes/写真カード): 2 failed, 0 cancelled, 0 unreadable. Do not format the cards of those syncs. Fix the cause and sync them again: files already on the drive are skipped.";
+
+/// All the kinds of line no sync on temp folders can give, as `text` says them.
+fn a_hard_report() -> (Vec<String>, String) {
+    let long = long_path("/Volumes/写真カード/DCIM/100_FUJI");
+    let source = SourceReport {
+        root: PathBuf::from(CARD_OF_ONE_NAME),
+        files: vec![
+            FileReport {
+                file: photo(&long),
+                outcome: FileOutcome::Failed(FailReason::NameCollision {
+                    existing: PathBuf::from("/Volumes/DRIVE_A/Photos/DSCF0001.RAF"),
+                }),
+            },
+            FileReport {
+                file: photo("/Volumes/写真カード/DCIM/100_FUJI/DSCF0002.RAF"),
+                outcome: FileOutcome::DuplicateUnread {
+                    of: PathBuf::from("/Volumes/CARD_B/DCIM/100_FUJI/DSCF0002.RAF"),
+                    error: std::io::Error::other("Input/output error"),
+                },
+            },
+            FileReport {
+                file: photo("/Volumes/写真カード/DCIM/100_FUJI/DSCF0003.RAF"),
+                outcome: FileOutcome::DuplicateInSession {
+                    of: PathBuf::from("/Volumes/CARD_B/DCIM/100_FUJI/DSCF0003.RAF"),
+                },
+            },
+        ],
+        unreadable: Vec::new(),
+    };
+    let mut lines = vec![
+        "Report".to_string(),
+        "Library /Volumes/DRIVE_A/Photos".to_string(),
+        String::new(),
+        "Sync 2 of 3: /Volumes/CARD_B".to_string(),
+        COMPLETED_LATER.to_string(),
+        String::new(),
+    ];
+    lines.extend(text::source_section(&source));
+    lines.push(String::new());
+    lines.push(TWO_PROBLEMS.to_string());
+    lines.push(String::new());
+    lines.push(NAMES_TWO.to_string());
+    (lines, NAMES_TWO.to_string())
+}
+
+/// `lines` stand on the screen as they were given: each a text of its own, in order, next to
+/// one another.
+fn stands_in_order(ui: &mut Simulator<'_, M>, lines: &[String]) {
+    let seen = all_words_of(ui);
+    assert!(
+        seen.windows(lines.len()).any(|here| here == lines),
+        "not whole and in order: {seen:?}"
+    );
+}
+
+fn report_of<'a>(lines: &'a [String], result: &str, complete: bool) -> Element<'a, M> {
+    report_screen(1, lines, result, complete)
+}
+
+fn line_with<'a>(lines: &'a [String], words: &str) -> &'a str {
+    lines
+        .iter()
+        .find(|line| line.contains(words))
+        .unwrap_or_else(|| panic!("{words} in {lines:?}"))
+}
+
+/// The wheel over the scrollable of `id`, as far as `lines`.
+fn wheel(ui: &mut Simulator<'_, M>, id: &'static str, lines: f32) {
+    let inside = ui
+        .find(selector::id(id))
+        .unwrap()
+        .visible_bounds()
+        .unwrap()
+        .center();
+    ui.point_at(inside);
+    let wheel = iced_test::core::Event::Mouse(iced_test::core::mouse::Event::WheelScrolled {
+        delta: iced_test::core::mouse::ScrollDelta::Lines { x: 0.0, y: -lines },
+    });
+    let _ = ui.simulate([wheel]);
+}
+
+/// The scrollable of `id` is at its end, by what DEC-075 (2) allows for.
+fn at_its_end(ui: &mut Simulator<'_, M>, id: &'static str) {
+    let (end, height, content) = scroll_of(ui, id);
+    assert!(end > 0.0, "it moved: {end}");
+    // Rounded both ways: a translation is whole pixels, and a height is not.
+    assert!(
+        (end + height).ceil() >= content.floor(),
+        "{end} + {height} of {content}"
+    );
+}
+
+#[test]
+fn every_line_of_a_hard_report_is_a_text_of_its_own_whole_and_in_order() {
+    let (lines, result) = a_hard_report();
+    let screen_of = || report_of(&lines, &result, false);
+    let mut ui = simulator(LEAST, screen_of());
+    stands_in_order(&mut ui, &lines);
+    let failure = line_with(&lines, "failed      ");
+    assert!(failure.len() > 300, "{failure}");
+    let table = line_with(&lines, "copied   skipped");
+    let unread = line_with(&lines, "copied from its twin");
+    let duplicate = line_with(&lines, "duplicate in session  ");
+    let wide = line_with(&lines, "写真カード");
+    for line in [
+        failure,
+        table,
+        unread,
+        duplicate,
+        wide,
+        TWO_PROBLEMS,
+        COMPLETED_LATER,
+    ] {
+        assert!(ui.find(line).is_ok(), "{line}");
+    }
+    let at = |line: &str| lines.iter().position(|l| l == line).unwrap();
+    assert!(at(failure) < at(duplicate), "a duplicate buries no failure");
+    assert!(at(unread) < at(duplicate));
+    assert!(at(duplicate) < at(TWO_PROBLEMS));
+    // A long line wraps, and is not cut.
+    let tall = ui.find(failure).unwrap().bounds().height;
+    assert!(tall >= ONE_ROW * 3.0, "{tall}");
+    assert!(result.contains("sync 1 (") && result.contains("sync 3 ("));
+
+    let mut body: Vec<&str> = lines.iter().map(String::as_str).collect();
+    body.retain(|line| !line.is_empty() && *line != "Report");
+    screen_check_of(
+        screen_of,
+        "S055",
+        "report_problems_above_duplicates",
+        &[TITLE, REPORT_HEADING, &result, NEXT_CARD, "Quit"],
+        &body,
+    );
+    for size in [WINDOW, LEAST] {
+        let mut ui = simulator(size, screen_of());
+        see_fixed_in_sight(&mut ui, size, &[TITLE, REPORT_HEADING]).unwrap();
+        see_fixed_in_sight(&mut ui, size, &REPORT_BUTTONS).unwrap();
+        see_fixed_box(&mut ui, size, RESULT, &[&result]).unwrap();
+    }
+}
+
+#[test]
+fn a_report_scrolled_to_its_end_keeps_the_box_and_the_buttons() {
+    let (lines, result) = a_hard_report();
+    let lines: Vec<String> = lines
+        .iter()
+        .cloned()
+        .chain((0..60).map(|n| format!("  duplicate in session  DSCF{n:04}.RAF, on drive from /B")))
+        .collect();
+    for (size, name) in [
+        (WINDOW, "report_scrolled"),
+        (LEAST, "report_scrolled_least"),
+    ] {
+        let mut ui = simulator(size, report_of(&lines, &result, false));
+        wheel(&mut ui, BODY, 10000.0);
+        at_its_end(&mut ui, BODY);
+        let last = lines.last().unwrap();
+        assert!(ui.find(last.as_str()).unwrap().visible_bounds().is_some());
+        assert!(ui.find("Report").is_ok());
+        see_fixed_in_sight(&mut ui, size, &REPORT_BUTTONS).unwrap();
+        see_fixed_box(&mut ui, size, RESULT, &[&result]).unwrap();
+        picture_of(&mut ui, "S055", name);
+    }
+}
+
+#[test]
+fn the_lines_of_a_report_are_in_a_font_whose_letters_are_one_wide() {
+    let lines = vec![
+        "iiiiiiiiiiiiiiii".to_string(),
+        "WWWWWWWWWWWWWWWW".to_string(),
+    ];
+    let mut ui = simulator(WINDOW, report_of(&lines, "Result", false));
+    let narrow = ui.find(lines[0].as_str()).unwrap().bounds().width;
+    let wide = ui.find(lines[1].as_str()).unwrap().bounds().width;
+    assert_eq!(narrow, wide, "the tables would not line up");
+    // Not vacuous: outside the report the same letters are not one wide.
+    let mut other = simulator(WINDOW, column![words(&lines[0]), words(&lines[1])]);
+    let narrow = other.find(lines[0].as_str()).unwrap().bounds().width;
+    let wide = other.find(lines[1].as_str()).unwrap().bounds().width;
+    assert!(narrow < wide, "{narrow} {wide}");
+}
+
+/// In the fixed font a kanji takes a whole row and shows nothing, here 83 high for a line that
+/// fits, with `写真` gone from the picture: bounds say nothing is cut (DEC-082 (3)).
+#[test]
+fn a_line_with_a_japanese_card_keeps_its_words_on_one_row() {
+    for line in [
+        "Source /Volumes/写真カード",
+        "Source /Volumes/Ελληνικά 한글 中文字",
+    ] {
+        let lines = vec![line.to_string()];
+        let mut ui = simulator(WINDOW, report_of(&lines, "Result", false));
+        let bounds = ui.find(line).unwrap().bounds();
+        assert!(bounds.height < ONE_ROW * 1.5, "{line}: {bounds:?}");
+        assert!(bounds.width < WINDOW.width / 2.0, "{line}: {bounds:?}");
+    }
+}
+
+#[test]
+fn the_rows_of_a_table_line_up() {
+    let (lines, result) = a_failed_report();
+    let mut ui = simulator(LEAST, report_of(&lines, &result, false));
+    let head = line_with(&lines, "copied   skipped");
+    let total = line_with(&lines, "  all ");
+    let width_of_head = ui.find(head).unwrap().bounds().width;
+    assert_eq!(width_of_head, ui.find(total).unwrap().bounds().width);
+    assert!(
+        width_of_head < LEAST.width - 48.0,
+        "it wraps at the least size"
+    );
+}
+
+#[test]
+fn the_result_is_green_only_when_complete_and_each_can_be_read() {
+    let colour_of = |style: fn(&Theme) -> iced::widget::container::Style| {
+        let style = style(&Theme::Dark);
+        let Some(iced::Background::Color(behind)) = style.background else {
+            panic!("the colour must show: {style:?}");
+        };
+        (behind, style.text_color.unwrap())
+    };
+    let danger = iced::widget::container::danger(&Theme::Dark).background;
+    let success = iced::widget::container::success(&Theme::Dark).background;
+    assert_ne!(danger, success);
+    assert_eq!(result_style(true)(&Theme::Dark).background, success);
+    assert_eq!(result_style(false)(&Theme::Dark).background, danger);
+    for complete in [true, false] {
+        let (behind, words) = colour_of(result_style(complete));
+        let ratio = contrast(words, behind);
+        assert!(ratio >= 4.5, "{complete}: {ratio}");
+    }
+
+    // The same words, so what differs is the box's colour.
+    let (lines, result) = a_complete_report();
+    let picture_when = |complete: bool, name: &str| {
+        let mut ui = simulator(WINDOW, report_of(&lines, &result, complete));
+        fs::read(picture_of(&mut ui, "S055_colour", name)).unwrap()
+    };
+    assert_ne!(picture_when(true, "green"), picture_when(false, "red"));
+}
+
+#[test]
+fn a_complete_report_and_a_failed_one_show_on_their_screens() {
+    let (lines, result) = a_complete_report();
+    assert!(result.contains("Result: "), "{result}");
+    let mut body: Vec<&str> = lines.iter().map(String::as_str).collect();
+    body.retain(|line| !line.is_empty() && *line != "Report");
+    screen_check_of(
+        || report_of(&lines, &result, true),
+        "S055",
+        "report_complete",
+        &[TITLE, REPORT_HEADING, NEXT_CARD, "Quit", &result],
+        &body,
+    );
+
+    let (lines, result) = a_failed_report();
+    assert!(result.contains("NOT COMPLETE"), "{result}");
+    assert!(result.contains("Do not format"), "{result}");
+    let mut body: Vec<&str> = lines.iter().map(String::as_str).collect();
+    body.retain(|line| !line.is_empty() && *line != "Report");
+    screen_check_of(
+        || report_of(&lines, &result, false),
+        "S055",
+        "report_not_complete",
+        &[TITLE, REPORT_HEADING, NEXT_CARD, "Quit", &result],
+        &body,
+    );
+}
+
+#[test]
+fn the_reports_buttons_send_their_own_messages() {
+    let (lines, result) = a_complete_report();
+    let sent = |words: &str| -> Vec<M> {
+        let mut ui = simulator(WINDOW, report_of(&lines, &result, true));
+        ui.click(words).unwrap();
+        ui.into_messages().collect()
+    };
+    assert!(matches!(sent(NEXT_CARD)[..], [M::NextCard]));
+    assert!(matches!(sent("Quit")[..], [M::Quit]));
+}
+
+/// The least a program can be to draw a report over and over: only the outcome changes.
+struct OneReport {
+    outcome_id: u64,
+    lines: Vec<String>,
+}
+
+fn one_report_boot() -> (OneReport, iced::Task<M>) {
+    let state = OneReport {
+        outcome_id: 1,
+        lines: vec!["first line".to_string()],
+    };
+    (state, iced::Task::none())
+}
+
+fn one_report_change(state: &mut OneReport, _: M) -> iced::Task<M> {
+    state.outcome_id += 1;
+    state.lines = vec!["second line".to_string()];
+    iced::Task::none()
+}
+
+fn one_report_draw(state: &OneReport) -> Element<'_, M> {
+    report_screen(state.outcome_id, &state.lines, "Result", true)
+}
+
+fn wait_for_ready<P: iced::Program + 'static>(
+    emulator: &mut Emulator<P>,
+    program: &P,
+    heard: &mut emulator_channel::Receiver<Event<P>>,
+) {
+    let started = Instant::now();
+    loop {
+        match heard.try_recv() {
+            Ok(Event::Ready) => return,
+            Ok(Event::Action(action)) => emulator.perform(program, action),
+            Ok(Event::Failed(line)) => panic!("line failed: {line}"),
+            Err(TryRecvError::Closed) => panic!("the runtime stopped"),
+            Err(TryRecvError::Empty) => {
+                assert!(started.elapsed() < LIMIT, "nothing happened for too long");
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+}
+
+#[test]
+fn the_reports_lines_are_made_once_over_100_redraws_and_again_for_another_outcome() {
+    let program = iced::application(one_report_boot, one_report_change, one_report_draw);
+    let (events, mut heard) = emulator_channel::channel(1);
+    let mut emulator = Emulator::new(events, &program, Mode::Zen, WINDOW);
+    wait_for_ready(&mut emulator, &program, &mut heard);
+
+    let made = || gui::REPORT_MADE.with(|made| made.get());
+    assert_eq!(made(), 0, "nothing drawn yet");
+    // A line builds the interface from the view, as a redraw does, on what the last one kept.
+    let mut redraw = |words: &str| {
+        let expect = Instruction::Expect(Expectation::Text(words.to_string()));
+        emulator.run(&program, expect);
+        wait_for_ready(&mut emulator, &program, &mut heard);
+    };
+    for _ in 0..100 {
+        redraw("first line");
+    }
+    assert_eq!(made(), 1, "100 redraws");
+
+    emulator.update(&program, M::Next);
+    let mut redraw = |words: &str| {
+        let expect = Instruction::Expect(Expectation::Text(words.to_string()));
+        emulator.run(&program, expect);
+        wait_for_ready(&mut emulator, &program, &mut heard);
+    };
+    redraw("second line");
+    assert_eq!(made(), 2, "another outcome");
+    for _ in 0..100 {
+        redraw("second line");
+    }
+    assert_eq!(made(), 2, "100 more");
+}
+
+/// No bound on the time (S055's `accepts`). 5000 lines in the gate, as 50000 take a minute to
+/// lay out in a debug build. The stamp's numbers are of
+/// `PHOTOSYNC_GUI_REPORT_LINES=50000 cargo test --release -p photosync-gui --lib -- --nocapture a_scroll_of_many`.
+#[test]
+fn a_scroll_of_many_lines_reaches_the_end() {
+    let count: u32 =
+        std::env::var("PHOTOSYNC_GUI_REPORT_LINES").map_or(5000, |n| n.parse().unwrap());
+    let lines: Vec<String> = (0..count)
+        .map(|n| format!("  duplicate in session  100_FUJI/DSCF{n:05}.RAF, on drive from /B"))
+        .collect();
+    let started = Instant::now();
+    let mut ui = simulator(WINDOW, report_of(&lines, "Result", false));
+    let made = started.elapsed();
+    let inside = ui
+        .find(selector::id(BODY))
+        .unwrap()
+        .visible_bounds()
+        .unwrap()
+        .center();
+    ui.point_at(inside);
+    let notch = iced_test::core::Event::Mouse(iced_test::core::mouse::Event::WheelScrolled {
+        delta: iced_test::core::mouse::ScrollDelta::Lines { x: 0.0, y: -3.0 },
+    });
+    let started = Instant::now();
+    let _ = ui.simulate([notch]);
+    let scrolled = started.elapsed();
+    let started = Instant::now();
+    ui.snapshot(&Theme::Dark).unwrap();
+    let drawn = started.elapsed();
+    eprintln!(
+        "{count} lines: made and laid out {made:?}, a notch {scrolled:?}, its drawing {drawn:?}"
+    );
+    let (at, _, _) = scroll_of(&mut ui, BODY);
+    assert!(at > 0.0, "{at}");
+    wheel(&mut ui, BODY, 2_000_000.0);
+    at_its_end(&mut ui, BODY);
+}
+
+fn with_rows_of_result(rows: f32) -> String {
+    for words in 1.. {
+        let result = "photo ".repeat(words);
+        let lines = vec!["a line".to_string()];
+        let mut ui = simulator(LEAST, report_of(&lines, &result, false));
+        let (_, _, content) = scroll_of(&mut ui, RESULT);
+        if content >= rows * ONE_ROW - 1.0 {
+            return result;
+        }
+    }
+    unreachable!()
+}
+
+#[test]
+fn a_result_of_ten_rows_is_wholly_in_its_box_at_the_least_size() {
+    let result = with_rows_of_result(10.0);
+    let lines = vec!["first line".to_string()];
+    let mut ui = simulator(LEAST, report_of(&lines, &result, false));
+    let (start, height, content) = scroll_of(&mut ui, RESULT);
+    assert!(content < 11.0 * ONE_ROW - 1.0, "ten rows: {content}");
+    assert_eq!(start, 0.0);
+    assert!(height >= content, "{height} shows {content}");
+    see_fixed_box(&mut ui, LEAST, RESULT, &[&result]).unwrap();
+    see_in_sight(&mut ui, LEAST, &["first line"]).unwrap();
+    see_fixed_in_sight(&mut ui, LEAST, &REPORT_BUTTONS).unwrap();
+}
+
+#[test]
+fn a_result_of_40_syncs_scrolls_in_its_box_with_the_report_and_buttons_in_sight() {
+    let (_gui, _dir, session) = forty_refused_syncs();
+    let (lines, result) = {
+        let session = flow::lock(&session);
+        let report = text::session_report(&session).unwrap();
+        let lines: Vec<String> = report.lines().map(String::from).collect();
+        (lines, text::session_result(&session))
+    };
+    assert!(
+        result.contains("sync 1 (") && result.contains("sync 40 ("),
+        "{result}"
+    );
+    let library = line_with(&lines, "Library ");
+    let screen_of = || report_of(&lines, &result, false);
+
+    let mut ui = simulator(LEAST, screen_of());
+    let (start, height, content) = scroll_of(&mut ui, RESULT);
+    assert_eq!(start, 0.0, "it opens at its top");
+    assert!(height + RESULT_PADDING <= RESULT_BOX_MOST, "{height}");
+    assert!(content > height * 2.0, "{content} in {height}");
+    see_fixed_box(&mut ui, LEAST, RESULT, &[&result]).unwrap();
+    see_in_sight(&mut ui, LEAST, &[library]).unwrap();
+    see_fixed_in_sight(&mut ui, LEAST, &REPORT_BUTTONS).unwrap();
+    stands_in_order(&mut ui, &lines);
+
+    screen_check_of(
+        screen_of,
+        "S055",
+        "result_40_syncs_top",
+        &[TITLE, REPORT_HEADING, &result, library, NEXT_CARD, "Quit"],
+        &[library],
+    );
+
+    for (size, name) in [
+        (WINDOW, "result_40_syncs_end"),
+        (LEAST, "result_40_syncs_end_least"),
+    ] {
+        let mut ui = simulator(size, screen_of());
+        wheel(&mut ui, RESULT, 1000.0);
+        at_its_end(&mut ui, RESULT);
+        // The wheel over the box moves only the box.
+        assert_eq!(scroll_of(&mut ui, BODY).0, 0.0);
+        see_in_sight(&mut ui, size, &[library]).unwrap();
+        see_fixed_in_sight(&mut ui, size, &REPORT_BUTTONS).unwrap();
+        picture_of(&mut ui, "S055", name);
+    }
+}
+
+#[test]
+fn a_refusal_of_40_syncs_keeps_its_buttons_and_its_end_is_reached() {
+    let (gui, _dir, session) = forty_refused_syncs();
+    let sentence = the_sentence(&gui);
+    let last = format!(
+        "{}\n\n{}",
+        text::crash("test crash 39"),
+        text::session_result(&flow::lock(&session))
+    );
+    assert_eq!(sentence, last, "byte for byte");
+    assert!(sentence.contains("sync 1 (") && sentence.contains("sync 40 ("));
+    screen_check_scrolling(
+        &gui,
+        "S055",
+        "refused_40_syncs",
+        &[TITLE, REFUSED_HEADING],
+        &[&sentence],
+    );
+    fixed_in_sight(&gui, LEAST, &[TITLE, REFUSED_HEADING]);
+    fixed_in_sight(&gui, LEAST, &REFUSED_IN_SESSION);
+
+    let mut ui = screen(&gui, LEAST);
+    assert_eq!(scroll_of(&mut ui, BODY).0, 0.0, "it opens at its top");
+    wheel(&mut ui, BODY, 1000.0);
+    at_its_end(&mut ui, BODY);
+    see_fixed_in_sight(&mut ui, LEAST, &REFUSED_IN_SESSION).unwrap();
+}
+
+/// On the check by clicks, with a real session's worker to come, which refuses as the temp
+/// folders share a device, and the session it was given.
+fn real_session(gui: &mut Gui) -> Arc<Mutex<Option<flow::Shared>>> {
+    let kept = Arc::new(Mutex::new(None));
+    let keeps = kept.clone();
+    gui.test_worker = Some(Arc::new(move |job, send| {
+        *keeps.lock().unwrap() = Some(job.session.clone());
+        worker::spawn(job, move |msg| send.send(msg));
+    }));
+    kept
+}
+
+fn the_session(kept: &Arc<Mutex<Option<flow::Shared>>>) -> flow::Shared {
+    kept.lock().unwrap().clone().unwrap()
+}
+
+/// Start copying to its refusal, by the real worker.
+fn start_and_be_refused(gui: &mut Gui) {
+    start_copying(gui);
+    run_out(gui);
+    assert_eq!(gui.app.screen(), Screen::Refused);
+    assert_eq!(gui.app.exit().code, 2);
+}
+
+#[test]
+fn the_next_card_goes_back_to_the_cards_looks_again_and_goes_straight_to_the_check() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    with_a_photo(&folders);
+    let (discover, looks) = blocked_discovery();
+    let (mut gui, _) = Gui::boot(discover, None);
+    let found = || volumes(&[&folders.card], &[&folders.drive], &[]);
+    next_look(&looks).send(found()).unwrap();
+    settle(&mut gui);
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    assert!(!says(&gui, NEXT_CARD));
+    let kept = real_session(&mut gui);
+    start_and_be_refused(&mut gui);
+    assert!(gui.app.in_session());
+    assert_eq!(gui.app.picked(), [PathBuf::from(&folders.card)]);
+
+    let sentence = the_sentence(&gui);
+    let session = the_session(&kept);
+    {
+        let session = flow::lock(&session);
+        let RunEnd::Refused(first) = &session.runs()[0].end else {
+            panic!("not refused");
+        };
+        assert_eq!(sentence, text::refusal(first), "byte for byte");
+    }
+    assert!(
+        sentence.contains("same"),
+        "as they share a device: {sentence}"
+    );
+    screen_check_scrolling(
+        &gui,
+        "S055",
+        "refused_in_session",
+        &[TITLE, REFUSED_HEADING, REFUSED_BACK, NEXT_CARD, "Quit"],
+        &[&sentence],
+    );
+    fixed_in_sight(&gui, LEAST, &REFUSED_IN_SESSION);
+    no_key_named(&gui, "refused in a session");
+
+    click(&mut gui, NEXT_CARD);
+    assert_eq!(gui.app.screen(), Screen::Sources);
+    assert!(gui.app.picked().is_empty(), "nothing stays picked");
+    assert_eq!(gui.app.exit().code, 2);
+
+    // The look is out, held: only what is known shows, and Next goes nowhere.
+    let look = next_look(&looks);
+    assert!(gui.looking());
+    assert!(says(&gui, LOOKING));
+    assert!(!says(&gui, &folders.card), "no old row");
+    assert!(clicks(&gui, "Next").is_empty());
+    let _ = update(&mut gui, M::Next);
+    assert_eq!(gui.app.screen(), Screen::Sources);
+    fixed_in_sight(&gui, LEAST, &[NOT_SAFE, "Next", "Look again", "Quit"]);
+
+    look.send(found()).unwrap();
+    settle(&mut gui);
+    let heading = "Sync 2: pick the next card";
+    screen_check(
+        &gui,
+        "S055",
+        "next_card",
+        &[TITLE, heading, NOT_SAFE, &folders.card, "Next", "Quit"],
+    );
+    fixed_in_sight(&gui, LEAST, &[TITLE, heading, NOT_SAFE]);
+    fixed_in_sight(&gui, LEAST, &CARDS_BUTTONS);
+    assert!(!says(&gui, "Back"), "no back on the cards in a session");
+    no_key_named(&gui, "the next card");
+    assert_eq!(gui.app.exit().code, 2);
+
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Confirm, "straight to the check");
+    let stays =
+        "Sync 2 of this session: the library and name stay as they are. Click Quit to change them.";
+    assert!(says(&gui, stays));
+    assert!(says(&gui, "Sync 2: check and start"));
+    no_key_named(&gui, "the check in a session");
+    assert_eq!(gui.app.exit().code, 2);
+
+    click(&mut gui, "Back");
+    assert_eq!(
+        gui.app.screen(),
+        Screen::Sources,
+        "Back returns to the cards"
+    );
+    assert!(says(&gui, heading));
+}
+
+#[test]
+fn two_refusals_in_a_row_name_both_in_the_sentence() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    with_a_photo(&folders);
+    let mut gui = to_the_check(&folders);
+    let kept = real_session(&mut gui);
+    start_and_be_refused(&mut gui);
+    click(&mut gui, NEXT_CARD);
+    settle(&mut gui);
+    assert_eq!(gui.app.exit().code, 2);
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.exit().code, 2);
+    start_and_be_refused(&mut gui);
+
+    let session = the_session(&kept);
+    let session = flow::lock(&session);
+    assert_eq!(session.runs().len(), 2);
+    let RunEnd::Refused(second) = &session.runs()[1].end else {
+        panic!("not refused");
+    };
+    let result = text::session_result(&session);
+    let sentence = the_sentence(&gui);
+    assert_eq!(
+        sentence,
+        format!("{}\n\n{result}", text::refusal(second)),
+        "byte for byte"
+    );
+    for named in ["sync 1 (", "sync 2 ("] {
+        assert!(sentence.contains(named), "{named} in {sentence}");
+    }
+    assert!(all_words(&gui, LEAST).contains(&sentence), "on the screen");
+    fixed_in_sight(&gui, LEAST, &REFUSED_IN_SESSION);
+
+    // And what the report of that session says, line by line.
+    let report = text::session_report(&session).unwrap();
+    let lines: Vec<String> = report.lines().map(String::from).collect();
+    let mut ui = simulator(LEAST, report_of(&lines, &result, false));
+    stands_in_order(&mut ui, &lines);
+    assert!(all_words_of(&mut ui).contains(&result));
+    assert_eq!(gui.app.exit().code, 2);
+}
+
+#[test]
+fn a_crash_shows_the_crash_sentence_byte_for_byte_alone_and_in_a_session() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    let crashes = Arc::new(Mutex::new(None));
+    let keeps = crashes.clone();
+    gui.test_worker = Some(Arc::new(move |job: Job, send: WorkerSend| {
+        *keeps.lock().unwrap() = Some(job.session.clone());
+        send.send(Msg::Crashed("test crash".to_string()));
+    }));
+    start_copying(&mut gui);
+    run_out(&mut gui);
+    assert_eq!(the_sentence(&gui), text::crash("test crash"));
+    assert!(all_words(&gui, LEAST).contains(&text::crash("test crash")));
+    assert!(says(&gui, NEXT_CARD), "a crash leaves a session");
+
+    click(&mut gui, NEXT_CARD);
+    settle(&mut gui);
+    click(&mut gui, "Next");
+    click(&mut gui, "Start copying");
+    run_out(&mut gui);
+    let session = the_session(&crashes);
+    let session = flow::lock(&session);
+    let both = format!(
+        "{}\n\n{}",
+        text::crash("test crash"),
+        text::session_result(&session)
+    );
+    assert_eq!(the_sentence(&gui), both);
+    assert!(all_words(&gui, LEAST).contains(&both));
+    assert!(both.contains("sync 1 (") && both.contains("sync 2 ("));
+}
+
+#[test]
+fn the_refused_screen_before_a_session_offers_no_next_card() {
+    let folders = Folders::new();
+    let mut gui = to_the_check(&folders);
+    start_copying(&mut gui);
+    assert_eq!(gui.app.screen(), Screen::Refused);
+    assert!(!gui.app.in_session());
+    let sentence = the_sentence(&gui);
+    assert!(!says(&gui, NEXT_CARD));
+    screen_check_scrolling(
+        &gui,
+        "S055",
+        "refused",
+        &[TITLE, REFUSED_HEADING, REFUSED_BACK, "Quit"],
+        &[&sentence],
+    );
+    fixed_in_sight(&gui, LEAST, &[REFUSED_BACK, "Quit"]);
+    let _ = update(&mut gui, M::NextCard);
+    assert_eq!(
+        gui.app.screen(),
+        Screen::Refused,
+        "a stale click goes nowhere"
+    );
+}
+
+#[test]
+fn a_next_card_left_from_another_screen_does_nothing() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    start_and_be_refused(&mut gui);
+    click(&mut gui, NEXT_CARD);
+    settle(&mut gui);
+    let looks_before = gui.looking();
+    let _ = update(&mut gui, M::NextCard);
+    assert_eq!(gui.app.screen(), Screen::Sources);
+    assert_eq!(gui.looking(), looks_before, "no new look");
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    let picked = gui.app.picked().to_vec();
+    let _ = update(&mut gui, M::NextCard);
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    assert_eq!(gui.app.picked(), picked, "the check keeps what it names");
+
+    // Its key would type here.
+    let mut on_a_field = on_the_library_screen(&folders);
+    let typed = on_a_field.app.library().to_string();
+    let _ = update(&mut on_a_field, M::NextCard);
+    assert_eq!(on_a_field.app.library(), typed);
+}
+
+/// As `across`, on any element.
+fn across_of(ui: &mut Simulator<'_, M>, words: &str) -> (f32, f32) {
+    let bounds = ui.find(words).unwrap().bounds();
+    (bounds.x - 10.0, bounds.x + bounds.width + 10.0)
+}
+
+/// The second click of a double lands where the first did, on the next screen's button:
+/// never on what takes the report or the refusal away unread (DEC-079 (2), DEC-082 (2)).
+#[test]
+fn the_second_click_of_a_double_takes_no_report_or_refusal_away() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let (lines, result) = a_complete_report();
+    for size in [WINDOW, LEAST] {
+        let mut gui = to_the_check(&folders);
+        let start = across(&gui, size, "Start copying");
+        let mut report = simulator(size, report_of(&lines, &result, true));
+        let report_next = across_of(&mut report, NEXT_CARD);
+        let report_quit = across_of(&mut report, "Quit");
+        for what in [report_next, report_quit] {
+            assert!(apart(start, what), "Start {start:?}, the report's {what:?}");
+        }
+
+        let kept = real_session(&mut gui);
+        start_and_be_refused(&mut gui);
+        drop(kept);
+        let refused_next = across(&gui, size, NEXT_CARD);
+        assert!(
+            apart(start, refused_next),
+            "Start {start:?}, {refused_next:?}"
+        );
+
+        click(&mut gui, NEXT_CARD);
+        settle(&mut gui);
+        let cards_quit = across(&gui, size, "Quit");
+        for next in [report_next, refused_next] {
+            assert!(
+                apart(next, cards_quit),
+                "Next card {next:?}, Quit {cards_quit:?}"
+            );
+        }
+    }
+    // Cancel's second click, should the sync end between the two.
+    let on_copying = Folders::new();
+    let gui = on_the_copying_screen(&on_copying);
+    for size in [WINDOW, LEAST] {
+        let cancel = across(&gui, size, "Cancel");
+        let mut report = simulator(size, report_of(&lines, &result, true));
+        for words in REPORT_BUTTONS {
+            let what = across_of(&mut report, words);
+            assert!(apart(cancel, what), "Cancel {cancel:?}, {words} {what:?}");
+        }
+    }
+}
+
+/// The scroll of DEC-073 (1) in a real session on temp folders: 40 cards, so the check has
+/// room to scroll, and 100 notes. The refusal is one text, so a click cannot tell where in it
+/// the view stands; what enters it is the reset the check's test proves, and what leaves it
+/// is proved by the cards after it.
+#[test]
+fn in_a_session_each_screen_opens_at_its_top() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let cards: Vec<String> = (0..40)
+        .map(|n| {
+            let card = folders.dir.0.join(format!("CARD_{n:02}"));
+            fs::create_dir_all(card.join("DCIM")).unwrap();
+            card.display().to_string()
+        })
+        .collect();
+    let drive = folders.drive.clone();
+    let listed = cards.clone();
+    let discover: Discover = Arc::new(move || {
+        let notes = hundred_notes();
+        let notes: Vec<&str> = notes.iter().map(String::as_str).collect();
+        let cards: Vec<&str> = listed.iter().map(String::as_str).collect();
+        volumes(&cards, &[&drive], &notes)
+    });
+    let first_note = r#"click "warning: cannot scan /Volumes/BAD_00: test""#;
+    let last_note = r#"click "warning: cannot scan /Volumes/BAD_99: test""#;
+    let first_words = r#"click "Copy from:""#;
+    let first_card = Arc::new(Mutex::new(cards[0].clone()));
+    let sentence = Arc::new(Mutex::new(String::new()));
+    let read_it = sentence.clone();
+    let steps = vec![
+        Step::Line(r#"click "Next""#),
+        Step::Line(r#"click "Next""#),
+        Step::Line(r#"click "Next""#),
+        Step::Line(r#"click "Next""#),
+        Step::Line(r#"click "Start copying""#),
+        Step::Line(r#"click "Next card""#),
+        Step::Set(Arc::new(|gui: &mut Gui| {
+            for row in 0..gui.app.sources().len() {
+                assert!(gui.cursor_to(row));
+                assert!(gui.app.update(Msg::Key(Key::Char(' '))).is_none());
+            }
+            assert!(gui.cursor_to(0));
+        })),
+        Step::Fails(last_note),
+        Step::ScrollEnd,
+        Step::Line(last_note),
+        Step::Fails(first_note),
+        Step::Line(r#"click "Next""#),
+        Step::Line(first_words),
+        Step::ScrollEnd,
+        Step::Fails(first_words),
+        Step::Line(r#"click "Start copying""#),
+        Step::Set(Arc::new(move |gui: &mut Gui| {
+            *read_it.lock().unwrap() = the_sentence(gui);
+        })),
+        Step::ClickOn(sentence.clone()),
+        Step::ScrollEnd,
+        Step::Line(r#"click "Next card""#),
+        Step::ClickOn(first_card),
+    ];
+    let gui = play_steps(discover, steps);
+    assert_eq!(gui.app.screen(), Screen::Sources);
+    assert_eq!(gui.app.syncs(), 2);
+    assert_eq!(gui.app.exit().code, 2);
+    // The last click landed on a row in sight, and ticked it.
+    assert_eq!(gui.app.picked(), [PathBuf::from(&cards[0])]);
+    let sentence = sentence.lock().unwrap();
+    assert!(
+        sentence.contains("sync 1 (") && sentence.contains("sync 2 ("),
+        "{sentence}"
+    );
+    assert!(
+        sentence.contains("same"),
+        "as they share a device: {sentence}"
+    );
 }

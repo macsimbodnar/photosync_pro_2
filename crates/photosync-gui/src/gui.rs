@@ -12,7 +12,7 @@ use std::thread;
 use iced::futures::channel::mpsc::{self as wake_channel, UnboundedReceiver, UnboundedSender};
 use iced::futures::channel::oneshot;
 use iced::widget::scrollable::RelativeOffset;
-use iced::widget::{Column, Space, column, operation, row, scrollable};
+use iced::widget::{Column, Space, Text, column, lazy, operation, row, scrollable};
 use iced::{
     Element, Event, Font, Length, Size, Subscription, Task, Theme, event, keyboard, window,
 };
@@ -24,9 +24,11 @@ use photosync_front::{text, worker};
 
 use crate::png;
 use crate::widgets::{
-    action, bar, field, hint, list_row, red_banner, red_box, under, word_box, words,
+    action, bar, field, hint, list_row, red_banner, red_box, result_box, under, word_box, words,
 };
 
+/// The font the window draws in, and the tests (DEC-065 (4)).
+const DEFAULT_FONT: &str = "Fira Sans";
 /// The name the user sees (DEC-069 (1)).
 pub const TITLE: &str = "phoosync pro 2";
 /// The window's size, and the least it can be made (DEC-068 (7)).
@@ -60,6 +62,9 @@ pub const CLOSE_AGAIN: &str = "Close the window again to quit at once: not every
 /// What the copying screen's body says until the first progress.
 pub const SCANNING: &str = "scanning the cards...";
 
+/// The TUI's title for the report.
+pub const REPORT_HEADING: &str = "Report";
+
 /// What is said while the first start's check is out (DEC-081 (1)).
 pub const CHECKING: &str =
     "Checking the library folder. A stuck drive can hold this up: click Back, or take it out.";
@@ -69,9 +74,12 @@ pub const NOT_SAFE: &str = "Not every photo is known to be on the drive: do not 
 /// The scrollables' fixed ids, as `Scrollable::diff` never looks at an id (DEC-073 (1)).
 pub const BODY: &str = "body";
 pub const BANNER: &str = "banner";
+pub const RESULT: &str = "result";
 pub const FIELD: &str = "field";
 /// The most the banner's box takes: five rows (DEC-071 (3)).
 const BANNER_MOST: f32 = 104.0;
+/// What the result's words take of its 240, with `result_box`'s padding (DEC-071 (4), DEC-082 (1)).
+const RESULT_MOST: f32 = 224.0;
 
 /// How volumes are found: injected, so tests give literal folders (DEC-068 (5)).
 pub type Discover = Arc<dyn Fn() -> Volumes + Send + Sync>;
@@ -106,6 +114,8 @@ pub enum M {
     SmokeFrame,
     SmokeShot(window::Screenshot),
     Cancel,
+    /// Its own message, never `Next`: a click left from another screen must not look again.
+    NextCard,
     /// The worker has sent something: go and read it (DEC-068 (4)).
     Wake,
     /// The worker's sender is gone: what is left, then its end if none came.
@@ -594,6 +604,7 @@ pub fn update(gui: &mut Gui, message: M) -> Task<M> {
         task,
         operation::snap_to(BODY, RelativeOffset::START),
         operation::snap_to(BANNER, RelativeOffset::START),
+        operation::snap_to(RESULT, RelativeOffset::START),
         // Typing and Enter need it, and the focus also puts the cursor at the end. A screen
         // with no field has no such id, so this does nothing there.
         operation::focus(FIELD),
@@ -614,7 +625,15 @@ fn step(gui: &mut Gui, message: M) -> Task<M> {
         M::Field(..) | M::Escape if !on_a_field => Task::none(),
         M::Field(of, _) if of != screen => Task::none(),
         M::Start if screen != Screen::Confirm || gui.checking() => Task::none(),
-        M::Quit if !on_a_list && !matches!(screen, Screen::Confirm | Screen::Refused) => {
+        M::Quit
+            if !on_a_list
+                && !matches!(screen, Screen::Confirm | Screen::Refused | Screen::Report) =>
+        {
+            Task::none()
+        }
+        M::NextCard
+            if screen != Screen::Report && !(screen == Screen::Refused && gui.app.in_session()) =>
+        {
             Task::none()
         }
         M::Back if matches!(screen, Screen::Sources | Screen::Running | Screen::Report) => {
@@ -643,6 +662,7 @@ fn step(gui: &mut Gui, message: M) -> Task<M> {
         M::SmokeShot(shot) => gui.smoke_shot(&shot),
         M::Back | M::Escape => gui.key(Key::Esc),
         M::Cancel => gui.key(Key::Char('c')),
+        M::NextCard => gui.key(Key::Char('n')),
         M::Wake => {
             #[cfg(test)]
             {
@@ -674,8 +694,15 @@ pub fn view(gui: &Gui) -> Element<'_, M> {
         Screen::Confirm => check(gui),
         Screen::Refused => refused(gui),
         Screen::Running => copying(gui),
-        // The report is S055's.
-        _ => column![words(TITLE).size(24)].padding(16).into(),
+        Screen::Report => match gui.app.outcome() {
+            Some(Outcome::Report {
+                lines,
+                result,
+                complete,
+            }) => report_screen(gui.app.outcome_id(), lines, result, *complete),
+            // The model sets the two together.
+            _ => column![words(TITLE).size(24)].padding(16).into(),
+        },
     }
 }
 
@@ -819,17 +846,79 @@ fn check(gui: &Gui) -> Element<'_, M> {
     fixed_around(gui, heading, body, buttons)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times the report's lines were made, on this thread (DEC-068 (6)).
+    pub(crate) static REPORT_MADE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The report, from what it is given, so a test can give what no sync on temp folders does
+/// (DEC-067 (5)). `outcome_id` is what the lines are kept by, as a real report can be 50000 of
+/// them (DEC-068 (6)). The result and the buttons are fixed, the report the body. The buttons
+/// stand mid-row: the second click of a double on Start copying, at the right, or on Cancel, at
+/// the left, must not take a report away before it is read (DEC-079 (2), DEC-082 (2)).
+pub fn report_screen<'a>(
+    outcome_id: u64,
+    lines: &'a [String],
+    result: &str,
+    complete: bool,
+) -> Element<'a, M> {
+    let over = column![
+        words(TITLE).size(24),
+        words(REPORT_HEADING),
+        result_box(RESULT, result.to_string(), RESULT_MOST, complete),
+    ]
+    .spacing(12);
+    let body = column![lazy(outcome_id, move |_| report_lines(lines))];
+    let buttons = row![
+        Space::new().width(Length::Fill),
+        action("Next card", Some(M::NextCard)),
+        action("Quit", Some(M::Quit)),
+        Space::new().width(Length::Fill),
+    ]
+    .spacing(10);
+    around_the_body(over, body, column![buttons])
+}
+
+/// One text a line, or the layout of all of them comes again on each scroll (DEC-068 (6)), and
+/// a fixed-width font, or the tables do not line up. They own their words, as `lazy` keeps them.
+fn report_lines(lines: &[String]) -> Column<'static, M> {
+    #[cfg(test)]
+    REPORT_MADE.with(|made| made.set(made.get() + 1));
+    Column::with_children(lines.iter().map(|line| report_line(line).into())).width(Length::Fill)
+}
+
+/// The fixed font's fallback gives a kanji a whole row and draws nothing, so `写真` would be lost
+/// from a card's name with nothing wrong in its bounds. A table is all ASCII, so nothing that
+/// must line up leaves the fixed font (DEC-082 (3)).
+fn report_line(line: &str) -> Text<'static> {
+    let font = if line.is_ascii() {
+        Font::MONOSPACE
+    } else {
+        Font::with_name(DEFAULT_FONT)
+    };
+    words(line.to_string()).font(font)
+}
+
 /// The refusal's sentence is the body, so however long it is the buttons stay. It says
-/// what it says by itself, so no banner (DEC-071 (2), (4)). Next card is S055's.
+/// what it says by itself, so no banner (DEC-071 (2), (4)). Next card stands apart from the check's
+/// Start copying and the cards' Quit, so the second click of a double lands on neither way out
+/// of this sentence (DEC-079 (2), DEC-082 (2)).
 fn refused(gui: &Gui) -> Element<'_, M> {
     let sentence = match gui.app.outcome() {
         Some(Outcome::Refused { sentence }) => sentence.as_str(),
         _ => "",
     };
-    let buttons = row![
+    let mut buttons = row![
         action("Back, to fix it", Some(M::Back)),
         action("Quit", Some(M::Quit)),
     ];
+    if gui.app.in_session() {
+        buttons = buttons
+            .push(Space::new().width(Length::Fill))
+            .push(action("Next card", Some(M::NextCard)))
+            .push(Space::new().width(Length::Fill));
+    }
     fixed_around(
         gui,
         "Stopped, no report".to_string(),
@@ -1003,7 +1092,7 @@ pub fn program(
     iced::application(boot, update, view)
         .title(|_: &Gui| TITLE.to_string())
         .theme(|_: &Gui| Theme::Dark)
-        .default_font(Font::with_name("Fira Sans"))
+        .default_font(Font::with_name(DEFAULT_FONT))
         .subscription(subscription)
         .window(window::Settings {
             min_size: Some(LEAST),

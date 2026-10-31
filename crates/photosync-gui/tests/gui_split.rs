@@ -403,6 +403,20 @@ fn body_faults(source: &str) -> Vec<String> {
     found
 }
 
+/// Each scrollable `update` does not send to its top on a change of place. A fresh Simulator
+/// cannot see a reset, and only images reach a report, so the result's stands here too
+/// (DEC-073 (1)).
+fn scrolls_left_where_they_were(source: &str) -> Vec<String> {
+    let Some((_, update)) = function_of(source, "update") else {
+        return vec!["no update".to_string()];
+    };
+    ["BODY", "BANNER", "RESULT"]
+        .iter()
+        .filter(|id| !update.contains(&format!("snap_to({id}, RelativeOffset::START)")))
+        .map(|id| id.to_string())
+        .collect()
+}
+
 /// Each `#[ignore` that does not give the images' reason.
 fn other_ignores(source: &str) -> Vec<String> {
     source
@@ -527,6 +541,13 @@ fn no_screen_bounds_a_height_outside_the_named_helpers() {
 fn the_one_body_takes_all_the_height_left_in_a_column() {
     let product: String = product_files().iter().map(|f| read_code(f)).collect();
     let found = body_faults(&product);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn every_scrollable_goes_to_its_top_on_a_change_of_place() {
+    let gui = read_code(&gui_dir().join("src/gui.rs"));
+    let found = scrolls_left_where_they_were(&gui);
     assert!(found.is_empty(), "{found:?}");
 }
 
@@ -734,6 +755,25 @@ fn the_body_matcher_catches_each_kind() {
     ] {
         assert!(!body_faults(&bad).is_empty(), "{bad}");
     }
+}
+
+#[test]
+fn the_scroll_reset_matcher_catches_each_kind() {
+    let all = "fn update() { snap_to(BODY, RelativeOffset::START); snap_to(BANNER, RelativeOffset::START); snap_to(RESULT, RelativeOffset::START) }";
+    assert_eq!(scrolls_left_where_they_were(all), Vec::<String>::new());
+    assert_eq!(
+        scrolls_left_where_they_were(&all.replace("RESULT", "OTHER")),
+        ["RESULT"]
+    );
+    assert_eq!(
+        scrolls_left_where_they_were(&all.replace("snap_to(BODY", "snap_to_end(BODY")),
+        ["BODY"]
+    );
+    assert_eq!(
+        scrolls_left_where_they_were(&format!("fn update() {{}} fn other() {{ {all} }}")),
+        ["BODY", "BANNER", "RESULT"]
+    );
+    assert_eq!(scrolls_left_where_they_were("fn other() {}"), ["no update"]);
 }
 
 #[test]

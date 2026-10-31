@@ -56,6 +56,29 @@ pub fn word_box<'a, M: 'a>(id: &'static str, content: String, most: f32) -> Elem
         .into()
 }
 
+/// Green only for a session that is complete (DEC-069 (2)).
+pub fn result_style(complete: bool) -> fn(&Theme) -> container::Style {
+    if complete {
+        container::success
+    } else {
+        container::danger
+    }
+}
+
+/// The result over the report: a `word_box` on its colour, as the banner's reason is on red.
+pub fn result_box<'a, M: 'a>(
+    id: &'static str,
+    content: String,
+    most: f32,
+    complete: bool,
+) -> Element<'a, M> {
+    container(word_box(id, content, most))
+        .style(result_style(complete))
+        .width(Length::Fill)
+        .padding(8)
+        .into()
+}
+
 /// Words under the line that names them.
 pub fn under<'a, M: 'a>(line: &'a str, items: Column<'a, M>) -> Element<'a, M> {
     column![words(line), items.padding(Padding::ZERO.left(16.0))]

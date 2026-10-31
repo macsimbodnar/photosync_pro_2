@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-31, by Claude (S065 done)
+Updated: 2026-10-31, by Claude (S055 done)
 
-- Last done: S065  Start stays live, late keys stay in their field, Esc goes back (568 passed, 29 ignored; script 382)
+- Last done: S055  GUI: report, refused, scrolling, next card in one session (590 passed, 29 ignored; script 382)
 - In progress: none
-- Next: S055  GUI: report, refused, scrolling, next card in one session; then the rest of plan.md's Open list
+- Next: S056  GUI: closing, quitting, root, what the process returns; then the rest of plan.md's Open list
 - Waiting for the user: S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
@@ -19,11 +19,13 @@ Updated: 2026-10-31, by Claude (S065 done)
     DEC-050, DEC-051, DEC-052, DEC-053, DEC-054, DEC-055, DEC-056, DEC-057,
     DEC-058, DEC-059, DEC-060, DEC-061, DEC-062, DEC-063, DEC-064, DEC-065,
     DEC-066 (all but (1), the user's yes to iced_test), DEC-067, DEC-068, DEC-069, DEC-070,
-    DEC-071, DEC-072, DEC-073, DEC-074, DEC-075, DEC-076, DEC-077, DEC-078, DEC-079, DEC-080, DEC-081.
+    DEC-071, DEC-072, DEC-073, DEC-074, DEC-075, DEC-076, DEC-077, DEC-078, DEC-079, DEC-080, DEC-081, DEC-082.
     Each says "not yet confirmed by the user" in decisions.md.
   - The GUI's banner and refused screen give the shared refusal's CLI words, "`photosync drives` lists them", "run the sync again" (S062; S053 read them on the library, name, check and refused pictures and left them, as `text.rs` is outside its step and S055 wants the words byte for byte). For the user to take or leave.
   - A marked drive can stand below the fold when the drive screen opens with Next live, past 13 drives at 900x650 and 9 at 640x480, down to 9 and 4 under the banner (S053 measured it; DEC-075 (9) said about 25). Harm is bounded: Next takes the drive the user clicked, and the check names the library before any copy. For the user to take or leave.
-  - The GUI can copy now, but its report is a bare title until S055 and the process returns 0 until S056 (DEC-080 (8)). Not for real cards before those; the README says so.
+  - The GUI can copy and has its report now, but the process returns 0 until S056, and only images give a real report, so S057 is the first to see one through the window (DEC-080 (8), DEC-082 (5)). Not for real cards before those; the README says so.
+  - A report line that is not all ASCII is in Fira Sans, not the fixed font, as the fixed font's fallback draws kanji as nothing (DEC-082 (3), departing from S055's `accepts`). Tables stay fixed. For the user to take or leave.
+  - The window stands still about 3.5 s when a report of 50000 lines arrives (release, measured; 0.35 s at 5000), 7 times DEC-068 (6)'s number, cause not looked for (DEC-082 (6)). For the user to take or leave.
   - The GUI no longer waits for S025 (user, 2026-10-30: do all that needs no
     input or hardware). The audit re-runs after the GUI.
   - Planned GUI: Cmd-Q and the Dock's Quit cannot be stopped without `objc2` as a new direct dependency,

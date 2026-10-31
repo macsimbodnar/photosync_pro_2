@@ -7,12 +7,12 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId, sleep};
 use std::time::{Duration, Instant};
 
-use iced::{Rectangle, Size, Theme};
+use iced::{Element, Rectangle, Size, Theme, mouse};
 use iced_test::core::Settings;
 use iced_test::core::widget::Id;
 use iced_test::emulator::{Emulator, Event, Mode};
@@ -462,17 +462,37 @@ pub(crate) fn screen_check_scrolling(
     sentences: &[&str],
     body: &[&str],
 ) {
+    screen_check_of(|| view(gui), step, name, sentences, body);
+}
+
+/// `screen_check_scrolling`, on a view no `Gui` reaches: a report with what no sync on temp
+/// folders gives (DEC-067 (5)).
+pub(crate) fn screen_check_of<'a>(
+    make: impl Fn() -> Element<'a, M>,
+    step: &str,
+    name: &str,
+    sentences: &[&str],
+    body: &[&str],
+) {
     for size in [COMMON, LEAST] {
-        if let Err(e) = screen_words(&mut screen(gui, size), size, sentences, body) {
+        let mut ui = Simulator::with_size(Settings::default(), size, make());
+        if let Err(e) = screen_words(&mut ui, size, sentences, body) {
             panic!("{step}_{name}: {e}");
         }
     }
-    picture_at(gui, WINDOW, step, name);
-    picture_at(gui, LEAST, step, &format!("{name}_least"));
+    let mut ui = Simulator::with_size(Settings::default(), WINDOW, make());
+    picture_of(&mut ui, step, name);
+    let mut ui = Simulator::with_size(Settings::default(), LEAST, make());
+    picture_of(&mut ui, step, &format!("{name}_least"));
 }
 
 /// The picture alone, at a size of the test's choosing. Returns where it is.
 pub(crate) fn picture_at(gui: &Gui, size: Size, step: &str, name: &str) -> PathBuf {
+    picture_of(&mut screen(gui, size), step, name)
+}
+
+/// The picture of a screen as it stands now, scrolled or not. Returns where it is.
+pub(crate) fn picture_of(ui: &mut Simulator<'_, M>, step: &str, name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/gui_screens");
     fs::create_dir_all(&dir).unwrap();
     let wanted = dir.join(format!("{step}_{name}.png"));
@@ -486,7 +506,7 @@ pub(crate) fn picture_at(gui: &Gui, size: Size, step: &str, name: &str) -> PathB
             Err(e) => panic!("{}: {e}", old.display()),
         }
     }
-    let snapshot = screen(gui, size).snapshot(&Theme::Dark).unwrap();
+    let snapshot = ui.snapshot(&Theme::Dark).unwrap();
     assert!(snapshot.matches_image(&wanted).unwrap());
     fs::rename(&written, &wanted).unwrap();
     wanted
@@ -494,9 +514,14 @@ pub(crate) fn picture_at(gui: &Gui, size: Size, step: &str, name: &str) -> PathB
 
 /// Every text on the screen, in or out of sight.
 pub(crate) fn all_words(gui: &Gui, size: Size) -> Vec<String> {
+    all_words_of(&mut screen(gui, size))
+}
+
+/// `all_words`, on any element, in the order they stand.
+pub(crate) fn all_words_of(ui: &mut Simulator<'_, M>) -> Vec<String> {
     let mut seen = Vec::new();
     // Selects nothing, so the walk goes over the whole tree.
-    let _ = screen(gui, size).find(|candidate: Candidate<'_>| {
+    let _ = ui.find(|candidate: Candidate<'_>| {
         if let Candidate::Text { content, .. } = candidate {
             seen.push(content.to_string());
         }
@@ -520,6 +545,9 @@ fn clicked_words(line: &str) -> String {
 pub(crate) enum Step {
     /// An Emulator line that must pass.
     Line(&'static str),
+    /// A click on words a `Step::Set` read from the state, that must pass: a line cannot name
+    /// words that are not known until then, or that hold a line's end.
+    ClickOn(Arc<Mutex<String>>),
     /// A click on words that are on the screen and out of sight. A click fails on words
     /// that are gone too, so `expect` runs first, or a script would pass on those.
     Fails(&'static str),
@@ -566,6 +594,14 @@ pub(crate) fn play_steps(discover: Discover, steps: Vec<Step>) -> Gui {
                 None => return emulator.into_state().0,
                 Some(Step::Line(line)) => {
                     emulator.run(&program, Instruction::parse(line).unwrap());
+                }
+                Some(Step::ClickOn(words)) => {
+                    let words = words.lock().unwrap().clone();
+                    let click = Instruction::Interact(Interaction::Mouse(Mouse::Click {
+                        button: mouse::Button::Left,
+                        target: Some(ClickAt::Text(words)),
+                    }));
+                    emulator.run(&program, click);
                 }
                 Some(Step::Fails(line)) => {
                     let words = clicked_words(line);

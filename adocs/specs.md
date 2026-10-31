@@ -163,9 +163,9 @@ picks. It is simple to use.
   - A closed stdout never stops a sync nor panics: the exit code stays
     within 0/1/2.
   - GUI: a native Rust GUI in iced (DEC-065), being built step by step: today its window
-    and the cards, drive, library, name, check, copying and refused screens. Start copying runs the sync, but the
-    report screen is a bare title until S055 and the process returns 0 until S056, so it
-    does not yet say what was copied. What follows is what it must become. It
+    and the cards, drive, library, name, check, copying, report and refused screens, and the next card in one session.
+    The process returns 0 until S056, so it does not yet say so to a script, and a real sync through it is not yet in
+    the gate (S057). What follows is what it must become. It
     must need no change to the core beyond new API, which keeps INV-8 true.
     It is its own binary, `photosync-gui`, over the same model, worker and
     sentences as the TUI (DEC-067, DEC-068), so it walks the same screens by the
@@ -174,7 +174,10 @@ picks. It is simple to use.
     session, and the same refusals before and during it. It calls itself
     "phoosync pro 2" (DEC-069). A GUI has no exit code to read: the report's result
     in its box, green only if the session is complete, or the refusal's sentence,
-    says what the exit code says, in the same words, "do not format the card" included. The
+    says what the exit code says, in the same words, "do not format the card" included. Each line of the report is a
+    text of its own, byte for byte what `text` says, in the same order, in a fixed-width font so its tables line up; a line that is
+    not all ASCII is in the window's font, as the fixed one loses kanji with nothing to see (DEC-082). Next card stands on the report,
+    and on a refusal in a session: it goes to the cards with nothing picked, looks again, and Next then goes straight to the check. The
     process still returns the code, as the TUI does. A quit that would hide a
     session not complete first shows why, from any screen that does not already
     say it. While the session is not complete, the cards, drive, library, name and
