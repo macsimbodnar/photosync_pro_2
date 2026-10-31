@@ -8,7 +8,7 @@ Updated: 2026-10-31, by Claude (S062 done)
 
 - Last done: S062  GUI harness checks fail when a thing is not seen (456 passed, 29 ignored; script 374)
 - In progress: none
-- Next: S053  GUI: library, name, check, refusals before a session; then the rest of plan.md's Open list
+- Next: S063  drive screen marks what Next will take; then the rest of plan.md's Open list
 - Waiting for the user: S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
