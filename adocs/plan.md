@@ -17,7 +17,7 @@ not change the order.
 
 ## Open
 
-1. S051  GUI crate, window, test harness, cards list (waits for the user's yes to iced_test, DEC-066 (1))
+1. S051  GUI crate, window, test harness, cards list
 2. S052  GUI: cards and drive screens
 3. S053  GUI: library, name, check, refusals before a session
 4. S054  GUI: copying: worker, progress per card and overall, ETA, cancel

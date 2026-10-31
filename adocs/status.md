@@ -4,12 +4,12 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-31, by Claude (S050 done)
+Updated: 2026-10-31, by Claude (GUI plan amended after a review; iced_test allowed by the user)
 
 - Last done: S050  shared layer gets a library target, no behaviour change (372 passed, 28 ignored, as before)
 - In progress: none
-- Next: S051  GUI crate, window, test harness, cards list (waits for the user's yes to iced_test, DEC-066 (1))
-- Waiting for the user: a yes or no to iced_test as a dev-dependency (DEC-066 (1)): S051 and every GUI step after it wait for it. S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
+- Next: S051  GUI crate, window, test harness, cards list
+- Waiting for the user: S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
   - Decisions the agents picked that the user has not confirmed yet:
@@ -18,12 +18,13 @@ Updated: 2026-10-31, by Claude (S050 done)
     DEC-042, DEC-043, DEC-044, DEC-045, DEC-046, DEC-047, DEC-048, DEC-049,
     DEC-050, DEC-051, DEC-052, DEC-053, DEC-054, DEC-055, DEC-056, DEC-057,
     DEC-058, DEC-059, DEC-060, DEC-061, DEC-062, DEC-063, DEC-064, DEC-065,
-    DEC-066, DEC-067, DEC-068, DEC-069, DEC-070.
+    DEC-066 (all but (1), the user's yes to iced_test), DEC-067, DEC-068, DEC-069, DEC-070,
+    DEC-071, DEC-072, DEC-073.
     Each says "not yet confirmed by the user" in decisions.md.
   - The GUI no longer waits for S025 (user, 2026-10-30: do all that needs no
     input or hardware). The audit re-runs after the GUI.
   - Planned GUI: Cmd-Q and the Dock's Quit cannot be stopped without `objc2` as a new direct dependency,
-    so they end a copy like a kill, with no sentence (DEC-069 (6)). Left out, each for the user to ask for:
+    so they end a copy like a kill, with no sentence at the time, and no "Before you quit" on any screen: a fixed warning stands before them (DEC-069 (6), DEC-071 (5)). Left out, each for the user to ask for:
     a folder picker (`rfd`), Copy report, more shortcuts, watching for mounts (DEC-068 (8)); Developer ID signing
     and an icon (DEC-070). Spike's scratch not kept: its numbers are in those entries.
   - The camera's PTP mode (USB without card-reader mode) is unsupported

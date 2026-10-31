@@ -172,13 +172,23 @@ picks. It is simple to use.
     says what the exit code says, in the same words, "do not format the card" included. The
     process still returns the code, as the TUI does. A quit that would hide a
     session not complete first shows why, from any screen that does not already
-    say it. Closing the window during a copy cancels it, and the window stays for
+    say it. While the session is not complete, the cards, drive, library, name and
+    check screens keep a warning in sight, "do not format the card" with the reason, whatever
+    its length, so the buttons never leave. Closing the window during a copy cancels it, and the window stays for
     the report; closing it again then quits at once, which the screen says first,
     with "do not format the card". The copying screen always says not to format
     the card until the report says so, as Cmd-Q and the Dock's Quit cannot be stopped,
-    and end it like a kill (INV-7). It refuses to run as root: the sentence goes to
+    and end it like a kill (INV-7). They are the one exception to showing why first: on
+    any screen they quit with nothing more said, so what warns is what was already on
+    screen (DEC-071). These warnings and the Cancelling sentence are never in what
+    scrolls. It refuses to run as root: the sentence goes to
     stderr and to a window that offers only Quit. Nothing it says is cut: every word
-    wraps, and what is too tall scrolls. Each screen is checked with no window, on
+    wraps, and what is too tall scrolls. A result too tall for its box, at most 240 high,
+    scrolls in that box, with the report and buttons still in sight; a refusal too tall
+    scrolls with the buttons in sight (DEC-071). Each screen and each report opens at its top
+    (DEC-073). Until a look for volumes has answered, the list screens say it is looking, show no
+    old row, and Next waits; a stuck card never freezes the window, and an older look's answer
+    is dropped (DEC-073). Each screen is checked with no window, on
     its words and on a picture read after it is drawn (DEC-066).
 
 ### Sources
@@ -400,4 +410,3 @@ picks. It is simple to use.
 - Naming a selection of photos, instead of the whole sync, is a possible
   future feature.
 - Capture date from EXIF instead of the file timestamp: maybe later.
-- `iced_test` as a dev-dependency of the GUI is asked of the user (DEC-066 (1)).
