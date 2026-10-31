@@ -8,7 +8,7 @@ Updated: 2026-10-31, by Claude (S054 done)
 
 - Last done: S054  GUI: copying: worker, progress per card and overall, ETA, cancel (545 passed, 29 ignored; script 379)
 - In progress: none
-- Next: S055  GUI: report, refused, scrolling, next card in one session; then the rest of plan.md's Open list
+- Next: S065  Start stays live, late keys stay in their field, Esc goes back; then the rest of plan.md's Open list
 - Waiting for the user: S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
