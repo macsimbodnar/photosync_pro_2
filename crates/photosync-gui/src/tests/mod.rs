@@ -21,12 +21,13 @@ use iced_test::emulator::{Emulator, Event, Mode};
 use iced_test::futures::futures::channel::mpsc::{self as emulator_channel, TryRecvError};
 use iced_test::selector::{self, Target};
 use photosync_front::app::{Effect, Exit, Key, Msg, Outcome, Screen};
+use photosync_front::{flow, text};
 
 use crate::args::{Options, parse};
 use crate::common::TempDir;
 use crate::gui::{
-    self, BANNER, BODY, DRIVE_GONE, Discover, Gui, LEAST, LOOKING, M, NOT_SAFE, PICK_A_DRIVE,
-    TITLE, WINDOW, banner, update, view,
+    self, BANNER, BODY, CARDS_ONLY_READ, DRIVE_GONE, Discover, Gui, LEAST, LIBRARY_HELP, LOOKING,
+    M, NAME_HELP, NOT_SAFE, PICK_A_DRIVE, THE_DATE_TO_COME, TITLE, WINDOW, banner, update, view,
 };
 use crate::png;
 use crate::widgets::{row_under_cursor, words};
@@ -293,10 +294,11 @@ fn a_close_on_the_cards_quits() {
 
 #[test]
 fn the_screens_to_come_are_a_bare_title() {
-    let mut gui = booted(literal(&[CARD_A], &[DRIVE_A]));
-    click(&mut gui, "Next");
-    click(&mut gui, "Next");
-    assert_eq!(gui.app.screen(), Screen::Library);
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    click(&mut gui, "Start copying");
+    assert_eq!(gui.app.screen(), Screen::Running);
     assert!(says(&gui, TITLE));
     assert!(
         !says(&gui, "Next"),
@@ -993,20 +995,27 @@ fn a_drive_picked_again_keeps_an_edited_library_and_a_new_one_sets_photos() {
 fn clicks_drawn_on_the_screen_left_do_nothing_on_a_field() {
     let mut gui = on_the_drive_screen(&[DRIVE_A]);
     click(&mut gui, "Next");
-    let library = gui.app.library().to_string();
-    for message in [
-        M::Row(PathBuf::from(CARD_A)),
-        M::Row(PathBuf::from(DRIVE_A)),
-        M::LookAgain,
-        M::Quit,
-        M::Back,
-        M::Next,
-    ] {
-        let _ = update(&mut gui, message);
-        assert_eq!(gui.app.screen(), Screen::Library);
-        assert_eq!(gui.app.library(), library);
+    for on in [Screen::Library, Screen::Name] {
+        let _ = update(&mut gui, M::Field("typed".to_string()));
+        for message in [
+            M::Row(PathBuf::from(CARD_A)),
+            M::Row(PathBuf::from(DRIVE_A)),
+            M::LookAgain,
+            M::Quit,
+            M::Start,
+        ] {
+            let _ = update(&mut gui, message);
+            assert_eq!(gui.app.screen(), on);
+            assert_eq!(field_of(&gui), "typed");
+        }
+        assert!(!gui.quit);
+        // Next and Back are this screen's own now, and they type nothing either.
+        let _ = update(&mut gui, M::Next);
+        let _ = update(&mut gui, M::Back);
+        assert_eq!(gui.app.screen(), on);
+        assert_eq!(field_of(&gui), "typed");
+        let _ = update(&mut gui, M::Next);
     }
-    assert!(!gui.quit);
 }
 
 #[test]
@@ -1184,6 +1193,29 @@ fn no_words_on_these_screens_name_a_key() {
     no_key_named(&gui, "banner of 40 syncs");
     click(&mut gui, "Next");
     assert_eq!(gui.app.screen(), Screen::Confirm);
+    no_key_named(&gui, "the check, in a session");
+
+    let folders = Folders::new();
+    let mut gui = on_the_library_screen(&folders);
+    no_key_named(&gui, "library");
+    let _ = update(&mut gui, M::Field(String::new()));
+    click(&mut gui, "Next");
+    assert!(gui.app.hint().is_some());
+    no_key_named(&gui, "the hint of no library");
+    let _ = update(&mut gui, M::Field(folders.library.clone()));
+    click(&mut gui, "Next");
+    no_key_named(&gui, "name");
+    click(&mut gui, "Next");
+    no_key_named(&gui, "check");
+    click(&mut gui, "Start copying");
+    assert_eq!(gui.app.screen(), Screen::Refused);
+    no_key_named(&gui, "refused");
+    click(&mut gui, REFUSED_BACK);
+    no_key_named(&gui, "check, banner");
+    click(&mut gui, "Back");
+    no_key_named(&gui, "name, banner");
+    click(&mut gui, "Back");
+    no_key_named(&gui, "library, banner");
 }
 
 // Through the real runtime.
@@ -1210,8 +1242,7 @@ fn play_clicks_from_the_cards_through_the_drive_screen() {
     assert_eq!(gui.app.screen(), Screen::Library);
     assert_eq!(picked(&gui), [CARD_A, CARD_B]);
     assert_eq!(gui.app.library(), "/Volumes/DRIVE_B/Photos");
-    assert!(says(&gui, TITLE));
-    assert!(!says(&gui, "Next"), "a bare title until S053");
+    assert!(says(&gui, LIBRARY_HEADING));
 }
 
 // The scroll opens at the top (DEC-073 (1)).
@@ -1257,7 +1288,7 @@ fn a_new_look_opens_at_its_top() {
 // The banner (DEC-071 (2), (3)).
 
 /// A library that is not there, refused at the check and walked back to the drive
-/// screen, by the model's keys, as the screens between are S053's.
+/// screen, by the model's keys.
 fn refused_and_walked_back(dir: &TempDir) -> Gui {
     let card = dir.0.join("CARD").display().to_string();
     let drive = dir.0.join("DRIVE").display().to_string();
@@ -2182,4 +2213,867 @@ fn the_smoke_shot_writes_its_picture_and_ends_by_quits_message() {
         fs::read(&file).unwrap(),
         png::encode(2, 2, &[9; 16]).unwrap()
     );
+}
+
+// The library, name and check screens, and the refusals before a session (S053).
+
+const LIBRARY_HEADING: &str = "3/5  Library folder on the drive";
+const NAME_HEADING: &str = "4/5  Name this sync";
+const CHECK_HEADING: &str = "5/5  Check and start";
+const REFUSED_HEADING: &str = "Stopped, no report";
+const FIELD_BUTTONS: [&str; 2] = ["Next", "Back"];
+const CHECK_BUTTONS: [&str; 3] = ["Start copying", "Back", "Quit"];
+const REFUSED_BACK: &str = "Back, to fix it";
+const NO_CARD_HINT: &str = "No card picked: the card is gone. Go back to the cards and pick one.";
+const NO_LIBRARY_HINT: &str = "Type the library folder on your drive.";
+
+/// Real folders: two cards and a drive, whose library is not made.
+struct Folders {
+    dir: TempDir,
+    card: String,
+    card_b: String,
+    drive: String,
+    library: String,
+}
+
+impl Folders {
+    fn new() -> Folders {
+        let dir = TempDir::new();
+        let path = |name: &str| dir.0.join(name).display().to_string();
+        let (card, card_b, drive) = (path("CARD"), path("CARD_B"), path("DRIVE"));
+        for folder in [&card, &card_b, &drive] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        let library = dir.0.join("DRIVE/Photos").display().to_string();
+        Folders {
+            dir,
+            card,
+            card_b,
+            drive,
+            library,
+        }
+    }
+
+    /// All there is on the drive, to see that nothing was made.
+    fn on_the_drive(&self) -> Vec<PathBuf> {
+        fs::read_dir(&self.drive)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect()
+    }
+}
+
+fn on_the_library_screen(folders: &Folders) -> Gui {
+    let mut gui = booted(literal(&[&folders.card], &[&folders.drive]));
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Library);
+    gui
+}
+
+fn to_the_check(folders: &Folders) -> Gui {
+    let mut gui = on_the_library_screen(folders);
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    gui
+}
+
+/// What the screen's field holds in the model.
+fn field_of(gui: &Gui) -> String {
+    match gui.app.screen() {
+        Screen::Library => gui.app.library().to_string(),
+        _ => gui.app.name().to_string(),
+    }
+}
+
+fn fill(gui: &mut Gui, value: &str) {
+    let _ = update(gui, M::Field(value.to_string()));
+}
+
+fn goes_to(gui: &Gui) -> String {
+    format!(
+        "New photos go to {}/{}/RAW, JPEG, ...",
+        gui.app.library().trim(),
+        gui.app.folder_preview()
+    )
+}
+
+fn check_folder_line(gui: &Gui) -> String {
+    format!("{}   {THE_DATE_TO_COME}", gui.app.folder_preview())
+}
+
+#[test]
+fn the_library_screen_shows_its_field_its_help_and_its_buttons() {
+    let folders = Folders::new();
+    let gui = on_the_library_screen(&folders);
+    assert_eq!(gui.app.library(), folders.library);
+    assert_eq!(
+        LIBRARY_HELP,
+        [
+            "The folder on the drive that holds your photos. It must exist:",
+            "phoosync pro 2 never creates it. Photos already anywhere in it are skipped.",
+        ]
+    );
+    let words = [
+        TITLE,
+        LIBRARY_HEADING,
+        LIBRARY_HELP[0],
+        LIBRARY_HELP[1],
+        folders.library.as_str(),
+        "Next",
+        "Back",
+    ];
+    screen_check(&gui, "S053", "library", &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE, LIBRARY_HEADING]);
+    fixed_in_sight(&gui, LEAST, &FIELD_BUTTONS);
+    assert!(!says(&gui, "Quit"), "q would type: DEC-068 (2)");
+}
+
+#[test]
+fn the_name_screen_shows_where_photos_go_and_it_changes_as_typed() {
+    let folders = Folders::new();
+    let mut gui = on_the_library_screen(&folders);
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Name);
+    let no_name = format!("New photos go to {}/<date>/RAW, JPEG, ...", folders.library);
+    assert!(says(&gui, &no_name), "{:?}", all_words(&gui, WINDOW));
+
+    fill(&mut gui, "Tira");
+    assert!(!says(&gui, &no_name));
+    let part = format!(
+        "New photos go to {}/<date> - Tira/RAW, JPEG, ...",
+        folders.library
+    );
+    assert!(says(&gui, &part));
+
+    fill(&mut gui, "Tirana");
+    let whole = format!(
+        "New photos go to {}/<date> - Tirana/RAW, JPEG, ...",
+        folders.library
+    );
+    assert!(!says(&gui, &part));
+    assert_eq!(whole, goes_to(&gui));
+    let words = [
+        TITLE,
+        NAME_HEADING,
+        whole.as_str(),
+        NAME_HELP,
+        "Tirana",
+        "Next",
+        "Back",
+    ];
+    screen_check(&gui, "S053", "name", &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE, NAME_HEADING]);
+    fixed_in_sight(&gui, LEAST, &FIELD_BUTTONS);
+}
+
+#[test]
+fn what_a_field_is_given_goes_through_the_models_edit() {
+    let folders = Folders::new();
+    let mut gui = on_the_library_screen(&folders);
+    click(&mut gui, "Next");
+    // A letter a button's key would mean elsewhere is a letter here.
+    fill(&mut gui, "qr nc");
+    assert_eq!(gui.app.name(), "qr nc");
+    assert_eq!(gui.app.screen(), Screen::Name);
+    // Shorter, as a backspace or a cut leaves it.
+    fill(&mut gui, "qr");
+    assert_eq!(gui.app.name(), "qr");
+    // Accents count as one each, and a pasted line's end is no part of a name.
+    fill(&mut gui, "é写\nz");
+    assert_eq!(gui.app.name(), "é写z");
+    fill(&mut gui, "");
+    assert_eq!(gui.app.name(), "");
+    assert!(!gui.quit);
+}
+
+#[test]
+fn an_empty_library_stays_and_next_says_why() {
+    let folders = Folders::new();
+    for empty in ["", "   "] {
+        let mut gui = on_the_library_screen(&folders);
+        fill(&mut gui, empty);
+        click(&mut gui, "Next");
+        assert_eq!(gui.app.screen(), Screen::Library);
+        assert_eq!(gui.app.hint(), Some(NO_LIBRARY_HINT));
+        fixed_in_sight(&gui, LEAST, &[NO_LIBRARY_HINT, "Next", "Back"]);
+        // The next key is another attempt, as in the TUI.
+        fill(&mut gui, &folders.library);
+        assert_eq!(gui.app.hint(), None);
+    }
+}
+
+#[test]
+fn back_walks_the_screens_and_keeps_what_was_typed() {
+    let folders = Folders::new();
+    let mut gui = on_the_library_screen(&folders);
+    fill(&mut gui, "/edited");
+    click(&mut gui, "Next");
+    fill(&mut gui, "Tirana");
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    click(&mut gui, "Back");
+    assert_eq!(gui.app.screen(), Screen::Name);
+    assert_eq!(gui.app.name(), "Tirana");
+    click(&mut gui, "Back");
+    assert_eq!(gui.app.screen(), Screen::Library);
+    assert_eq!(gui.app.library(), "/edited");
+    click(&mut gui, "Back");
+    assert_eq!(gui.app.screen(), Screen::Drive);
+}
+
+#[test]
+fn enter_in_a_field_is_next_and_typing_needs_no_click_first() {
+    // Through the real runtime, as only it runs a task that gives a field its focus.
+    let gui = play(
+        literal(&[CARD_A], &[DRIVE_A]),
+        &[
+            r#"click "Next""#,
+            r#"click "Next""#,
+            r#"type "2""#,
+            "type enter",
+            r#"type "Tirana""#,
+            "type enter",
+            r#"expect "Start copying""#,
+        ],
+    );
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    assert_eq!(gui.app.library(), "/Volumes/DRIVE_A/Photos2");
+    assert_eq!(gui.app.name(), "Tirana");
+    assert!(gui.kept_job.is_none(), "Enter here only moved to the check");
+}
+
+#[test]
+fn back_to_a_field_types_at_its_end() {
+    let gui = play(
+        literal(&[CARD_A], &[DRIVE_A]),
+        &[
+            r#"click "Next""#,
+            r#"click "Next""#,
+            "type enter",
+            r#"type "Tirana""#,
+            r#"click "Back""#,
+            r#"type "2""#,
+            "type enter",
+            r#"type "!""#,
+        ],
+    );
+    assert_eq!(gui.app.library(), "/Volumes/DRIVE_A/Photos2");
+    assert_eq!(gui.app.name(), "Tirana!");
+}
+
+#[test]
+fn enter_on_an_empty_library_stays_as_next_does() {
+    let gui = play(
+        literal(&[CARD_A], &[DRIVE_A]),
+        &[r#"click "Next""#, r#"click "Next""#, "type enter"],
+    );
+    assert_eq!(gui.app.screen(), Screen::Name, "the default library");
+
+    // Every letter of it gone, by the field's own keys: the model hears each.
+    let mut lines = vec![r#"click "Next""#, r#"click "Next""#];
+    lines.extend(std::iter::repeat_n(
+        "type backspace",
+        "/Volumes/DRIVE_A/Photos".len(),
+    ));
+    lines.push("type enter");
+    let gui = play(literal(&[CARD_A], &[DRIVE_A]), &lines);
+    assert_eq!(gui.app.library(), "");
+    assert_eq!(gui.app.screen(), Screen::Library);
+    assert_eq!(gui.app.hint(), Some(NO_LIBRARY_HINT));
+}
+
+#[test]
+fn the_check_lists_every_card_the_library_the_folder_and_its_buttons() {
+    let folders = Folders::new();
+    let mut gui = booted(literal(
+        &[&folders.card, &folders.card_b],
+        &[&folders.drive],
+    ));
+    click(&mut gui, &folders.card);
+    click(&mut gui, &folders.card_b);
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    fill(&mut gui, "Tirana");
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    let line = format!("<date> - Tirana   {THE_DATE_TO_COME}");
+    assert_eq!(line, check_folder_line(&gui));
+    assert_eq!(THE_DATE_TO_COME, "(the date of the earliest new photo)");
+    assert_eq!(
+        CARDS_ONLY_READ,
+        "The cards are only read. Photos already in the library are skipped."
+    );
+    let words = [
+        TITLE,
+        CHECK_HEADING,
+        folders.card.as_str(),
+        folders.card_b.as_str(),
+        folders.library.as_str(),
+        line.as_str(),
+        CARDS_ONLY_READ,
+        "Start copying",
+        "Back",
+        "Quit",
+    ];
+    screen_check(&gui, "S053", "check_two_cards", &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE, CHECK_HEADING]);
+    fixed_in_sight(&gui, LEAST, &CHECK_BUTTONS);
+    assert!(!says(&gui, "Next"));
+
+    click(&mut gui, "Quit");
+    assert!(gui.quit);
+    assert!(gui.kept_job.is_none());
+}
+
+#[test]
+fn twenty_cards_on_the_check_scroll_and_the_buttons_stay() {
+    let folders = Folders::new();
+    let cards: Vec<String> = (0..20).map(|n| format!("/Volumes/CARD_{n:02}")).collect();
+    let names: Vec<&str> = cards.iter().map(String::as_str).collect();
+    let mut gui = booted(literal(&names, &[&folders.drive]));
+    for card in &cards {
+        let _ = update(&mut gui, M::Row(PathBuf::from(card)));
+    }
+    assert_eq!(gui.app.picked().len(), 20);
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    let body: Vec<&str> = names
+        .iter()
+        .copied()
+        .chain([CARDS_ONLY_READ, folders.library.as_str()])
+        .collect();
+    screen_check_scrolling(&gui, "S053", "check_twenty_cards", &[TITLE], &body);
+    fixed_in_sight(&gui, LEAST, &CHECK_BUTTONS);
+}
+
+#[test]
+fn a_long_library_shows_whole_on_the_name_screen_and_the_check() {
+    let folders = Folders::new();
+    let mut gui = on_the_library_screen(&folders);
+    let long = long_path("/Volumes/DRIVE");
+    fill(&mut gui, &long);
+    click(&mut gui, "Next");
+    let preview = goes_to(&gui);
+    in_sight(&gui, LEAST, &[&preview]);
+    fixed_in_sight(&gui, LEAST, &FIELD_BUTTONS);
+    picture_at(&gui, LEAST, "S053", "name_long_library_least");
+    click(&mut gui, "Next");
+    in_sight(&gui, LEAST, &[&long]);
+    fixed_in_sight(&gui, LEAST, &CHECK_BUTTONS);
+    picture_at(&gui, LEAST, "S053", "check_long_library_least");
+}
+
+#[test]
+fn a_library_that_is_not_there_is_refused_at_start_and_can_be_fixed() {
+    let folders = Folders::new();
+    let mut gui = to_the_check(&folders);
+    click(&mut gui, "Start copying");
+
+    let library = PathBuf::from(&folders.library);
+    let sentence = text::refusal(&flow::start_found(&library, None).unwrap_err());
+    let start = format!("The library folder {} does not exist.", folders.library);
+    assert!(sentence.starts_with(&start), "{sentence}");
+    assert_eq!(gui.app.screen(), Screen::Refused);
+    assert!(!gui.app.in_session(), "no session made");
+    assert!(gui.kept_job.is_none());
+    assert_eq!(
+        folders.on_the_drive(),
+        Vec::<PathBuf>::new(),
+        "no folder made"
+    );
+    assert!(!says(&gui, "Next card"));
+    assert!(!says(&gui, NOT_SAFE), "it says it itself: DEC-071 (2)");
+    let words = [
+        TITLE,
+        REFUSED_HEADING,
+        sentence.as_str(),
+        REFUSED_BACK,
+        "Quit",
+    ];
+    screen_check_scrolling(&gui, "S053", "refused_no_library", &words, &[&sentence]);
+    fixed_in_sight(&gui, LEAST, &[TITLE, REFUSED_HEADING, REFUSED_BACK, "Quit"]);
+
+    click(&mut gui, REFUSED_BACK);
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    click(&mut gui, "Back");
+    click(&mut gui, "Back");
+    assert_eq!(gui.app.screen(), Screen::Library);
+
+    let fixed = folders.dir.0.join("DRIVE/Fixed");
+    fs::create_dir_all(&fixed).unwrap();
+    fill(&mut gui, &fixed.display().to_string());
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    assert!(says(&gui, &fixed.display().to_string()));
+
+    // The next Start goes on: the model's own answer, as nothing here runs it.
+    match gui.app.update(Msg::Key(Key::Enter)) {
+        Some(Effect::Start(job)) => {
+            assert_eq!(job.sources, [PathBuf::from(&folders.card)]);
+            assert_eq!(flow::lock(&job.session).library(), fixed);
+        }
+        other => panic!("no start: {other:?}"),
+    }
+    assert!(gui.app.in_session());
+    assert_eq!(
+        fs::read_dir(&fixed).unwrap().count(),
+        0,
+        "the job did not run"
+    );
+}
+
+#[test]
+fn start_copying_keeps_the_job_and_runs_nothing() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    click(&mut gui, "Start copying");
+    assert_eq!(gui.app.screen(), Screen::Running);
+    assert!(gui.app.in_session());
+    let job = gui.kept_job.as_ref().expect("the job is kept");
+    assert_eq!(job.sources, [PathBuf::from(&folders.card)]);
+    assert_eq!(
+        flow::lock(&job.session).library(),
+        PathBuf::from(&folders.library)
+    );
+    assert_eq!(fs::read_dir(&folders.library).unwrap().count(), 0);
+}
+
+#[test]
+fn a_bad_name_is_refused_the_same_with_no_card_read_and_can_be_fixed() {
+    let long = "n".repeat(243);
+    for (name, picture_name) in [
+        ("a/b", "refused_bad_name"),
+        (long.as_str(), "refused_long_name"),
+    ] {
+        let folders = Folders::new();
+        fs::create_dir_all(&folders.library).unwrap();
+        // This card is not there: reading it would be another refusal.
+        let mut gui = booted(literal(&["/Volumes/NO_SUCH_CARD"], &[&folders.drive]));
+        click(&mut gui, "Next");
+        click(&mut gui, "Next");
+        click(&mut gui, "Next");
+        fill(&mut gui, name);
+        click(&mut gui, "Next");
+        click(&mut gui, "Start copying");
+
+        let library = PathBuf::from(&folders.library);
+        let sentence = text::refusal(&flow::start_found(&library, Some(name)).unwrap_err());
+        assert!(sentence.starts_with("The name "), "{sentence}");
+        assert_eq!(gui.app.screen(), Screen::Refused);
+        assert!(!gui.app.in_session(), "no session made");
+        assert!(gui.kept_job.is_none());
+        assert!(!says(&gui, "Next card"));
+        assert_eq!(fs::read_dir(&library).unwrap().count(), 0, "no folder made");
+        let words = [
+            TITLE,
+            REFUSED_HEADING,
+            sentence.as_str(),
+            REFUSED_BACK,
+            "Quit",
+        ];
+        screen_check_scrolling(&gui, "S053", picture_name, &words, &[&sentence]);
+        fixed_in_sight(&gui, LEAST, &[REFUSED_BACK, "Quit"]);
+
+        click(&mut gui, REFUSED_BACK);
+        click(&mut gui, "Back");
+        assert_eq!(gui.app.screen(), Screen::Name);
+        assert_eq!(gui.app.name(), name, "still there to fix");
+        fill(&mut gui, "Tirana");
+        click(&mut gui, "Next");
+        click(&mut gui, "Start copying");
+        assert_eq!(gui.app.screen(), Screen::Running);
+        assert!(gui.app.in_session());
+    }
+}
+
+#[test]
+fn refused_buttons_answer_and_quit_quits() {
+    let folders = Folders::new();
+    let mut gui = to_the_check(&folders);
+    click(&mut gui, "Start copying");
+    click(&mut gui, "Quit");
+    assert!(gui.quit);
+    assert_eq!(gui.app.exit().code, 2);
+}
+
+#[test]
+fn no_sync_starts_with_the_only_card_dropped_by_look_again() {
+    let (discover, looks) = blocked_discovery();
+    let (mut gui, _) = Gui::boot(discover, None);
+    next_look(&looks)
+        .send(volumes(&[CARD_A], &[DRIVE_A], &[]))
+        .unwrap();
+    settle(&mut gui);
+    click(&mut gui, "Next");
+    click(&mut gui, "Look again");
+    next_look(&looks)
+        .send(volumes(&[], &[DRIVE_A], &[]))
+        .unwrap();
+    settle(&mut gui);
+    assert!(gui.app.picked().is_empty());
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+
+    click(&mut gui, "Start copying");
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    assert!(!gui.app.in_session());
+    assert!(gui.kept_job.is_none());
+    fixed_in_sight(&gui, LEAST, &[NO_CARD_HINT]);
+    fixed_in_sight(&gui, LEAST, &CHECK_BUTTONS);
+    no_key_named(&gui, "the check's hint");
+    picture_at(&gui, WINDOW, "S053", "check_no_card");
+}
+
+#[test]
+fn the_banner_holds_on_the_library_name_and_check_screens() {
+    let folders = Folders::new();
+    let mut gui = to_the_check(&folders);
+    click(&mut gui, "Start copying");
+    let message = gui.app.exit().message.unwrap();
+    assert_eq!(gui.app.exit().code, 2);
+    assert!(message.contains("does not exist"), "{message}");
+
+    click(&mut gui, REFUSED_BACK);
+    let line = check_folder_line(&gui);
+    in_sight(&gui, LEAST, &[&folders.library, &line]);
+    fixed_in_sight(&gui, LEAST, &[NOT_SAFE]);
+    fixed_in_sight(&gui, LEAST, &CHECK_BUTTONS);
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
+    let words = [
+        NOT_SAFE,
+        message.as_str(),
+        folders.card.as_str(),
+        "Start copying",
+    ];
+    screen_check(&gui, "S053", "check_banner", &words);
+
+    click(&mut gui, "Back");
+    fill(&mut gui, "Tirana");
+    in_sight(&gui, LEAST, &["Tirana"]);
+    fixed_in_sight(&gui, LEAST, &[NOT_SAFE]);
+    fixed_in_sight(&gui, LEAST, &FIELD_BUTTONS);
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
+    screen_check(
+        &gui,
+        "S053",
+        "name_banner",
+        &[NOT_SAFE, message.as_str(), "Tirana"],
+    );
+
+    click(&mut gui, "Back");
+    in_sight(&gui, LEAST, &[&folders.library]);
+    fixed_in_sight(&gui, LEAST, &[NOT_SAFE]);
+    fixed_in_sight(&gui, LEAST, &FIELD_BUTTONS);
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
+    let words = [NOT_SAFE, message.as_str(), folders.library.as_str(), "Next"];
+    screen_check(&gui, "S053", "library_banner", &words);
+}
+
+#[test]
+fn a_long_banner_leaves_each_field_and_button() {
+    let folders = Folders::new();
+    let mut gui = on_the_library_screen(&folders);
+    let long = "/not_there".repeat(100);
+    fill(&mut gui, &long);
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    click(&mut gui, "Start copying");
+    let message = gui.app.exit().message.unwrap();
+    click(&mut gui, REFUSED_BACK);
+    fixed_in_sight(&gui, LEAST, &[NOT_SAFE]);
+    fixed_in_sight(&gui, LEAST, &CHECK_BUTTONS);
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
+    let (_, height, content) = scroll_of(&mut screen(&gui, LEAST), BANNER);
+    assert!(height <= 104.0, "{height}");
+    assert!(content > height, "{content} in {height}");
+
+    click(&mut gui, "Back");
+    fill(&mut gui, "Tirana");
+    in_sight(&gui, LEAST, &["Tirana"]);
+    fixed_in_sight(&gui, LEAST, &FIELD_BUTTONS);
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
+    click(&mut gui, "Back");
+    in_sight(&gui, LEAST, &[&long]);
+    fixed_in_sight(&gui, LEAST, &FIELD_BUTTONS);
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
+    picture_at(&gui, LEAST, "S053", "library_long_banner_least");
+}
+
+#[test]
+fn the_check_of_a_session_says_what_stays_with_no_key_named() {
+    let (mut gui, _dir) = forty_named_syncs();
+    let message = gui.app.exit().message.unwrap();
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    let stays = "Sync 41 of this session: the library and name stay as they are. Click Quit to change them.";
+    // Every sync crashed before a folder was made, so the date is still to come.
+    let line = check_folder_line(&gui);
+    in_sight(&gui, LEAST, &[CARD_A]);
+    fixed_in_sight(&gui, LEAST, &["Sync 41: check and start", NOT_SAFE]);
+    fixed_in_sight(&gui, LEAST, &CHECK_BUTTONS);
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
+    screen_check_scrolling(&gui, "S053", "check_in_session", &[TITLE], &[stays, &line]);
+
+    click(&mut gui, "Back");
+    assert_eq!(gui.app.screen(), Screen::Sources);
+}
+
+#[test]
+fn stale_clicks_start_nothing_on_the_check_or_the_refusal() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    let library = gui.app.library().to_string();
+    // Left from the name screen: its Next, and Enter in its field, send this.
+    for message in [
+        M::Next,
+        M::Field("q r n".to_string()),
+        M::Row(PathBuf::from(&folders.card)),
+        M::LookAgain,
+    ] {
+        let _ = update(&mut gui, message);
+        assert_eq!(gui.app.screen(), Screen::Confirm);
+        assert!(gui.kept_job.is_none());
+        assert!(!gui.app.in_session());
+    }
+    // Letters that mean something off a field: q quits, a space picks.
+    assert!(!gui.quit);
+    assert_eq!(gui.app.library(), library);
+    assert_eq!(gui.app.name(), "");
+
+    let folders = Folders::new();
+    let mut gui = to_the_check(&folders);
+    click(&mut gui, "Start copying");
+    assert_eq!(gui.app.screen(), Screen::Refused);
+    for message in [
+        M::Start,
+        M::Next,
+        M::Field("q r n".to_string()),
+        M::Row(PathBuf::from(&folders.card)),
+        M::LookAgain,
+    ] {
+        let _ = update(&mut gui, message);
+        assert_eq!(gui.app.screen(), Screen::Refused);
+    }
+    assert!(!gui.quit);
+
+    // Off these screens, the last click of Start copying has nothing to start.
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    click(&mut gui, "Start copying");
+    let _ = update(&mut gui, M::Start);
+    let _ = update(&mut gui, M::Quit);
+    let _ = update(&mut gui, M::Back);
+    let _ = update(&mut gui, M::Next);
+    assert_eq!(gui.app.screen(), Screen::Running);
+    assert!(!gui.quit);
+
+    // A field's stale words reach no list either: a space would pick the row.
+    let folders = Folders::new();
+    let mut gui = booted(literal(&[&folders.card], &[&folders.drive]));
+    let _ = update(&mut gui, M::Field(" ".to_string()));
+    let _ = update(&mut gui, M::Start);
+    assert_eq!(gui.app.screen(), Screen::Sources);
+    assert!(gui.app.picked().is_empty());
+    assert_eq!(gui.app.library(), "");
+}
+
+/// The widths a button's words stand in, with a button's own padding either side.
+fn across(gui: &Gui, size: Size, words: &str) -> (f32, f32) {
+    let found = screen(gui, size).find(words).unwrap();
+    let bounds = found.bounds();
+    (bounds.x - 10.0, bounds.x + bounds.width + 10.0)
+}
+
+fn apart(one: (f32, f32), other: (f32, f32)) -> bool {
+    one.1 <= other.0 || other.1 <= one.0
+}
+
+#[test]
+fn the_second_click_of_a_double_lands_on_nothing_that_starts_or_quits() {
+    let folders = Folders::new();
+    for size in [WINDOW, LEAST] {
+        let mut gui = on_the_library_screen(&folders);
+        let next = across(&gui, size, "Next");
+        click(&mut gui, "Next");
+        assert_eq!(next, across(&gui, size, "Next"), "library and name alike");
+        click(&mut gui, "Next");
+        let start = across(&gui, size, "Start copying");
+        let quit = across(&gui, size, "Quit");
+        assert!(apart(next, start), "Next {next:?}, Start copying {start:?}");
+        assert!(apart(next, quit), "Next {next:?}, Quit {quit:?}");
+
+        click(&mut gui, "Start copying");
+        let back = across(&gui, size, REFUSED_BACK);
+        let refused_quit = across(&gui, size, "Quit");
+        assert!(apart(start, back), "Start {start:?}, Back {back:?}");
+        assert!(
+            apart(start, refused_quit),
+            "Start {start:?}, Quit {refused_quit:?}"
+        );
+        assert!(
+            apart(back, quit),
+            "Back, to fix it {back:?}, the check's Quit {quit:?}"
+        );
+    }
+}
+
+#[test]
+fn the_words_here_are_the_tuis_words() {
+    let tui = include_str!("../../../photosync/src/tui/view.rs");
+    for words in [
+        LIBRARY_HELP[0],
+        LIBRARY_HELP[1],
+        NAME_HELP,
+        CARDS_ONLY_READ,
+        THE_DATE_TO_COME,
+        gui::THE_SESSIONS_FOLDER,
+        "New photos go to {}/{}/RAW, JPEG, ...",
+        LIBRARY_HEADING,
+        NAME_HEADING,
+        CHECK_HEADING,
+        REFUSED_HEADING,
+    ] {
+        assert!(tui.contains(words), "{words}");
+    }
+}
+
+// A look that misses the chosen drive resets the library (specs).
+
+#[test]
+fn a_drive_gone_and_back_and_taken_again_counts_as_changed_and_resets_an_edited_library() {
+    let (discover, looks) = blocked_discovery();
+    let (mut gui, _) = Gui::boot(discover, None);
+    next_look(&looks)
+        .send(volumes(&[CARD_A], &[DRIVE_A], &[]))
+        .unwrap();
+    settle(&mut gui);
+    click(&mut gui, "Next");
+    click(&mut gui, DRIVE_A);
+    click(&mut gui, "Next");
+    fill(&mut gui, "/Volumes/DRIVE_A/Edited");
+    assert_eq!(gui.app.library(), "/Volumes/DRIVE_A/Edited");
+    click(&mut gui, "Back");
+    assert_eq!(gui.app.screen(), Screen::Drive);
+
+    look_gives(&mut gui, &looks, &[]);
+    assert_eq!(gui.app.drive(), None, "the look missed it");
+    look_gives(&mut gui, &looks, &[DRIVE_A]);
+    assert_eq!(gui.marked_drive(), None, "DEC-077 (4)");
+    click(&mut gui, DRIVE_A);
+    click(&mut gui, "Next");
+
+    assert_eq!(gui.app.screen(), Screen::Library);
+    assert_eq!(gui.app.library(), "/Volumes/DRIVE_A/Photos");
+    in_sight(&gui, LEAST, &["/Volumes/DRIVE_A/Photos"]);
+    assert!(!says(&gui, "/Volumes/DRIVE_A/Edited"));
+}
+
+// Where the marked drive goes below the fold (DEC-075 (9), DEC-077 (8)).
+
+/// Rows shown whole with the body at its top: what a marked row needs to be seen.
+fn whole_rows(gui: &Gui, size: Size, rows: &[String]) -> usize {
+    let mut ui = screen(gui, size);
+    rows.iter()
+        .filter(|row| {
+            let found = ui.find(row.as_str()).unwrap();
+            let bounds = found.bounds();
+            found
+                .visible_bounds()
+                .is_some_and(|seen| seen.height >= bounds.height - 0.5)
+        })
+        .count()
+}
+
+#[test]
+fn a_marked_drive_goes_below_the_fold_at_the_number_the_decisions_give() {
+    let rows: Vec<String> = (0..40).map(|n| format!("/Volumes/DRIVE_{n:02}")).collect();
+    let names: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let mut gui = booted(literal(&[CARD_A], &names));
+    click(&mut gui, "Next");
+    click(&mut gui, &rows[0]);
+    let plain = (
+        whole_rows(&gui, WINDOW, &rows),
+        whole_rows(&gui, LEAST, &rows),
+    );
+
+    // One sentence with a short path: two rows of the banner's box, or three at the least.
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    click(&mut gui, "Start copying");
+    assert_eq!(gui.app.screen(), Screen::Refused);
+    for _ in 0..4 {
+        let _ = update(&mut gui, M::Back);
+    }
+    assert_eq!(gui.app.screen(), Screen::Drive);
+    let banner = (
+        whole_rows(&gui, WINDOW, &rows),
+        whole_rows(&gui, LEAST, &rows),
+    );
+
+    // Enough words to fill the box's five rows.
+    let _ = update(&mut gui, M::Next);
+    fill(&mut gui, &"/not_there".repeat(100));
+    let _ = update(&mut gui, M::Next);
+    let _ = update(&mut gui, M::Next);
+    let _ = update(&mut gui, M::Start);
+    assert_eq!(gui.app.screen(), Screen::Refused);
+    for _ in 0..4 {
+        let _ = update(&mut gui, M::Back);
+    }
+    assert_eq!(gui.app.screen(), Screen::Drive);
+    let tallest = (
+        whole_rows(&gui, WINDOW, &rows),
+        whole_rows(&gui, LEAST, &rows),
+    );
+
+    // If the look changes, so do DEC-075 (9) and DEC-077 (8).
+    assert_eq!((plain, banner, tallest), ((13, 9), (11, 6), (9, 4)));
+    let mut ui = screen(&gui, WINDOW);
+    let first = ui.find(rows[0].as_str()).unwrap().bounds().y;
+    let second = ui.find(rows[1].as_str()).unwrap().bounds().y;
+    assert!((second - first - 36.8).abs() < 0.01, "{}", second - first);
+}
+
+#[test]
+fn a_marked_drive_below_the_fold_is_what_next_takes_and_the_library_names_it() {
+    let rows: Vec<String> = (0..40).map(|n| format!("/Volumes/DRIVE_{n:02}")).collect();
+    let names: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let mut gui = booted(literal(&[CARD_A], &names));
+    click(&mut gui, "Next");
+    // The wheel took the user there: it is out of sight at the top.
+    let _ = update(&mut gui, M::Row(PathBuf::from(&rows[39])));
+    let seen = screen(&gui, WINDOW)
+        .find(rows[39].as_str())
+        .unwrap()
+        .visible_bounds();
+    assert!(seen.is_none(), "{seen:?}");
+    assert_eq!(gui.marked_drive(), Some(PathBuf::from(&rows[39]).as_path()));
+    fixed_in_sight(&gui, WINDOW, &["Next"]);
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.library(), "/Volumes/DRIVE_39/Photos");
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    assert!(says(&gui, "/Volumes/DRIVE_39/Photos"), "the check names it");
+}
+
+#[test]
+fn a_refusals_sentence_can_be_read() {
+    let style = iced::widget::container::danger(&Theme::Dark);
+    let Some(iced::Background::Color(behind)) = style.background else {
+        panic!("the red must show: {style:?}");
+    };
+    let ratio = contrast(style.text_color.unwrap(), behind);
+    assert!(ratio >= 4.5, "{ratio}");
 }

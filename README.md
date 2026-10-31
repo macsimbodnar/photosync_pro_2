@@ -7,7 +7,8 @@ separate folders under one folder per sync, optionally named
 first, then Linux.
 
 Status: early development. The CLI and the TUI work. A GUI is being built: `photosync-gui`
-opens its window and lists the cards and the drives, and it cannot copy yet. What
+walks from the cards and the drives through the library, the name and the check, and says
+why it refuses, and it cannot copy yet: Start copying ends on a bare title. What
 it must do is in `adocs/specs.md`, and the plan is in `adocs/plan.md`.
 
 ## Usage

@@ -163,7 +163,8 @@ picks. It is simple to use.
   - A closed stdout never stops a sync nor panics: the exit code stays
     within 0/1/2.
   - GUI: a native Rust GUI in iced (DEC-065), being built step by step: today its window
-    and the cards and drive screens; the other screens are a bare title until their steps (S053 on), so
+    and the cards, drive, library, name, check and refused screens. Start copying only keeps the sync, unrun, and
+    the copying and report screens are a bare title until their steps (S054 on), so
     it cannot copy yet. What follows is what it must become. It
     must need no change to the core beyond new API, which keeps INV-8 true.
     It is its own binary, `photosync-gui`, over the same model, worker and
@@ -193,11 +194,15 @@ picks. It is simple to use.
     (DEC-073, DEC-075). Until a look for volumes has answered, the list screens say it is looking, show no
     old row, and Next waits; a stuck card never freezes the window, and an older look's answer
     is dropped (DEC-073). The drive list has one mark, and it is what Next takes: a click moves it at once, as
-    a radio button does, and the library is reset only when Next takes another drive than the last. It stays on its drive by
+    a radio button does. The library goes back to `<drive>/Photos` when Next takes another drive than the last, and when the last was gone at a
+    look: taking that drive again counts as another, so an edited library is reset, and the next screen shows the path (DEC-079 (10)). Clicks there and back reset nothing. The mark stays on its drive by
     path across a look. With two or more drives listed and none picked there is no mark, and Next is held with a
     hint, so a double click on the cards' Next takes no drive unseen; the only drive listed is marked. A picked
     drive a look does not find has no mark and no stand-in, even one drive left: Next is held with a hint until
-    a click. With no drive listed, Next stays and says why (DEC-077). Each screen is checked with no window, on
+    a click. With no drive listed, Next stays and says why (DEC-077). What is typed in the Library and Name fields stays on its one
+    line, as in the TUI; the name screen and the check show it whole, and each field has the focus when its screen opens. Only Start copying starts a
+    sync: a click left from another screen does not, and it stands apart from where Next was, so the second click of a double
+    does not pass the check, which names the library before any copy (DEC-079). Each screen is checked with no window, on
     its words and on a picture read after it is drawn (DEC-066).
 
 ### Sources

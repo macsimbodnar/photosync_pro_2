@@ -9,14 +9,14 @@ use std::thread;
 
 use iced::futures::channel::oneshot;
 use iced::widget::scrollable::RelativeOffset;
-use iced::widget::{column, operation, row, scrollable};
+use iced::widget::{Column, Space, column, operation, row, scrollable};
 use iced::{Element, Font, Length, Size, Subscription, Task, Theme, window};
 use photosync_core::Volumes;
-use photosync_front::app::{App, Effect, Exit, Key, Msg, Outcome, Screen};
+use photosync_front::app::{App, Effect, Exit, Job, Key, Msg, Outcome, Screen};
 use photosync_front::system::say;
 
 use crate::png;
-use crate::widgets::{action, hint, list_row, red_banner, word_box, words};
+use crate::widgets::{action, field, hint, list_row, red_banner, red_box, under, word_box, words};
 
 /// The name the user sees (DEC-069 (1)).
 pub const TITLE: &str = "phoosync pro 2";
@@ -31,11 +31,24 @@ pub const PICK_A_DRIVE: &str = "Click the drive to copy to.";
 pub const DRIVE_GONE: &str =
     "The drive you picked is gone. Click another, or plug it in and click Look again.";
 
+/// The words the TUI's view holds, with no key in them (DEC-068 (7)).
+pub const LIBRARY_HELP: [&str; 2] = [
+    "The folder on the drive that holds your photos. It must exist:",
+    "phoosync pro 2 never creates it. Photos already anywhere in it are skipped.",
+];
+pub const NAME_HELP: &str =
+    "A folder with this name from an earlier sync is reused. Empty: no name.";
+pub const CARDS_ONLY_READ: &str =
+    "The cards are only read. Photos already in the library are skipped.";
+pub const THE_DATE_TO_COME: &str = "(the date of the earliest new photo)";
+pub const THE_SESSIONS_FOLDER: &str = "(this session's folder)";
+
 /// The banner's line (DEC-071 (2)).
 pub const NOT_SAFE: &str = "Not every photo is known to be on the drive: do not format the card.";
 /// The scrollables' fixed ids, as `Scrollable::diff` never looks at an id (DEC-073 (1)).
 pub const BODY: &str = "body";
 pub const BANNER: &str = "banner";
+pub const FIELD: &str = "field";
 /// The most the banner's box takes: five rows (DEC-071 (3)).
 const BANNER_MOST: f32 = 104.0;
 
@@ -47,7 +60,11 @@ pub type Discover = Arc<dyn Fn() -> Volumes + Send + Sync>;
 #[derive(Debug, Clone)]
 pub enum M {
     Row(PathBuf),
+    /// All a field holds now, after a key or a paste.
+    Field(String),
     Next,
+    /// Its own message, never `Next`: a click left from the name screen must start nothing.
+    Start,
     Back,
     LookAgain,
     Quit,
@@ -87,6 +104,8 @@ pub struct Gui {
     picked_drive: Option<PathBuf>,
     /// A picked drive a look did not find, until the next click. Nothing stands in for it.
     lost_drive: Option<PathBuf>,
+    /// The sync Start copying asked for. S054 runs it; until then nothing does.
+    pub kept_job: Option<Job>,
 }
 
 impl Gui {
@@ -107,6 +126,7 @@ impl Gui {
             smoke: smoke_png.map(|path| Smoke { path, frames: 2 }),
             picked_drive: None,
             lost_drive: None,
+            kept_job: None,
         };
         let task = gui.look();
         (gui, task)
@@ -189,8 +209,26 @@ impl Gui {
                 self.quit = true;
                 iced::exit()
             }
-            // Only the check screen starts a sync, and no window reaches it before S053.
-            Some(Effect::Start(_)) => unreachable!("no sync can start before S053"),
+            // S054 runs it. Dropped, the screen would stand for a sync nobody holds.
+            Some(Effect::Start(job)) => {
+                self.kept_job = Some(job);
+                Task::none()
+            }
+        }
+    }
+
+    /// A field gives all it holds; the model hears it as keys, so `edit` still decides what
+    /// a field can hold (DEC-068 (2)).
+    fn retype(&mut self, new: &str) {
+        let old = match self.app.screen() {
+            Screen::Library => self.app.library(),
+            _ => self.app.name(),
+        };
+        for _ in 0..old.chars().count() {
+            self.app.update(Msg::Key(Key::Backspace));
+        }
+        for c in new.chars() {
+            self.app.update(Msg::Key(Key::Char(c)));
         }
     }
 
@@ -297,6 +335,9 @@ pub fn update(gui: &mut Gui, message: M) -> Task<M> {
         task,
         operation::snap_to(BODY, RelativeOffset::START),
         operation::snap_to(BANNER, RelativeOffset::START),
+        // Typing and Enter need it, and the focus also puts the cursor at the end. A screen
+        // with no field has no such id, so this does nothing there.
+        operation::focus(FIELD),
     ])
 }
 
@@ -304,15 +345,29 @@ fn step(gui: &mut Gui, message: M) -> Task<M> {
     let held = gui.looking();
     let screen = gui.app.screen();
     let on_a_list = matches!(screen, Screen::Sources | Screen::Drive);
+    let on_a_field = matches!(screen, Screen::Library | Screen::Name);
     match message {
         // Held here too: a click drawn on what was shown before can still arrive. Its key
-        // would type in a field, and Esc on the cards would quit.
-        M::Row(_) | M::Next | M::LookAgain | M::Quit | M::Back if !on_a_list => Task::none(),
-        M::Back if screen != Screen::Drive => Task::none(),
+        // would type in a field, Esc on the cards would quit, and Enter on the check would
+        // start, so only the screen's own buttons get through (DEC-075 (1), DEC-079 (1)).
+        M::Row(_) | M::LookAgain if !on_a_list => Task::none(),
+        M::Next if !on_a_list && !on_a_field => Task::none(),
+        M::Field(_) if !on_a_field => Task::none(),
+        M::Start if screen != Screen::Confirm => Task::none(),
+        M::Quit if !on_a_list && !matches!(screen, Screen::Confirm | Screen::Refused) => {
+            Task::none()
+        }
+        M::Back if matches!(screen, Screen::Sources | Screen::Running | Screen::Report) => {
+            Task::none()
+        }
         M::Row(_) | M::Next if held => Task::none(),
         M::Row(path) => gui.pick(&path),
+        M::Field(value) => {
+            gui.retype(&value);
+            Task::none()
+        }
         M::Next if screen == Screen::Drive => gui.take_marked_drive(),
-        M::Next => gui.key(Key::Enter),
+        M::Next | M::Start => gui.key(Key::Enter),
         M::LookAgain => gui.key(Key::Char('r')),
         M::Quit => gui.key(Key::Char('q')),
         M::Looked => {
@@ -332,7 +387,11 @@ pub fn view(gui: &Gui) -> Element<'_, M> {
     match gui.app.screen() {
         Screen::Sources => cards(gui),
         Screen::Drive => drives(gui),
-        // Each comes with its own step, S053 on.
+        Screen::Library => library(gui),
+        Screen::Name => name(gui),
+        Screen::Confirm => check(gui),
+        Screen::Refused => refused(gui),
+        // Each comes with its own step, S054 on.
         _ => column![words(TITLE).size(24)].padding(16).into(),
     }
 }
@@ -391,6 +450,105 @@ fn drives(gui: &Gui) -> Element<'_, M> {
     )
 }
 
+fn library(gui: &Gui) -> Element<'_, M> {
+    let body = column![
+        field(
+            FIELD,
+            "Library folder",
+            gui.app.library(),
+            M::Field,
+            M::Next
+        ),
+        words(LIBRARY_HELP[0]),
+        words(LIBRARY_HELP[1]),
+    ];
+    field_screen(gui, "3/5  Library folder on the drive", body)
+}
+
+fn name(gui: &Gui) -> Element<'_, M> {
+    let app = &gui.app;
+    let goes_to = format!(
+        "New photos go to {}/{}/RAW, JPEG, ...",
+        app.library().trim(),
+        app.folder_preview()
+    );
+    let body = column![
+        field(FIELD, "No name", app.name(), M::Field, M::Next),
+        words(goes_to),
+        words(NAME_HELP),
+    ];
+    field_screen(gui, "4/5  Name this sync", body)
+}
+
+/// No Quit: its key would type, and a close of the window is there (DEC-068 (2)). The field
+/// is in the body: fixed, it could not leave room under a five-row banner at the least size.
+fn field_screen<'a>(gui: &'a Gui, heading: &'a str, body: Column<'a, M>) -> Element<'a, M> {
+    let buttons = row![action("Next", Some(M::Next)), action("Back", Some(M::Back)),];
+    fixed_around(gui, heading.to_string(), body.spacing(8), buttons)
+}
+
+fn check(gui: &Gui) -> Element<'_, M> {
+    let app = &gui.app;
+    let in_session = app.in_session();
+    let heading = if in_session {
+        format!("Sync {}: check and start", app.syncs() + 1)
+    } else {
+        "5/5  Check and start".to_string()
+    };
+    let cards = app.picked().iter().fold(column![], |list, card| {
+        list.push(words(card.display().to_string()))
+    });
+    let fixed = if app.session_folder().is_some() {
+        THE_SESSIONS_FOLDER
+    } else {
+        THE_DATE_TO_COME
+    };
+    let mut body = column![
+        under("Copy from:", cards.spacing(2)),
+        under("Into the library:", column![words(app.library().trim())]),
+        under(
+            "New photos go to the folder:",
+            column![words(format!("{}   {fixed}", app.folder_preview()))],
+        ),
+    ]
+    .spacing(14);
+    if in_session {
+        body = body.push(words(format!(
+            "Sync {} of this session: the library and name stay as they are. Click Quit to change them.",
+            app.syncs() + 1
+        )));
+    }
+    body = body.push(words(CARDS_ONLY_READ));
+    // Start copying stands apart from where Next and Back, to fix it were: the second click
+    // of a double must not start a copy past this screen, or quit (DEC-079 (2)).
+    let buttons = row![
+        action("Back", Some(M::Back)),
+        Space::new().width(Length::Fill),
+        action("Quit", Some(M::Quit)),
+        action("Start copying", Some(M::Start)),
+    ];
+    fixed_around(gui, heading, body, buttons)
+}
+
+/// The refusal's sentence is the body, so however long it is the buttons stay. It says
+/// what it says by itself, so no banner (DEC-071 (2), (4)). Next card is S055's.
+fn refused(gui: &Gui) -> Element<'_, M> {
+    let sentence = match gui.app.outcome() {
+        Some(Outcome::Refused { sentence }) => sentence.as_str(),
+        _ => "",
+    };
+    let buttons = row![
+        action("Back, to fix it", Some(M::Back)),
+        action("Quit", Some(M::Quit)),
+    ];
+    fixed_around(
+        gui,
+        "Stopped, no report".to_string(),
+        column![red_box(sentence)],
+        buttons,
+    )
+}
+
 /// Rows and notes scroll; all else is fixed, so the banner, the hint and the buttons
 /// never leave (DEC-068 (7)). Rows come first, so notes never take their room.
 fn list_screen<'a>(
@@ -415,14 +573,31 @@ fn list_screen<'a>(
             body = body.push(words(note.as_str()));
         }
     }
+    fixed_around(gui, heading, body, buttons)
+}
+
+/// What every screen but the copying one keeps out of the scroll.
+fn fixed_around<'a>(
+    gui: &'a Gui,
+    heading: String,
+    body: Column<'a, M>,
+    buttons: iced::widget::Row<'a, M>,
+) -> Element<'a, M> {
     let mut screen = column![words(TITLE).size(24), words(heading)]
         .spacing(12)
         .padding(16);
-    if let Some(reason) = banner(&gui.app.exit(), gui.app.outcome()) {
+    // The refused screen says it itself (DEC-071 (2)).
+    let warns = gui.app.screen() != Screen::Refused;
+    if let Some(reason) = banner(&gui.app.exit(), gui.app.outcome()).filter(|_| warns) {
         let reason = (!reason.is_empty()).then(|| word_box(BANNER, reason, BANNER_MOST));
         screen = screen.push(red_banner(NOT_SAFE, reason));
     }
-    screen = screen.push(scrollable(body).id(BODY).spacing(8).height(Length::Fill));
+    screen = screen.push(
+        scrollable(body.width(Length::Fill))
+            .id(BODY)
+            .spacing(8)
+            .height(Length::Fill),
+    );
     if let Some(why) = gui.next_held_because() {
         screen = screen.push(hint(why));
     }
@@ -435,7 +610,9 @@ fn list_screen<'a>(
 /// The model's hints name the TUI's keys; here a key is a button (DEC-068 (3)). A test
 /// goes over every hint the screens reach, so a changed hint fails.
 fn hint_words(words: &str) -> String {
-    words.replace("press r", "click Look again")
+    words
+        .replace("press r", "click Look again")
+        .replace(" (Esc)", "")
 }
 
 /// What the banner's box says, and `None` with nothing to warn of (DEC-071 (2)).

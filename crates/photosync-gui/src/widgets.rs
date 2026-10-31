@@ -3,8 +3,10 @@
 //! screen only through `words`, and `tests/gui_split.rs` holds that (DEC-066 (4), (7), DEC-072 (4)).
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Text, button, checkbox, column, container, row, scrollable, text};
-use iced::{Alignment, Element, Length, Theme, border};
+use iced::widget::{
+    Column, Text, button, checkbox, column, container, row, scrollable, text, text_input,
+};
+use iced::{Alignment, Element, Length, Padding, Theme, border};
 
 /// Words on the screen, never cut.
 pub fn words<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
@@ -16,6 +18,31 @@ pub fn hint<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
     words(content).style(text::warning)
 }
 
+/// A refusal's sentence: the banner's red. `text::danger` on the window is 2.74 to 1, too
+/// thin to read a whole sentence by (DEC-079 (5)).
+pub fn red_box<'a, M: 'a>(content: impl text::IntoFragment<'a>) -> Element<'a, M> {
+    container(words(content))
+        .style(container::danger)
+        .width(Length::Fill)
+        .padding(8)
+        .into()
+}
+
+/// A one-line field. What is typed stays on its line, as in the TUI (DEC-072 (4)).
+pub fn field<'a, M: Clone + 'a>(
+    id: &'static str,
+    placeholder: &str,
+    value: &str,
+    on_input: fn(String) -> M,
+    on_submit: M,
+) -> Element<'a, M> {
+    text_input(placeholder, value)
+        .id(id)
+        .on_input(on_input)
+        .on_submit(on_submit)
+        .into()
+}
+
 /// Words in a box of at most `most` high that scroll inside it, so they can never push
 /// what is under them off the window, and nothing has to be measured (DEC-071 (3), (4)).
 pub fn word_box<'a, M: 'a>(id: &'static str, content: String, most: f32) -> Element<'a, M> {
@@ -25,6 +52,13 @@ pub fn word_box<'a, M: 'a>(id: &'static str, content: String, most: f32) -> Elem
     container(inside)
         .width(Length::Fill)
         .max_height(most)
+        .into()
+}
+
+/// Words under the line that names them.
+pub fn under<'a, M: 'a>(line: &'a str, items: Column<'a, M>) -> Element<'a, M> {
+    column![words(line), items.padding(Padding::ZERO.left(16.0))]
+        .spacing(2)
         .into()
 }
 
