@@ -8,7 +8,7 @@ Updated: 2026-10-31, by Claude (S063 done)
 
 - Last done: S063  drive screen marks what Next will take (476 passed, 29 ignored; script 379)
 - In progress: none
-- Next: S053  GUI: library, name, check, refusals before a session
+- Next: S064  harness tells fixed from scrolling; then the rest of plan.md's Open list
 - Waiting for the user: S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
