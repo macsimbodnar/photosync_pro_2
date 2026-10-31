@@ -15,8 +15,9 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 targets=(aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu)
 user_rustup="${RUSTUP_HOME:-$HOME/.rustup}"
 
-# Read before RUSTUP_HOME changes: the check is for the compiler the user's builds use.
-version="$(rustc --version | cut -d ' ' -f 2)"
+# Read before RUSTUP_HOME changes, and in the repo, where an override elsewhere cannot
+# speak: the check is for the compiler the user's builds use.
+version="$(cd "$repo" && rustc --version | cut -d ' ' -f 2)"
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "check_linux_from_mac.sh: not a stable release: rustc says '$version'" >&2
     exit 1
