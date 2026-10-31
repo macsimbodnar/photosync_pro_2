@@ -1,6 +1,7 @@
 //! All the GUI's unit tests, in one test binary (DEC-072 (1)).
 
 mod harness;
+mod on_images;
 #[path = "../../tests/support/one_picture.rs"]
 mod one_picture;
 
@@ -6107,4 +6108,12 @@ fn no_place_to_look_is_refused_as_root_is() {
     assert_eq!(all_words(&gui, WINDOW), [sentence, "Quit"]);
     click(&mut gui, "Quit");
     assert_eq!(slot.lock().unwrap().as_ref().map(|e| e.code), Some(2));
+}
+
+/// Real syncs through the window's clicks, on real mounts, in the plain gate (DEC-049).
+#[cfg(target_os = "macos")]
+#[test]
+fn ignored_image_tests_pass_on_real_mounts() {
+    use crate::common::images::{CARD, LIBRARY, TWIN_A, TWIN_B, ignored_tests_pass_on_images};
+    ignored_tests_pass_on_images(&[CARD, LIBRARY, TWIN_A, TWIN_B], &on_images::MUST_RUN);
 }

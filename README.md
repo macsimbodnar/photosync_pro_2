@@ -9,9 +9,7 @@ first, then Linux.
 Status: early development. The CLI and the TUI work. A GUI is being built: `photosync-gui`
 walks from the cards and the drives through the library, the name and the check, says why
 it refuses, copies with progress and cancel, shows the report, and takes the next card in one session.
-It is not ready to use: no real sync through it is in the tests yet (S057), so its report screen has
-been drawn only from lines given to it. Quit, a close of the window and what the process returns
-are tested with no window; the real close button and Cmd-Q wait for a hand check (S060). Use the CLI or the TUI for real cards. What it must do is in `adocs/specs.md`, and the plan is in `adocs/plan.md`.
+Real syncs through it, by its own clicks, are in the tests on disk images, with no window: reports, a real cancel, name collisions, a library on a card, the next card in one session. Do not use it yet on a card you cannot copy again: no one has run it in a real window on a real card, and the real close button and Cmd-Q are not checked either (S060). Use the CLI or the TUI for real cards until then. What it must do is in `adocs/specs.md`, and the plan is in `adocs/plan.md`.
 
 ## Usage
 
@@ -241,13 +239,15 @@ mkdir "$work/card/DCIM"
 TMPDIR="$work/mnt" PHOTOSYNC_TEST_CARD="$work/card" \
     PHOTOSYNC_TEST_LIBRARY="$work/lib" PHOTOSYNC_TEST_TWIN_A="$work/twin_a" \
     PHOTOSYNC_TEST_TWIN_B="$work/twin_b" \
-    cargo test --workspace -- --ignored --skip copy::tests::fallback_writer
+    cargo test --workspace -- --ignored --skip copy::tests::fallback_writer \
+        --skip the_real_window_draws_what_the_headless_picture_draws
 for n in mnt card lib twin_a twin_b; do sudo umount "$work/$n"; done
 rm -rf "$work"
 ```
 
 Without the variables these tests fail, so they cannot pass with nothing checked.
-The one skipped is a helper the two-process tests start: run alone, it fails.
+The first one skipped is a helper the two-process tests start: run alone, it fails.
+The second opens a window on the screen, and is run by hand.
 
 Hand check (see `adocs/plan_todo/S025_linux_checks.md`):
 
@@ -280,7 +280,7 @@ of the body; `fixed_in_sight` is the check for what may never scroll, a warning 
 sight and in no scrollable; `fixed_box_in_sight` holds a box's words, in that box, itself in the
 fixed part; `click` fails
 on a click that sends nothing, and `clicks` proves a button held; `play` runs the real program, tasks and
-threads included, and a script ends by asserting on its state, as a click there shows no messages; `play_steps` adds a click that must fail, on words that are on the screen and out of sight, scrolling to the end, and `Step::Set` to reach the state, as to hold the copy thread with `before_send` or put a `test_worker` in `worker::spawn`'s place; `Step::Send` a message the Emulator cannot send, as its subscriptions hear no events; `Step::ClickOn` a click on words a `Step::Set` read from the state; `run_out` hears a real worker to its end with no runtime; `start_copying` clicks Start copying and takes its check's answer, and `blocked_check` holds that check as a stuck drive would. The Emulator ignores exit and close, so a test sends `M::CloseRequested` and reads what the quit left in the `ExitSlot`, and `ending` and `after_the_window` are tested on their own. None of these sees a glyph a font draws as nothing, which only the picture shows (DEC-082 (3)). None sees a warning cut by a height bound, so `tests/gui_split.rs` holds that the screens have none outside `word_box` and `around_the_body`, the one place the body stands. One test opens a real window, so it is ignored and never in the gate. By hand,
+threads included, and a script ends by asserting on its state, as a click there shows no messages; `play_steps` adds a click that must fail, on words that are on the screen and out of sight, scrolling to the end, and `Step::Set` to reach the state, as to hold the copy thread with `before_send` or put a `test_worker` in `worker::spawn`'s place; `Step::Send` a message the Emulator cannot send, as its subscriptions hear no events; `Step::ClickOn` a click on words a `Step::Set` read from the state; `run_out` hears a real worker to its end with no runtime; `start_copying` clicks Start copying and takes its check's answer, and `blocked_check` holds that check as a stuck drive would; `Step::LineWhile` lands messages in mid-sync with the copy thread held; `scroll_probe` reads a scrollable's offset where the Emulator keeps it. The Emulator ignores exit and close, so a test sends `M::CloseRequested` and reads what the quit left in the `ExitSlot`, and `ending` and `after_the_window` are tested on their own. None of these sees a glyph a font draws as nothing, which only the picture shows (DEC-082 (3)). None sees a warning cut by a height bound, so `tests/gui_split.rs` holds that the screens have none outside `word_box` and `around_the_body`, the one place the body stands. One test opens a real window, so it is ignored and never in the gate. By hand,
 with the mouse off the window, as a hovered button changes the picture:
 
 ```sh
@@ -289,11 +289,13 @@ cargo test -p photosync-gui --test smoke_window -- --ignored
 
 It compares the window with the headless picture, 0 pixels off, or says the screen's scale is not 2. A comparison fails if the folder holds a second picture, as another renderer's name would pass having compared nothing.
 
+`src/tests/on_images.rs` runs real syncs through those clicks, on the images below: one card by real discovery, two at once, a next card into one folder, a twin that cannot be read, a name collision, a library on a card, a real cancel, and a complete card after a failed one. Each compares the screen's report byte for byte with `text`, and the drive's and the card's bytes. `tests::ignored_image_tests_pass_on_real_mounts` runs them in plain `cargo test`, with no window. What only a window shows is S060's: the close button, Cmd-Q, Esc, the real mouse.
+
 ### Real syncs in plain `cargo test` (macOS)
 
 Strict INV-10 lets a sync through only across devices, and the binary has no
 test seam, so a real sync needs real mounts. On macOS `cargo test --workspace`
-mounts them itself, with nothing to set up: it adds about 40 seconds. Those tests are
+mounts them itself, with nothing to set up: it adds about 70 seconds. Those tests are
 `#[ignore]`d, and the count shows them. One test in each test binary,
 `ignored_image_tests_pass_on_real_mounts`, mounts small exFAT images with
 `hdiutil` in a temp dir, runs that binary's ignored tests on them, and fails
@@ -344,8 +346,8 @@ file is removed once copying starts), into a folder on that drive. A twin
 must be on another device, so those two cards are on two more small images
 (`PHOTOSYNC_TEST_TWIN_A`, `PHOTOSYNC_TEST_TWIN_B`). These are the tests that are
 `#[ignore]`d, and the script runs them directly, on its images, with the rest
-of the suite on exFAT. The script leaves out the tests that mount images of
-their own. Each `hdiutil` call and test run in it has a time limit too. The tests reach `photosync sources` and `drives` through a
+of the suite on exFAT, the GUI's too. The script leaves out the tests that mount images of
+their own, and the one that opens a window. Each `hdiutil` call and test run in it has a time limit too. The tests reach `photosync sources` and `drives` through a
 hidden `--search-root` option.
 
 photosync-core's `copy::threads_tests` (S019) copy several cards at once

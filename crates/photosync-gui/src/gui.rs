@@ -148,6 +148,9 @@ pub enum M {
     /// Reaches the state the Emulator holds.
     #[cfg(test)]
     ForTest(ForTest),
+    /// Runs a task as `update` would, as to read or move a scrollable the Emulator holds.
+    #[cfg(test)]
+    TaskForTest(ForTask),
 }
 
 /// Called on the copy thread before each real send, so a test can hold it (DEC-072 (6)).
@@ -165,6 +168,17 @@ pub struct ForTest(pub(crate) Arc<dyn Fn(&mut Gui) + Send + Sync>);
 impl std::fmt::Debug for ForTest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ForTest")
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub struct ForTask(pub(crate) Arc<dyn Fn() -> Task<M> + Send + Sync>);
+
+#[cfg(test)]
+impl std::fmt::Debug for ForTask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ForTask")
     }
 }
 
@@ -730,7 +744,7 @@ fn step(gui: &mut Gui, message: M) -> Task<M> {
             // Answers to what was asked before: each goes on behind this screen.
             M::Looked | M::Checked | M::Wake | M::Gone | M::SmokeFrame | M::SmokeShot(_) => {}
             #[cfg(test)]
-            M::ScrollEndForTest | M::ForTest(_) => {}
+            M::ScrollEndForTest | M::ForTest(_) | M::TaskForTest(_) => {}
             // A click drawn on the screen before: behind this one it would start or type.
             _ => return Task::none(),
         }
@@ -806,6 +820,8 @@ fn step(gui: &mut Gui, message: M) -> Task<M> {
             (reach.0)(gui);
             Task::none()
         }
+        #[cfg(test)]
+        M::TaskForTest(make) => (make.0)(),
     }
 }
 

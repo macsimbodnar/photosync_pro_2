@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the photosync-core and photosync tests with TMPDIR on a fresh exFAT
+# Runs the photosync-core, photosync and photosync-gui tests with TMPDIR on a fresh exFAT
 # disk image, so every test file lives on exFAT (macOS only: needs hdiutil).
 # A second small image with a DCIM folder at its top stands in for a card:
 # its mount path goes to the tests in PHOTOSYNC_TEST_CARD, and the INV-10
@@ -64,6 +64,10 @@ skip+=(
 # A helper: only the two-process tests that start it give it what it needs.
 skip+=(copy::tests::fallback_writer)
 
+# It opens a window on the user's screen, so it is run by hand (DEC-072 (1)).
+# `gui_split.rs` holds this name and the test's as one.
+skip+=(the_real_window_draws_what_the_headless_picture_draws)
+
 # Run on HFS+ too, by exact name, and counted: a misspelt name would run
 # nothing and pass.
 hfs_tests=(
@@ -83,8 +87,10 @@ if [[ "$(uname)" != "Darwin" ]]; then
 fi
 [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
 
-# Resolved, so the path matches what `mount` prints (/var is /private/var).
-work="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/photosync-exfat.XXXXXX")" && pwd -P)"
+# Resolved, so the path matches what `mount` prints (/var is /private/var). In /tmp, not
+# $TMPDIR: every test's paths start here, and a GUI test has what shows on 640x480 under a
+# banner depend on their length (DEC-084 (12)).
+work="$(cd "$(mktemp -d /tmp/photosync-exfat.XXXXXX)" && pwd -P)"
 mnt="$work/mnt"
 card="$work/card"
 library="$work/lib"
@@ -237,7 +243,7 @@ done
 TMPDIR="$mnt" PHOTOSYNC_TEST_CARD="$card" PHOTOSYNC_TEST_LIBRARY="$library" \
     PHOTOSYNC_TEST_TWIN_A="$twin_a" PHOTOSYNC_TEST_TWIN_B="$twin_b" \
     with_limit "$tests_limit" cargo test --manifest-path "$repo/Cargo.toml" \
-    -p photosync-core -p photosync \
+    -p photosync-core -p photosync -p photosync-gui \
     --no-fail-fast -- --exact --include-ignored ${args[@]+"${args[@]}"} || failed=$?
 
 # Run even if the above failed, so a failure on one format hides no other.

@@ -164,7 +164,7 @@ picks. It is simple to use.
     within 0/1/2.
   - GUI: a native Rust GUI in iced (DEC-065), being built step by step: today its window
     and the cards, drive, library, name, check, copying, report and refused screens, and the next card in one session.
-    A real sync through it is not yet in the gate (S057). What follows is what it must become. It
+    Real syncs through it, by its own clicks with no window, are in the gate on disk images; a real window on a real card waits for a hand check (S060). What follows is what it must become. It
     must need no change to the core beyond new API, which keeps INV-8 true.
     It is its own binary, `photosync-gui`, over the same model, worker and
     sentences as the TUI (DEC-067, DEC-068), so it walks the same screens by the

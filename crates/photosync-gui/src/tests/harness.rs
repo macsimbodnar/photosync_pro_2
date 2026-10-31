@@ -3,10 +3,12 @@
 //! scroll, `fixed_box_in_sight` for a box of words that stands with it, `in_sight` for what
 //! shows when the screen opens, `click` for a button that must answer and `clicks` to prove
 //! one held, `play` for the real program, tasks and threads included, `blocked_discovery` to
-//! hold a look, and `blocked_check` to hold the first start's check.
+//! hold a look, `blocked_check` to hold the first start's check, and `scroll_probe` to read a
+//! scrollable's offset in the state the Emulator keeps.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId, sleep};
@@ -14,16 +16,21 @@ use std::time::{Duration, Instant};
 
 use iced::{Element, Rectangle, Size, Theme, mouse};
 use iced_test::core::Settings;
+use iced_test::core::widget::operation::{Operation, Scrollable};
 use iced_test::core::widget::Id;
+use iced_test::core::Vector;
 use iced_test::emulator::{Emulator, Event, Mode};
 use iced_test::futures::futures::channel::mpsc::{self as emulator_channel, TryRecvError};
 use iced_test::instruction::{Expectation, Interaction, Mouse, Target as ClickAt};
+use iced_test::runtime::task;
 use iced_test::selector::{self, Candidate, Target};
 use iced_test::{Instruction, Simulator};
 use photosync_core::{ScanError, Session, Volumes};
 use photosync_front::flow::SyncError;
 
-use crate::gui::{self, BODY, Check, Discover, ForTest, Gui, LEAST, M, WINDOW, update, view};
+use crate::gui::{
+    self, BODY, Check, Discover, ForTask, ForTest, Gui, LEAST, M, WINDOW, update, view,
+};
 
 /// A test that waits longer than this has found a fault: never hang the gate.
 pub(crate) const LIMIT: Duration = Duration::from_secs(120);
@@ -541,6 +548,64 @@ fn clicked_words(line: &str) -> String {
     }
 }
 
+/// What a scrollable holds: `(translation.y, height, content's height)`.
+pub(crate) type Scrolled = Arc<Mutex<Option<(f32, f32, f32)>>>;
+
+/// Reads a scrollable where it lives. A fresh Simulator has its own state, so it cannot see
+/// what a message did to the offset in the Emulator's (DEC-082 (5)).
+struct ScrollProbe {
+    wanted: Id,
+    found: Scrolled,
+}
+
+impl Operation<M> for ScrollProbe {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<M>)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        translation: Vector,
+        _state: &mut dyn Scrollable,
+    ) {
+        if id == Some(&self.wanted) {
+            let seen = (translation.y, bounds.height, content_bounds.height);
+            *self.found.lock().unwrap() = Some(seen);
+        }
+    }
+}
+
+/// A step that leaves in `found` what the scrollable of `id` holds now.
+pub(crate) fn scroll_probe(id: &'static str, found: &Scrolled) -> Step {
+    let found = found.clone();
+    Step::Send(
+        M::TaskForTest(ForTask(Arc::new(move || {
+            task::widget(ScrollProbe {
+                wanted: Id::new(id),
+                found: found.clone(),
+            })
+        }))),
+        1,
+    )
+}
+
+pub(crate) type Ask = Arc<dyn Fn(&mut Gui) -> Vec<M> + Send + Sync>;
+
+/// What a `Step::LineWhile` does while its line is still running.
+pub(crate) struct Meanwhile {
+    /// Set by the thread the test holds, when it is held.
+    pub(crate) held: Arc<AtomicBool>,
+    /// Reads the state, and gives what to send: a click's messages.
+    pub(crate) ask: Ask,
+    /// Reaches the state once they have been sent.
+    pub(crate) after: Arc<dyn Fn(&mut Gui) + Send + Sync>,
+    /// Lets the thread go.
+    pub(crate) release: Box<dyn FnOnce()>,
+}
+
 /// One thing `play_steps` does.
 pub(crate) enum Step {
     /// An Emulator line that must pass.
@@ -558,6 +623,9 @@ pub(crate) enum Step {
     Send(M, usize),
     /// Reaches the state the Emulator holds, as to set what a later click will use.
     Set(Arc<dyn Fn(&mut Gui) + Send + Sync>),
+    /// An Emulator line that must pass, and that cannot end until its thread is let go, as
+    /// `Mode::Zen` waits for its tasks: messages land in mid-sync (DEC-072 (6)).
+    LineWhile(&'static str, Meanwhile),
 }
 
 /// Runs the real program with no window, tasks and threads included, and each of `lines`
@@ -581,6 +649,7 @@ pub(crate) fn play_steps(discover: Discover, steps: Vec<Step>) -> Gui {
     let (mut go_on, mut must_fail, mut awaited) = (false, false, 0);
     // The click of a `Step::Fails` whose `expect` is running.
     let mut click_next = None;
+    let mut meanwhile: Option<Meanwhile> = None;
     loop {
         if go_on {
             go_on = false;
@@ -621,7 +690,31 @@ pub(crate) fn play_steps(discover: Discover, steps: Vec<Step>) -> Gui {
                     emulator.update(&program, M::ForTest(ForTest(reach)));
                     go_on = true;
                 }
+                Some(Step::LineWhile(line, doing)) => {
+                    meanwhile = Some(doing);
+                    emulator.run(&program, Instruction::parse(line).unwrap());
+                }
             }
+        }
+        if meanwhile
+            .as_ref()
+            .is_some_and(|doing| doing.held.load(Ordering::SeqCst))
+            && let Some(doing) = meanwhile.take()
+        {
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let (into, ask) = (asked.clone(), doing.ask);
+            emulator.update(
+                &program,
+                M::ForTest(ForTest(Arc::new(move |gui: &mut Gui| {
+                    *into.lock().unwrap() = ask(gui);
+                }))),
+            );
+            let messages = std::mem::take(&mut *asked.lock().unwrap());
+            for message in messages {
+                emulator.update(&program, message);
+            }
+            emulator.update(&program, M::ForTest(ForTest(doing.after)));
+            (doing.release)();
         }
         match heard.try_recv() {
             Ok(Event::Action(action)) => {
@@ -637,6 +730,7 @@ pub(crate) fn play_steps(discover: Discover, steps: Vec<Step>) -> Gui {
             }
             Ok(Event::Ready) => {
                 assert!(!must_fail, "a line that should have failed passed");
+                assert!(meanwhile.is_none(), "its line ended with its thread not held");
                 go_on = true;
             }
             Err(TryRecvError::Closed) => panic!("the runtime stopped"),

@@ -417,6 +417,32 @@ fn scrolls_left_where_they_were(source: &str) -> Vec<String> {
         .collect()
 }
 
+/// What a bash script's `skip=(` and `skip+=(` lists hold, with comments gone: a name only
+/// said in a comment skips nothing.
+fn skip_list(script: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut inside = false;
+    for line in script.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        let rest = line
+            .strip_prefix("skip=(")
+            .or_else(|| line.strip_prefix("skip+=("));
+        let (words, ends) = match rest {
+            Some(rest) => {
+                inside = true;
+                (rest, rest.ends_with(')'))
+            }
+            None if inside => (line, line.ends_with(')')),
+            None => continue,
+        };
+        names.extend(words.trim_end_matches(')').split_whitespace().map(String::from));
+        if ends {
+            inside = false;
+        }
+    }
+    names
+}
+
 /// Each `#[ignore` that does not give the images' reason.
 fn other_ignores(source: &str) -> Vec<String> {
     source
@@ -555,6 +581,27 @@ fn every_scrollable_goes_to_its_top_on_a_change_of_place() {
 fn every_ignore_under_src_has_the_images_reason() {
     let found = found_in(&rust_files(&gui_dir().join("src")), other_ignores);
     assert!(found.is_empty(), "{found:?}");
+}
+
+/// The script runs `--include-ignored`, so a name that drifts from the test's opens a window on
+/// the user's screen in the gate (DEC-072 (1)).
+#[test]
+fn the_scripts_skip_list_and_the_window_test_name_one_test() {
+    const WINDOW_TEST: &str = "the_real_window_draws_what_the_headless_picture_draws";
+    let script = gui_dir().join("../../scripts/test_exfat.sh");
+    let script = fs::read_to_string(script).unwrap();
+    assert!(
+        skip_list(&script).iter().any(|name| name == WINDOW_TEST),
+        "{:?}",
+        skip_list(&script)
+    );
+    assert!(script.contains("-p photosync-gui"), "the script runs them");
+    let test = read_code(&gui_dir().join("tests/smoke_window.rs"));
+    assert!(
+        test.contains(&format!("fn {WINDOW_TEST}()")),
+        "no such test in smoke_window.rs"
+    );
+    assert!(!other_ignores(&test).is_empty(), "it must stay ignored");
 }
 
 // Each matcher catches a line of each kind, and leaves a clean one alone.
@@ -789,6 +836,13 @@ fn the_ignore_matcher_catches_each_kind() {
         other_ignores(&format!("    {IMAGES_REASON}")),
         Vec::<String>::new()
     );
+}
+
+#[test]
+fn the_skip_list_matcher_reads_lists_and_no_comment() {
+    let script = "skip=(\n    one  # first\n    # two\n)\nnot_this\nskip+=(three)\nskip+=(\n four five)\n";
+    assert_eq!(skip_list(script), ["one", "three", "four", "five"]);
+    assert!(skip_list("# skip+=(one)\necho skip").is_empty());
 }
 
 #[test]
