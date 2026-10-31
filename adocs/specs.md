@@ -184,11 +184,11 @@ picks. It is simple to use.
     check as Back does, and takes no click left from the screen before. Once a quit is heard, no message does anything, as iced runs each message of a batch before the exit,
     so a check's answer behind a quit or a close starts no sync (DEC-083). While the session is not complete, the cards, drive, library, name and
     check screens keep a warning in sight, "do not format the card" with the reason, whatever
-    its length, so the buttons never leave. Closing the window during a copy cancels it, and the window stays for
+    its length, so the buttons never leave, however long a path is; what is in the body may open below the fold, and scrolls (DEC-085). Closing the window during a copy cancels it, and the window stays for
     the report; closing it again then quits at once, which the screen says first,
-    with "do not format the card". The copying screen always says not to format
+    with "do not format the card". A close within about 500 ms of the last one heard is ignored on every screen, as the second click of a double on the close button: it does not pass "Before you quit", end a copy, or take a report away. The copying screen always says not to format
     the card until the report says so, as Cmd-Q and the Dock's Quit cannot be stopped,
-    and end it like a kill (INV-7). They are the one exception to showing why first: on
+    and end it like a kill (INV-7), with no report; what the process returns then is not promised, and may be 0 even in a copy (DEC-085, S060 measures it). They are the one exception to showing why first: on
     any screen they quit with nothing more said, so what warns is what was already on
     screen (DEC-071). These warnings, the Cancelling sentence and the overall bar are never in what
     scrolls; the progress words, each card's bar with two cards or more, and the scan lines do. No screen bounds a

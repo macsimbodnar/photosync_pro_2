@@ -20,7 +20,7 @@ use crate::common::{
 };
 
 /// What `tests::ignored_image_tests_pass_on_real_mounts` wants run.
-pub(super) const MUST_RUN: [&str; 9] = [
+pub(super) const MUST_RUN: [&str; 10] = [
     "tests::on_images::a_one_card_found_for_real_goes_under_its_name_and_the_same_sync_copies_nothing",
     "tests::on_images::b_two_cards_at_once_each_on_its_thread_and_the_counts_add_up",
     "tests::on_images::c_a_session_into_one_folder_says_all_of_it_and_each_screen_opens_at_its_top",
@@ -30,6 +30,7 @@ pub(super) const MUST_RUN: [&str; 9] = [
     "tests::on_images::f_a_library_on_a_card_is_refused_and_nothing_is_written",
     "tests::on_images::g_a_cancel_that_cannot_miss_leaves_no_doubt_on_the_drive",
     "tests::on_images::h_a_complete_card_after_a_failed_one_hides_nothing",
+    "tests::on_images::i_the_second_click_of_a_double_on_close_leaves_the_report_a_fast_sync_raised",
 ];
 
 const TAKEN: u64 = 1_700_000_000;
@@ -1061,4 +1062,54 @@ fn h_a_complete_card_after_a_failed_one_hides_nothing() {
     );
     assert_eq!(manifest(&a.0), before_a, "INV-1");
     assert_eq!(manifest(&b.0), before_b, "INV-1");
+}
+
+/// (i) S066. A double click on close on a small sync: the first cancels, the sync ends at once,
+/// and the second lands on the report. It must leave the report up (DEC-085 (1)).
+#[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
+fn i_the_second_click_of_a_double_on_close_leaves_the_report_a_fast_sync_raised() {
+    let a = a_card(TWIN_A, "S066-i");
+    let (ours, _library) = a_drive("S066-i");
+    photo_on(&a.0, "DSCF0001.RAF", &big_photo(1));
+    photo_on(&a.0, "DSCF0002.RAF", &big_photo(2));
+
+    let (held, waited_out) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let (let_go, go_on) = mpsc::channel();
+    let doing = Meanwhile {
+        held: held.clone(),
+        ask: Arc::new(|gui: &mut Gui| {
+            assert_eq!(gui.app.screen(), Screen::Running);
+            vec![M::CloseRequested]
+        }),
+        after: Arc::new(|gui: &mut Gui| {
+            assert!(gui.app.running().is_some_and(|run| run.cancelling), "not heard");
+        }),
+        release: Box::new(move || let_go.send(()).unwrap()),
+    };
+    let mut steps = vec![
+        set(|gui| clock_on(gui, Duration::ZERO)),
+        holding_the_first_file(held.clone(), go_on, waited_out.clone()),
+    ];
+    let mut to_report = to_the_report_named("");
+    to_report.pop();
+    steps.extend(to_report);
+    steps.push(Step::LineWhile(r#"click "Start copying""#, doing));
+    let mut gui = play_steps(literal(&[&shown(&a.0)], &[&shown(&ours.0)]), steps);
+
+    assert!(held.load(Ordering::SeqCst), "the copy thread was not held");
+    assert!(!waited_out.load(Ordering::SeqCst), "no cancel came in time");
+    let (_, result, complete) = the_report(&gui);
+    assert!(!complete, "{result}");
+    let _ = update(&mut gui, M::CloseRequested);
+    assert!(!gui.quit, "the report would go before it is read");
+    assert_eq!(gui.app.screen(), Screen::Report);
+    assert!(gui.exit_slot.lock().unwrap().is_none());
+    a_report_screen_check(&gui, "i_second_close");
+
+    clock_on(&mut gui, CLOSE_GUARD);
+    let _ = update(&mut gui, M::CloseRequested);
+    assert!(gui.quit, "past the guard, a close on a report quits as before");
+    let exit = gui.exit_slot.lock().unwrap().clone().expect("no Exit");
+    assert_eq!(exit.code, 1);
 }

@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use iced::futures::channel::mpsc::{self as wake_channel, UnboundedReceiver, UnboundedSender};
 use iced::futures::channel::oneshot;
@@ -87,6 +88,8 @@ pub const FIELD: &str = "field";
 const BANNER_MOST: f32 = 104.0;
 /// What the result's words take of its 240, with `result_box`'s padding (DEC-071 (4), DEC-082 (1)).
 const RESULT_MOST: f32 = 224.0;
+/// A close this soon after the last one heard is the second click of a double (DEC-085 (1)).
+pub(crate) const CLOSE_GUARD: Duration = Duration::from_millis(500);
 
 /// How volumes are found: injected, so tests give literal folders (DEC-068 (5)).
 pub type Discover = Arc<dyn Fn() -> Volumes + Send + Sync>;
@@ -94,6 +97,9 @@ pub type Discover = Arc<dyn Fn() -> Volumes + Send + Sync>;
 /// drive would be (DEC-081 (1)).
 pub(crate) type Check =
     Arc<dyn Fn(&Path, Option<&str>) -> Result<Session, SyncError> + Send + Sync>;
+
+/// What the close guard reads: `Instant::now`, or what a test holds, as no test may sleep.
+pub(crate) type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
 /// What each quit leaves for `run`, as iced keeps the state and gives back only a `Result`.
 pub type ExitSlot = Arc<Mutex<Option<Exit>>>;
@@ -262,6 +268,9 @@ pub struct Gui {
     refused_to_run: Option<String>,
     /// "Before you quit" stands over the model's screen (DEC-069 (3)).
     before_quit: bool,
+    pub(crate) clock: Clock,
+    /// When the last close that was heard came.
+    last_close: Option<Instant>,
     smoke: Option<Smoke>,
     /// The drive picked on the drive screen: what `marked_drive` shows and Next takes. The
     /// model hears only on Next, as its library goes with the drive, and clicks there and
@@ -327,6 +336,8 @@ impl Gui {
             exit_slot,
             refused_to_run,
             before_quit: false,
+            clock: Arc::new(Instant::now),
+            last_close: None,
             // Two: the first may be of the frame before the answer.
             smoke: smoke_png.map(|path| Smoke { path, frames: 2 }),
             picked_drive: None,
@@ -542,6 +553,22 @@ impl Gui {
         }
     }
 
+    /// The second click of a double on close lands where the first did, and the screen under it
+    /// may have changed: it must not pass a warning, kill a copy, or take a report away. Timed
+    /// from the last close heard, not the last ignored, so no run of clicks locks a user in
+    /// (DEC-085 (1)).
+    fn close_too_soon(&mut self) -> bool {
+        let now = (self.clock)();
+        if self
+            .last_close
+            .is_some_and(|last| now.duration_since(last) < CLOSE_GUARD)
+        {
+            return true;
+        }
+        self.last_close = Some(now);
+        false
+    }
+
     /// A quit, unless it would hide a session not complete (DEC-069 (3)).
     fn quit_asked(&mut self) -> Task<M> {
         if warns_first(self.app.screen(), self.app.exit().code) {
@@ -726,6 +753,9 @@ pub fn update(gui: &mut Gui, message: M) -> Task<M> {
 }
 
 fn step(gui: &mut Gui, message: M) -> Task<M> {
+    if matches!(message, M::CloseRequested) && gui.close_too_soon() {
+        return Task::none();
+    }
     if gui.refused_to_run.is_some() {
         return match message {
             M::Quit | M::CloseRequested => gui.quit_now(),

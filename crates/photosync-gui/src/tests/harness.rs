@@ -162,6 +162,13 @@ pub(crate) fn run_out(gui: &mut Gui) {
     }
 }
 
+/// Holds the close guard's clock at what it reads now, moved on by `by`: a test never sleeps past
+/// the guard, nor passes by a run that was slow.
+pub(crate) fn clock_on(gui: &mut Gui, by: Duration) {
+    let now = (gui.clock)() + by;
+    gui.clock = Arc::new(move || now);
+}
+
 /// Booted, with the first look answered. Its task is dropped: tests that use plain
 /// `update` hear a look by polling, and the Emulator in `play` runs tasks.
 pub(crate) fn booted(discover: Discover) -> Gui {

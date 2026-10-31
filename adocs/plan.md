@@ -17,13 +17,12 @@ not change the order.
 
 ## Open
 
-1. S066  double close, long paths, Cmd-Q code (S056 fast check, S057)
-2. S058  GUI: Mac .app package (signing for other Macs needs the user, left out)
-3. S059  GUI: compile check for Linux from this Mac
-4. S060  GUI: hand checks on Mac (waits for the user and real hardware)
-5. S061  GUI: run on Linux, AppImage (waits for the user and a Linux machine)
-6. S025  first run on Linux: build, tests, hand checks (waits for the user)
-7. S017  hardware hand checks on Mac (waits for the user)
+1. S058  GUI: Mac .app package (signing for other Macs needs the user, left out)
+2. S059  GUI: compile check for Linux from this Mac
+3. S060  GUI: hand checks on Mac (waits for the user and real hardware)
+4. S061  GUI: run on Linux, AppImage (waits for the user and a Linux machine)
+5. S025  first run on Linux: build, tests, hand checks (waits for the user)
+6. S017  hardware hand checks on Mac (waits for the user)
 
 Later, not yet steps: re-run the adversarial audit after the GUI, covering
 it too; the audit loop stops when a run reports no high and no medium.
@@ -32,8 +31,8 @@ it too; the audit loop stops when a run reports no high and no medium.
 
 Last five; the full record is `plan_done/`.
 
+- S066  double close, long paths, Cmd-Q code
 - S057  GUI: real syncs by its clicks on disk images, in the gate
 - S056  GUI: closing, quitting, root, what the process returns
 - S055  GUI: report, refused, scrolling, next card in one session
 - S065  Start stays live, late keys stay in their field, Esc goes back
-- S054  GUI: copying: worker, progress per card and overall, ETA, cancel

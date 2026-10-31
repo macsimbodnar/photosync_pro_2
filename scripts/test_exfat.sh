@@ -88,8 +88,9 @@ fi
 [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
 
 # Resolved, so the path matches what `mount` prints (/var is /private/var). In /tmp, not
-# $TMPDIR: every test's paths start here, and a GUI test has what shows on 640x480 under a
-# banner depend on their length (DEC-084 (12)).
+# $TMPDIR: every test's paths start here, and a GUI test holds what opens in sight on 640x480
+# under a banner for a path of ordinary length. A long path moves no warning and no button
+# (DEC-085 (3), (4)).
 work="$(cd "$(mktemp -d /tmp/photosync-exfat.XXXXXX)" && pwd -P)"
 mnt="$work/mnt"
 card="$work/card"

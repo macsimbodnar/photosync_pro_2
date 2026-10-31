@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-31, by Claude (S057 done)
+Updated: 2026-10-31, by Claude (S066 done)
 
-- Last done: S057  GUI: real syncs by its clicks on disk images, in the gate (620 passed, 38 ignored, 95 s; script 630)
+- Last done: S066  double close, long paths, Cmd-Q code (625 passed, 39 ignored; script 636)
 - In progress: none
-- Next: S066  double close, long paths, Cmd-Q code; then the rest of plan.md's Open list
+- Next: S058  GUI: Mac .app package (signing for other Macs needs the user, left out)
 - Waiting for the user: S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
@@ -19,12 +19,15 @@ Updated: 2026-10-31, by Claude (S057 done)
     DEC-050, DEC-051, DEC-052, DEC-053, DEC-054, DEC-055, DEC-056, DEC-057,
     DEC-058, DEC-059, DEC-060, DEC-061, DEC-062, DEC-063, DEC-064, DEC-065,
     DEC-066 (all but (1), the user's yes to iced_test), DEC-067, DEC-068, DEC-069, DEC-070,
-    DEC-071, DEC-072, DEC-073, DEC-074, DEC-075, DEC-076, DEC-077, DEC-078, DEC-079, DEC-080, DEC-081, DEC-082, DEC-083, DEC-084.
+    DEC-071, DEC-072, DEC-073, DEC-074, DEC-075, DEC-076, DEC-077, DEC-078, DEC-079, DEC-080, DEC-081, DEC-082, DEC-083, DEC-084, DEC-085.
     Each says "not yet confirmed by the user" in decisions.md.
   - The GUI's banner and refused screen give the shared refusal's CLI words, "`photosync drives` lists them", "run the sync again" (S062; S053 read them on the library, name, check and refused pictures and left them, as `text.rs` is outside its step and S055 wants the words byte for byte). For the user to take or leave.
   - A marked drive can stand below the fold when the drive screen opens with Next live, past 13 drives at 900x650 and 9 at 640x480, down to 9 and 4 under the banner (S053 measured it; DEC-075 (9) said about 25). Harm is bounded: Next takes the drive the user clicked, and the check names the library before any copy. For the user to take or leave.
   - Real syncs through the GUI are in the gate, on disk images and with no window (S057). Not for cards that cannot be copied again until a real window on a real card has been run (S060); the README says so.
-  - `the_banner_holds_on_the_library_name_and_check_screens` depends on how long `$TMPDIR` is: a much longer one fails it, in plain `cargo test` too, as the check's folder line starts below the fold at 640x480 under a banner. The test is left as it is, and the script moved its temp folder to `/tmp`, which S057's `accepts` did not name (DEC-084 (12)). For the user to take or leave.
+  - `the_banner_holds_on_the_library_name_and_check_screens` depends on how long `$TMPDIR` is: a much longer one fails it, in plain `cargo test` too, as a line of the check's body opens below the fold at 640x480 under a banner. S066 found no banner or button moves, at 300 bytes either, so no screen changed, the test is left as it is, and the script's temp folder stays in `/tmp` for that reason (DEC-084 (12), DEC-085 (3), (4)). For the user to take or leave.
+  - At 640x480 under a banner, a 300-byte card path leaves "Into the library:" cut at the fold with Start copying live, and a scrollbar beside it (S066's picture); many cards do the same at any length. A body line, so by S066's `accepts` no defect (DEC-085 (5)). For the user to take or leave.
+  - Each close is timed when handled, as winit gives it no time: if the window stands still past 500 ms between two clicks, as the 3.5 s of a 50000-line report, the second can still quit (DEC-085 (2)). Not reproduced. For the user to take or leave.
+  - What Cmd-Q returns in a copy may be 0, from an agent's memory; S060 measures it, and tries a real double click on close (DEC-085 (5)).
   - A window that cannot open says iced's words only, "the application window could not be created", as its `Error` prints no cause (DEC-083 (6)). For the user to take or leave.
   - A report line that is not all ASCII is in Fira Sans, not the fixed font, as the fixed font's fallback draws kanji as nothing (DEC-082 (3), departing from S055's `accepts`). Tables stay fixed. For the user to take or leave.
   - The window stands still about 3.5 s when a report of 50000 lines arrives (release, measured; 0.35 s at 5000), 7 times DEC-068 (6)'s number, cause not looked for (DEC-082 (6)). For the user to take or leave.

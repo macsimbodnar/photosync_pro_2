@@ -37,7 +37,7 @@ use crate::args::{Options, parse};
 use crate::common::TempDir;
 use crate::gui::{
     self, BANNER, BEFORE_YOU_QUIT, BODY, CANCELLING, CARDS_ONLY_READ, CHECKING, CLOSE_AGAIN,
-    DO_NOT_FORMAT, DRIVE_GONE, Discover, ExitSlot, Gui, LEAST, LIBRARY_HELP, LOOKING, M, NAME_HELP,
+    CLOSE_GUARD, DO_NOT_FORMAT, DRIVE_GONE, Discover, ExitSlot, Gui, LEAST, LIBRARY_HELP, LOOKING, M, NAME_HELP,
     NOT_SAFE, Opening, PICK_A_DRIVE, QUIT_ANYWAY, REPORT_HEADING, RESULT, SCANNING,
     THE_DATE_TO_COME, TITLE, WINDOW, WorkerSend, banner, before_you_quit_screen, card_line,
     report_screen, share, update, view, warns_first,
@@ -2269,12 +2269,28 @@ struct Folders {
 impl Folders {
     fn new() -> Folders {
         let dir = TempDir::new();
-        let path = |name: &str| dir.0.join(name).display().to_string();
+        let base = dir.0.clone();
+        Folders::at(dir, &base)
+    }
+
+    /// Each path is 300 bytes or more, in folders of a length every file system takes.
+    fn long() -> Folders {
+        let dir = TempDir::new();
+        let mut base = dir.0.clone();
+        while base.as_os_str().len() < 300 {
+            let left = 300 - base.as_os_str().len();
+            base.push(&"long_folder_".repeat(10)[..left.min(100)]);
+        }
+        Folders::at(dir, &base)
+    }
+
+    fn at(dir: TempDir, base: &std::path::Path) -> Folders {
+        let path = |name: &str| base.join(name).display().to_string();
         let (card, card_b, drive) = (path("CARD"), path("CARD_B"), path("DRIVE"));
         for folder in [&card, &card_b, &drive] {
             fs::create_dir_all(folder).unwrap();
         }
-        let library = dir.0.join("DRIVE/Photos").display().to_string();
+        let library = base.join("DRIVE/Photos").display().to_string();
         Folders {
             dir,
             card,
@@ -5432,6 +5448,7 @@ fn each_screen_warns_before_a_quit_and_stands_under_the_banner_first() {
         fixed_in_sight(&gui, LEAST, &[NOT_SAFE]);
 
         // Quit anyway.
+        clock_on(&mut gui, CLOSE_GUARD);
         let _ = update(&mut gui, M::CloseRequested);
         click(&mut gui, QUIT_ANYWAY);
         assert!(gui.quit);
@@ -5446,6 +5463,7 @@ fn each_screen_warns_before_a_quit_and_stands_under_the_banner_first() {
         }
         let _ = update(&mut gui, M::CloseRequested);
         assert!(!gui.quit);
+        clock_on(&mut gui, CLOSE_GUARD);
         let _ = update(&mut gui, M::CloseRequested);
         assert!(gui.quit);
         assert_eq!(recorded(&gui).map(|e| e.code), Some(2));
@@ -5713,6 +5731,180 @@ fn each_way_past_before_you_quit_opens_the_screen_at_its_top() {
     assert_eq!(gui.app.picked(), [PathBuf::from(&cards[0])], "in sight");
 }
 
+/// A double click on the close button must not pass the warning its first click raised, as Quit
+/// anyway stands apart for a double on Quit (DEC-085 (1)).
+#[test]
+fn the_second_click_of_a_double_on_close_leaves_before_you_quit_standing() {
+    for (backs, on) in WARNS_FROM.into_iter().enumerate() {
+        let folders = Folders::new();
+        let mut gui = refused_before_a_session(&folders);
+        click(&mut gui, REFUSED_BACK);
+        for _ in 0..backs {
+            click(&mut gui, "Back");
+        }
+        assert_eq!(gui.app.screen(), on);
+        let reason = gui.app.exit().message.unwrap();
+        clock_on(&mut gui, Duration::ZERO);
+
+        let _ = update(&mut gui, M::CloseRequested);
+        stands_before_you_quit(&gui, &reason);
+        let _ = update(&mut gui, M::CloseRequested);
+        stands_before_you_quit(&gui, &reason);
+
+        // One ignored does not start the guard again, or a close could never get through.
+        clock_on(&mut gui, CLOSE_GUARD - Duration::from_millis(1));
+        let _ = update(&mut gui, M::CloseRequested);
+        stands_before_you_quit(&gui, &reason);
+
+        clock_on(&mut gui, Duration::from_millis(1));
+        let _ = update(&mut gui, M::CloseRequested);
+        assert!(gui.quit, "{on:?}: past the guard, a close there is Quit anyway");
+        assert_eq!(recorded(&gui).map(|e| e.code), Some(2));
+    }
+}
+
+#[test]
+fn the_second_click_of_a_double_on_close_does_not_kill_the_copy() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    let given = Arc::new(Mutex::new(Vec::new()));
+    gui.test_worker = Some(keeping_the_job(given.clone()));
+    start_copying(&mut gui);
+    clock_on(&mut gui, Duration::ZERO);
+
+    let _ = update(&mut gui, M::CloseRequested);
+    assert!(given.lock().unwrap()[0].0.cancel.is_cancelled());
+    let _ = update(&mut gui, M::CloseRequested);
+    assert!(!gui.quit, "it would kill the copy");
+    assert_eq!(recorded(&gui), None);
+    assert_eq!(gui.app.screen(), Screen::Running);
+    fixed_in_sight(&gui, LEAST, &[CANCELLING, CLOSE_AGAIN]);
+
+    clock_on(&mut gui, CLOSE_GUARD);
+    let _ = update(&mut gui, M::CloseRequested);
+    assert!(gui.quit, "the screen said so, and this one is meant");
+    assert_eq!(recorded(&gui).map(|e| e.code), Some(1));
+}
+
+/// A close after Back, too soon, is ignored as well: a second try is all it costs.
+#[test]
+fn a_close_too_soon_after_back_from_before_you_quit_stays_where_it_is() {
+    let folders = Folders::new();
+    let mut gui = refused_before_a_session(&folders);
+    click(&mut gui, REFUSED_BACK);
+    clock_on(&mut gui, Duration::ZERO);
+    let _ = update(&mut gui, M::CloseRequested);
+    click(&mut gui, "Back");
+    let _ = update(&mut gui, M::CloseRequested);
+    assert!(!gui.before_quit());
+    assert!(!gui.quit);
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+}
+
+#[test]
+fn the_guard_reads_real_time_unless_a_test_holds_it() {
+    let gui = two_cards();
+    let before = Instant::now();
+    assert!((gui.clock)() >= before);
+}
+
+/// S066: the check, name and library screens with every path 300 bytes long, as the walk gives
+/// them. What must stay stays. The body scrolls, so what is in it may open out of sight: that is
+/// what fails `the_banner_holds_on_the_library_name_and_check_screens` on a long `$TMPDIR`
+/// (DEC-085 (3)).
+#[test]
+fn a_300_byte_path_moves_no_warning_and_no_button() {
+    let folders = Folders::long();
+    for path in [&folders.card, &folders.drive, &folders.library] {
+        assert!(path.len() >= 300, "{path}");
+    }
+    let mut gui = booted(literal(&[&folders.card], &[&folders.drive]));
+    fixed_in_sight(&gui, LEAST, &CARDS_BUTTONS);
+    screen_check_scrolling(&gui, "S066", "cards_long", &CARDS_BUTTONS, &[&folders.card]);
+    click(&mut gui, "Next");
+    fixed_in_sight(&gui, LEAST, &["Next", "Back", "Look again", "Quit"]);
+    screen_check_scrolling(&gui, "S066", "drive_long", &["Next"], &[&folders.drive]);
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Library);
+    assert_eq!(gui.app.library(), folders.library);
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    let line = check_folder_line(&gui);
+    fixed_in_sight(&gui, LEAST, &CHECK_BUTTONS);
+    screen_check_scrolling(
+        &gui,
+        "S066",
+        "check_long",
+        &["Start copying"],
+        &[&folders.card, &folders.library, &line],
+    );
+
+    start_copying(&mut gui);
+    let message = gui.app.exit().message.unwrap();
+    assert!(message.contains(&folders.library), "{message}");
+    assert_eq!(gui.app.exit().code, 2);
+    fixed_in_sight(&gui, LEAST, &[REFUSED_BACK, "Quit"]);
+    screen_check(&gui, "S066", "refused_long", &[REFUSED_BACK, &message]);
+
+    click(&mut gui, REFUSED_BACK);
+    let on_the_check = |gui: &Gui| {
+        fixed_in_sight(gui, LEAST, &[NOT_SAFE]);
+        fixed_in_sight(gui, LEAST, &CHECK_BUTTONS);
+        fixed_box_in_sight(gui, LEAST, BANNER, &[&message]);
+    };
+    on_the_check(&gui);
+    in_sight(&gui, LEAST, &[&folders.card]);
+    screen_check_scrolling(
+        &gui,
+        "S066",
+        "check_long_banner",
+        &[NOT_SAFE, &message, "Start copying"],
+        &[&folders.card, &folders.library, &line],
+    );
+
+    click(&mut gui, "Back");
+    fill(&mut gui, "Tirana");
+    in_sight(&gui, LEAST, &["Tirana"]);
+    fixed_in_sight(&gui, LEAST, &[NOT_SAFE]);
+    fixed_in_sight(&gui, LEAST, &FIELD_BUTTONS);
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
+    let goes_to = format!(
+        "New photos go to {}/{}/RAW, JPEG, ...",
+        gui.app.library().trim(),
+        gui.app.folder_preview()
+    );
+    screen_check_scrolling(
+        &gui,
+        "S066",
+        "name_long_banner",
+        &[NOT_SAFE, &message, "Tirana"],
+        &[&goes_to],
+    );
+
+    click(&mut gui, "Back");
+    in_sight(&gui, LEAST, &[&folders.library]);
+    fixed_in_sight(&gui, LEAST, &[NOT_SAFE]);
+    fixed_in_sight(&gui, LEAST, &FIELD_BUTTONS);
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
+    screen_check(
+        &gui,
+        "S066",
+        "library_long_banner",
+        &[NOT_SAFE, &message, &folders.library, "Next"],
+    );
+
+    clock_on(&mut gui, CLOSE_GUARD);
+    let _ = update(&mut gui, M::CloseRequested);
+    stands_before_you_quit(&gui, &message);
+    screen_check(
+        &gui,
+        "S066",
+        "before_you_quit_long",
+        &[NOT_SAFE, QUIT_ANYWAY, &message],
+    );
+}
+
 #[test]
 fn from_the_refused_screen_a_quit_is_at_once() {
     for way_out in [M::Quit, M::CloseRequested] {
@@ -5788,6 +5980,7 @@ fn the_first_close_cancels_and_stays_and_the_second_quits_with_the_reason_and_ex
         &[&lines[0], &lines[1]],
     );
 
+    clock_on(&mut gui, CLOSE_GUARD);
     let _ = update(&mut gui, M::CloseRequested);
     assert!(gui.quit);
     assert!(!gui.before_quit(), "the screen said so before it");
@@ -5827,6 +6020,7 @@ fn a_second_close_gives_the_report_so_far() {
 
     let _ = update(&mut gui, M::CloseRequested);
     assert!(!gui.quit);
+    clock_on(&mut gui, CLOSE_GUARD);
     let _ = update(&mut gui, M::CloseRequested);
     assert!(gui.quit);
     let exit = recorded(&gui).unwrap();
