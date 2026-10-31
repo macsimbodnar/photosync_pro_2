@@ -165,7 +165,7 @@ picks. It is simple to use.
   - GUI: a native Rust GUI in iced (DEC-065), being built step by step: today its window
     and the cards, drive, library, name, check, copying, report and refused screens, and the next card in one session.
     Real syncs through it, by its own clicks with no window, are in the gate on disk images; a real window on a real card waits for a hand check (S060). What follows is what it must become. It
-    must need no change to the core beyond new API, which keeps INV-8 true.
+    must need no change to the core beyond new API, which keeps INV-8 true. On a Mac a script packages it as `phoosync pro 2.app`, ad hoc signed: it runs on the Mac that built it, and another Mac refuses it until it has a Developer ID and is notarized (DEC-070, DEC-088).
     It is its own binary, `photosync-gui`, over the same model, worker and
     sentences as the TUI (DEC-067, DEC-068), so it walks the same screens by the
     same rules: the cards (several may be picked), the drive, the library folder,

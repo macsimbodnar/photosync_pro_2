@@ -104,6 +104,7 @@ Why: one line.
 - DEC-085 2026-10-31 — a close within 500 ms of the last one heard is ignored; a long path moves no warning and no button; why the script's temp folder stays in /tmp (S066)
 - DEC-086 2026-10-31 — no test deletes on what a variable names unless it is a test image of the harness's: the guard, and why it reads no `hdiutil` (S067)
 - DEC-087 2026-10-31 — the check opens with where the copy goes; two cards at once proved by order, as a barrier in the watch cannot be met; a refusal in a session made by the library going away (S067)
+- DEC-088 2026-10-31 — small choices of the Mac package: what ends the wait, stderr must be empty, what the script removes and leaves (S058)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -2012,3 +2013,15 @@ Decision: the agent's choice, not yet confirmed by the user. Amends DEC-085 (4),
 (6) S067's "says part of the card could not be read": the words are `text`'s, "1 unreadable" in the result and `unreadable <folder>: Permission denied (os error 13) (contents unknown)` in the report, with "Do not format the card". No new sentence, as the screen's words are `text`'s byte for byte (S055). (k) has `Permission denied` in `failed` the same way.
 (7) (d) now holds that a sync copied from its twin is complete, code 0 and green, with the card named in the result, as DEC-037 and the specs have it. S067 asks for this: every photo is on the drive.
 Why: a future reader would ask why the order is not the TUI's, why a library flips it, and why (b) has no barrier.
+
+## DEC-088  2026-10-31  small choices of the Mac package: what ends the wait, stderr must be empty, what the script removes and leaves (S058)
+Tags: gui, packaging
+Decision: the agent's choice, not yet confirmed by the user. Under DEC-070.
+(1) Beyond S058's keys, the Info.plist has `CFBundleShortVersionString` and `CFBundleVersion`, both the workspace version, and `CFBundleInfoDictionaryVersion`. No `LSMinimumSystemVersion`: the binary already says macOS 11.0. The binary is not stripped, as S058 does not ask: 6692240 bytes, against the 6.4M app and 2.3M zip.
+(2) The wait ends when the process has gone, found by `pgrep -f` on the binary's name and the empty folder's random name, not when the PNG appears, as `png::write` writes in place and an early read can be cut. A process that ends with no picture fails at once, and the limit is 60 s, as in `smoke_window.rs`; past it the script stops the app.
+(3) `open` hides the exit code, so the only sign of a panic or a refusal after the picture is stderr. So any byte on stderr fails. A clean run wrote 0 bytes.
+(4) `package_mac.sh` removes all of `target/package`, so a `smoke.png` of an older build cannot pass for this one's. All static checks run before the window: a package known bad opens none.
+(5) Beyond S058: `diff -r` misses a lost executable bit, so each entry's kind and mode are compared as well; the unzipped copy gets `codesign --verify --strict` too, as it is what another Mac would get.
+(6) `open` and the test's unzip leave entries in Launch Services' database, outside the repo, for `target/package/phoosync pro 2.app` and for `target/package/unzipped.*/`, which is gone by then. Read by `lsregister -dump`, and not cleaned, as `lsregister -u` is one more write outside the repo and the entries do nothing while the app is opened by its path. No file named for the app in `~/Library`'s Saved Application State, Containers, Preferences or Caches.
+(7) What the README tells a user on another Mac about Gatekeeper's words and Open Anyway is what macOS usually does, not measured: there is one Mac here. Measured: `spctl -a -vv` says `rejected`, with no quarantine on the file; arm64 only; minos 11.0.
+Why: a future reader would ask why the wait reads processes, why stderr fails it, and what the run leaves outside `target/`.

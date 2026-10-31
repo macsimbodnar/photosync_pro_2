@@ -8,7 +8,7 @@ first, then Linux.
 
 Status: early development. The CLI and the TUI work. A GUI is being built: `photosync-gui`
 walks from the cards and the drives through the library, the name and the check, says why
-it refuses, copies with progress and cancel, shows the report, and takes the next card in one session.
+it refuses, copies with progress and cancel, shows the report, and takes the next card in one session. On a Mac it packages as an app by script: see [Mac app](#mac-app).
 Real syncs through it, by its own clicks, are in the tests on disk images, with no window: reports, a real cancel, name collisions, a library on a card, the next card in one session. Do not use it yet on a card you cannot copy again: no one has run it in a real window on a real card, and the real close button and Cmd-Q are not checked either, nor what Cmd-Q returns, which may be 0 in a copy (S060). Use the CLI or the TUI for real cards until then. What it must do is in `adocs/specs.md`, and the plan is in `adocs/plan.md`.
 
 ## Usage
@@ -204,6 +204,25 @@ Then:
 cargo build
 cargo test --workspace
 ```
+
+### Mac app
+
+```sh
+scripts/package_mac.sh        # target/package/phoosync pro 2.app and a .zip of it
+scripts/test_package_mac.sh   # checks them; a window shows for about a second
+```
+
+`package_mac.sh` makes a release build with only tools a Mac has: no network, no new crate, nothing written outside `target/`. It removes `target/package` first.
+
+`test_package_mac.sh` checks the Info.plist, the signature, that only system libraries are linked, and that the zip unzips to the same files. Then it opens the real `.app` on an empty folder, so a mounted card changes nothing, and compares what it drew with the headless picture, 0 pixels off, or says the screen's scale is not 2. Keep the mouse off the window: a hovered button changes the picture. The window is why neither script is in `cargo test` or `scripts/test_exfat.sh`. `open` tells macOS's app list (Launch Services) about the app, and that list is outside the repo.
+
+Use it on the Mac that built it. It has no icon, and is signed only ad hoc, so what another Mac does:
+
+- macOS refuses to open it when it came by a download or AirDrop, saying Apple could not check it for malware. Here `spctl -a -vv` says `rejected` for it. To stop this it needs a Developer ID and notarization, which need an Apple account: not done, as this Mac has no signing identity.
+- The person there can still let it run: try to open it, then System Settings, Privacy & Security, Open Anyway. That is macOS's usual road; no one has tried it on this app. Do it only if you trust where the zip came from.
+- It runs only on Apple silicon, macOS 11 or later, as it is built for this Mac (arm64). An Intel Mac cannot run it.
+
+The warning at the top of this file holds for the app as well: until S060, not on a card you cannot copy again. Whether macOS asks before it reads a card is also S060's to see.
 
 ### Linux (first run, S025)
 

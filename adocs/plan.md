@@ -17,12 +17,11 @@ not change the order.
 
 ## Open
 
-1. S058  GUI: Mac .app package (signing for other Macs needs the user, left out)
-2. S059  GUI: compile check for Linux from this Mac
-3. S060  GUI: hand checks on Mac (waits for the user and real hardware)
-4. S061  GUI: run on Linux, AppImage (waits for the user and a Linux machine)
-5. S025  first run on Linux: build, tests, hand checks (waits for the user)
-6. S017  hardware hand checks on Mac (waits for the user)
+1. S059  GUI: compile check for Linux from this Mac
+2. S060  GUI: hand checks on Mac (waits for the user and real hardware)
+3. S061  GUI: run on Linux, AppImage (waits for the user and a Linux machine)
+4. S025  first run on Linux: build, tests, hand checks (waits for the user)
+5. S017  hardware hand checks on Mac (waits for the user)
 
 Later, not yet steps: re-run the adversarial audit after the GUI, covering
 it too; the audit loop stops when a run reports no high and no medium.
@@ -31,8 +30,8 @@ it too; the audit loop stops when a run reports no high and no medium.
 
 Last five; the full record is `plan_done/`.
 
+- S058  GUI: Mac .app package, ad hoc signed
 - S067  tests cannot delete outside images; GUI not-safe roads proved
 - S066  double close, long paths, Cmd-Q code
 - S057  GUI: real syncs by its clicks on disk images, in the gate
 - S056  GUI: closing, quitting, root, what the process returns
-- S055  GUI: report, refused, scrolling, next card in one session
