@@ -1,6 +1,7 @@
 //! `Gui`, its messages, and the plain functions iced runs. Each widget sends what the
 //! TUI's key does, so every rule stays in `App` (DEC-068 (2)), but for the drive's mark,
-//! as a window has no cursor to show what Next takes (DEC-077).
+//! as a window has no cursor to show what Next takes (DEC-077), and the first start's check,
+//! which the window must not wait for (DEC-081 (1)).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,9 +13,12 @@ use iced::futures::channel::mpsc::{self as wake_channel, UnboundedReceiver, Unbo
 use iced::futures::channel::oneshot;
 use iced::widget::scrollable::RelativeOffset;
 use iced::widget::{Column, Space, column, operation, row, scrollable};
-use iced::{Element, Font, Length, Size, Subscription, Task, Theme, window};
-use photosync_core::{Phase, SourceProgress, Volumes};
+use iced::{
+    Element, Event, Font, Length, Size, Subscription, Task, Theme, event, keyboard, window,
+};
+use photosync_core::{Phase, Session, SourceProgress, Volumes};
 use photosync_front::app::{App, Effect, Exit, Job, Key, Msg, Outcome, Screen};
+use photosync_front::flow::{self, SyncError};
 use photosync_front::system::say;
 use photosync_front::{text, worker};
 
@@ -56,6 +60,10 @@ pub const CLOSE_AGAIN: &str = "Close the window again to quit at once: not every
 /// What the copying screen's body says until the first progress.
 pub const SCANNING: &str = "scanning the cards...";
 
+/// What is said while the first start's check is out (DEC-081 (1)).
+pub const CHECKING: &str =
+    "Checking the library folder. A stuck drive can hold this up: click Back, or take it out.";
+
 /// The banner's line (DEC-071 (2)).
 pub const NOT_SAFE: &str = "Not every photo is known to be on the drive: do not format the card.";
 /// The scrollables' fixed ids, as `Scrollable::diff` never looks at an id (DEC-073 (1)).
@@ -67,14 +75,22 @@ const BANNER_MOST: f32 = 104.0;
 
 /// How volumes are found: injected, so tests give literal folders (DEC-068 (5)).
 pub type Discover = Arc<dyn Fn() -> Volumes + Send + Sync>;
+/// What the first start checks with: `flow::start_found`, or what a test holds as a stuck
+/// drive would be (DEC-081 (1)).
+pub(crate) type Check =
+    Arc<dyn Fn(&Path, Option<&str>) -> Result<Session, SyncError> + Send + Sync>;
 
 /// `Msg` is not `Clone` and a button needs that, so what the worker and discovery
 /// send stays in channels, and this only says to go and read them (DEC-068 (4)).
 #[derive(Debug, Clone)]
 pub enum M {
     Row(PathBuf),
-    /// All a field holds now, after a key or a paste.
-    Field(String),
+    /// All a field holds now, after a key or a paste, and the screen of that field. iced
+    /// handles a tick's events on the widgets drawn before them, so a key after Enter comes
+    /// from the field just left, with all that field held (DEC-081 (3)).
+    Field(Screen, String),
+    /// Esc was pressed, wherever it went (DEC-081 (4)).
+    Escape,
     Next,
     /// Its own message, never `Next`: a click left from the name screen must start nothing.
     Start,
@@ -83,6 +99,8 @@ pub enum M {
     Quit,
     /// A look's thread has ended.
     Looked,
+    /// The first start's check has ended (DEC-081 (1)).
+    Checked,
     CloseRequested,
     /// A frame was drawn, while `--smoke-png` waits for one.
     SmokeFrame,
@@ -201,6 +219,15 @@ pub struct Gui {
     lost_drive: Option<PathBuf>,
     /// The running sync's messages, or the last one's until its sender has gone.
     hearing: Option<Hearing>,
+    pub(crate) check: Check,
+    /// The number of the latest check started, and the one the screen waits for, if any.
+    newest_check: u64,
+    waited_check: Option<u64>,
+    checks_tx: Sender<(u64, Result<Session, SyncError>)>,
+    checks: Receiver<(u64, Result<Session, SyncError>)>,
+    /// Answers dropped as out of date: a test sees it.
+    #[cfg(test)]
+    pub(crate) dropped_checks: u64,
     #[cfg(test)]
     pub(crate) before_send: Option<BeforeSend>,
     #[cfg(test)]
@@ -217,6 +244,7 @@ impl Gui {
     /// The state, and the task of the first look.
     pub fn boot(discover: Discover, smoke_png: Option<PathBuf>) -> (Gui, Task<M>) {
         let (answers_tx, answers) = mpsc::channel();
+        let (checks_tx, checks) = mpsc::channel();
         let mut gui = Gui {
             // Never `App::new`: the library check stays on (DEC-050 (7)).
             app: App::checking_library(),
@@ -232,6 +260,13 @@ impl Gui {
             picked_drive: None,
             lost_drive: None,
             hearing: None,
+            check: Arc::new(flow::start_found),
+            newest_check: 0,
+            waited_check: None,
+            checks_tx,
+            checks,
+            #[cfg(test)]
+            dropped_checks: 0,
             #[cfg(test)]
             before_send: None,
             #[cfg(test)]
@@ -311,6 +346,56 @@ impl Gui {
             } else {
                 self.dropped_looks += 1;
             }
+        }
+    }
+
+    /// The first start's check is out: Start is held, and all else stays live.
+    pub fn checking(&self) -> bool {
+        self.waited_check.is_some()
+    }
+
+    /// The first start's check, on its own thread, as a stuck drive must not hold the window.
+    /// One that never ends holds nothing the app needs, as a look does not (DEC-081 (1)).
+    fn ask_check(&mut self, library: PathBuf, name: Option<String>) -> Task<M> {
+        self.newest_check += 1;
+        let number = self.newest_check;
+        self.waited_check = Some(number);
+        let check = self.check.clone();
+        let answers = self.checks_tx.clone();
+        let (ended, heard) = oneshot::channel::<()>();
+        thread::spawn(move || {
+            let answer = check(&library, name.as_deref());
+            let _ = answers.send((number, answer));
+            let _ = ended.send(());
+        });
+        Task::perform(heard, |_| M::Checked)
+    }
+
+    /// Only the answer the screen waits for reaches the model: one from before a Back is of a
+    /// library the screen may no longer name, and must neither start nor refuse.
+    fn take_check_answers(&mut self) -> Task<M> {
+        let mut task = Task::none();
+        while let Ok((number, answer)) = self.checks.try_recv() {
+            if self.waited_check != Some(number) {
+                #[cfg(test)]
+                {
+                    self.dropped_checks += 1;
+                }
+                continue;
+            }
+            self.waited_check = None;
+            if let Some(Effect::Start(job)) = self.app.first_start_answered(answer) {
+                task = self.run(job);
+            }
+        }
+        task
+    }
+
+    /// Start copying: by the check's thread, if the model would run one on this.
+    fn start(&mut self) -> Task<M> {
+        match self.app.first_start() {
+            Some((library, name)) => self.ask_check(library, name),
+            None => self.key(Key::Enter),
         }
     }
 
@@ -497,6 +582,10 @@ impl Gui {
 pub fn update(gui: &mut Gui, message: M) -> Task<M> {
     let before = gui.place();
     let task = step(gui, message);
+    // The check was asked for by the screen left.
+    if gui.app.screen() != Screen::Confirm {
+        gui.waited_check = None;
+    }
     if gui.place() == before {
         return task;
     }
@@ -522,8 +611,9 @@ fn step(gui: &mut Gui, message: M) -> Task<M> {
         // start, so only the screen's own buttons get through (DEC-075 (1), DEC-079 (1)).
         M::Row(_) | M::LookAgain if !on_a_list => Task::none(),
         M::Next if !on_a_list && !on_a_field => Task::none(),
-        M::Field(_) if !on_a_field => Task::none(),
-        M::Start if screen != Screen::Confirm => Task::none(),
+        M::Field(..) | M::Escape if !on_a_field => Task::none(),
+        M::Field(of, _) if of != screen => Task::none(),
+        M::Start if screen != Screen::Confirm || gui.checking() => Task::none(),
         M::Quit if !on_a_list && !matches!(screen, Screen::Confirm | Screen::Refused) => {
             Task::none()
         }
@@ -534,22 +624,24 @@ fn step(gui: &mut Gui, message: M) -> Task<M> {
         M::Cancel if screen != Screen::Running => Task::none(),
         M::Row(_) | M::Next if held => Task::none(),
         M::Row(path) => gui.pick(&path),
-        M::Field(value) => {
+        M::Field(_, value) => {
             gui.retype(&value);
             Task::none()
         }
         M::Next if screen == Screen::Drive => gui.take_marked_drive(),
-        M::Next | M::Start => gui.key(Key::Enter),
+        M::Next => gui.key(Key::Enter),
+        M::Start => gui.start(),
         M::LookAgain => gui.key(Key::Char('r')),
         M::Quit => gui.key(Key::Char('q')),
         M::Looked => {
             gui.take_answers();
             Task::none()
         }
+        M::Checked => gui.take_check_answers(),
         M::CloseRequested => gui.key(Key::CtrlC),
         M::SmokeFrame => gui.smoke_frame(),
         M::SmokeShot(shot) => gui.smoke_shot(&shot),
-        M::Back => gui.key(Key::Esc),
+        M::Back | M::Escape => gui.key(Key::Esc),
         M::Cancel => gui.key(Key::Char('c')),
         M::Wake => {
             #[cfg(test)]
@@ -647,7 +739,7 @@ fn library(gui: &Gui) -> Element<'_, M> {
             FIELD,
             "Library folder",
             gui.app.library(),
-            M::Field,
+            |value| M::Field(Screen::Library, value),
             M::Next
         ),
         words(LIBRARY_HELP[0]),
@@ -664,7 +756,13 @@ fn name(gui: &Gui) -> Element<'_, M> {
         app.folder_preview()
     );
     let body = column![
-        field(FIELD, "No name", app.name(), M::Field, M::Next),
+        field(
+            FIELD,
+            "No name",
+            app.name(),
+            |value| M::Field(Screen::Name, value),
+            M::Next
+        ),
         words(goes_to),
         words(NAME_HELP),
     ];
@@ -716,7 +814,7 @@ fn check(gui: &Gui) -> Element<'_, M> {
         action("Back", Some(M::Back)),
         Space::new().width(Length::Fill),
         action("Quit", Some(M::Quit)),
-        action("Start copying", Some(M::Start)),
+        action("Start copying", (!gui.checking()).then_some(M::Start)),
     ];
     fixed_around(gui, heading, body, buttons)
 }
@@ -825,6 +923,9 @@ fn fixed_around<'a>(
     if let Some(why) = gui.next_held_because() {
         under = under.push(hint(why));
     }
+    if gui.checking() {
+        under = under.push(hint(CHECKING));
+    }
     if let Some(words) = gui.app.hint() {
         under = under.push(hint(hint_words(words)));
     }
@@ -869,13 +970,28 @@ pub fn banner(exit: &Exit, outcome: Option<&Outcome>) -> Option<String> {
     Some(words.unwrap_or_default())
 }
 
+/// What a press of Esc says. Not `keyboard::listen`, which hears only what no widget took: a
+/// focused field takes Esc, and only loses its focus. A held key repeats, and must not walk
+/// back past the screen it was pressed on (DEC-081 (4)).
+fn escape_of(event: Event, _status: event::Status, _window: window::Id) -> Option<M> {
+    match event {
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            repeat: false,
+            ..
+        }) => Some(M::Escape),
+        _ => None,
+    }
+}
+
 pub fn subscription(gui: &Gui) -> Subscription<M> {
     let closes = window::close_requests().map(|_| M::CloseRequested);
+    let escapes = event::listen_with(escape_of);
     // Only then: a frame's message makes the next frame, which an idle app must not.
     if gui.smoke.is_some() && !gui.looking() {
-        return Subscription::batch([closes, window::frames().map(|_| M::SmokeFrame)]);
+        return Subscription::batch([closes, escapes, window::frames().map(|_| M::SmokeFrame)]);
     }
-    closes
+    Subscription::batch([closes, escapes])
 }
 
 /// The program, one for the real window and for the Emulator, so the tests run what ships.

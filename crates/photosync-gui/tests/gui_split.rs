@@ -479,6 +479,18 @@ fn a_close_is_heard_not_obeyed() {
     assert!(product.contains("close_requests"), "DEC-069 (4)");
 }
 
+/// The Emulator gives its subscriptions no events, so a test of the program cannot see this,
+/// and `keyboard::listen` hears nothing a focused field took (DEC-081 (4)).
+#[test]
+fn esc_is_heard_with_what_a_field_took() {
+    let product: String = product_files().iter().map(|f| read_code(f)).collect();
+    assert!(
+        product.contains("event::listen_with(escape_of)"),
+        "DEC-081 (4)"
+    );
+    assert!(!product.contains("keyboard::listen"), "DEC-081 (4)");
+}
+
 #[test]
 fn only_the_helpers_file_calls_text_button_and_checkbox() {
     let others: Vec<PathBuf> = product_files()

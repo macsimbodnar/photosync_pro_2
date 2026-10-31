@@ -2,14 +2,14 @@
 //! `screen_check` for a screen's words and pictures, `fixed_in_sight` for what may never
 //! scroll, `fixed_box_in_sight` for a box of words that stands with it, `in_sight` for what
 //! shows when the screen opens, `click` for a button that must answer and `clicks` to prove
-//! one held, `play` for the real program, tasks and threads included, and
-//! `blocked_discovery` to hold a look.
+//! one held, `play` for the real program, tasks and threads included, `blocked_discovery` to
+//! hold a look, and `blocked_check` to hold the first start's check.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread::sleep;
+use std::thread::{self, ThreadId, sleep};
 use std::time::{Duration, Instant};
 
 use iced::{Rectangle, Size, Theme};
@@ -20,9 +20,10 @@ use iced_test::futures::futures::channel::mpsc::{self as emulator_channel, TryRe
 use iced_test::instruction::{Expectation, Interaction, Mouse, Target as ClickAt};
 use iced_test::selector::{self, Candidate, Target};
 use iced_test::{Instruction, Simulator};
-use photosync_core::{ScanError, Volumes};
+use photosync_core::{ScanError, Session, Volumes};
+use photosync_front::flow::SyncError;
 
-use crate::gui::{self, BODY, Discover, ForTest, Gui, LEAST, M, WINDOW, update, view};
+use crate::gui::{self, BODY, Check, Discover, ForTest, Gui, LEAST, M, WINDOW, update, view};
 
 /// A test that waits longer than this has found a fault: never hang the gate.
 pub(crate) const LIMIT: Duration = Duration::from_secs(120);
@@ -84,6 +85,60 @@ pub(crate) fn blocked_discovery() -> (Discover, Receiver<Sender<Volumes>>) {
 /// The next look a `blocked_discovery` started.
 pub(crate) fn next_look(started: &Receiver<Sender<Volumes>>) -> Sender<Volumes> {
     started.recv_timeout(LIMIT).expect("no look started")
+}
+
+/// A first start's check a `blocked_check` holds, as a stuck drive would.
+pub(crate) struct AskedCheck {
+    pub(crate) library: PathBuf,
+    pub(crate) name: Option<String>,
+    pub(crate) thread: ThreadId,
+    pub(crate) answer: Sender<Result<Session, SyncError>>,
+}
+
+/// A check in which each waits for its `answer`. Only by plain `update` and the Simulator, as
+/// `blocked_discovery`.
+pub(crate) fn blocked_check() -> (Check, Receiver<AskedCheck>) {
+    let (asked, started) = mpsc::channel();
+    let check: Check = Arc::new(move |library, name| {
+        let (answer, answered) = mpsc::channel();
+        asked
+            .send(AskedCheck {
+                library: library.to_path_buf(),
+                name: name.map(String::from),
+                thread: thread::current().id(),
+                answer,
+            })
+            .unwrap();
+        answered
+            .recv()
+            .unwrap_or_else(|_| panic!("the test dropped its check"))
+    });
+    (check, started)
+}
+
+/// The next check a `blocked_check` started.
+pub(crate) fn next_check(started: &Receiver<AskedCheck>) -> AskedCheck {
+    started.recv_timeout(LIMIT).expect("no check started")
+}
+
+/// Takes the check's answer, as `M::Checked` would when its thread ends. Its task is dropped,
+/// as `click`'s are.
+pub(crate) fn settle_check(gui: &mut Gui) {
+    let started = Instant::now();
+    loop {
+        let _ = update(gui, M::Checked);
+        if !gui.checking() {
+            return;
+        }
+        assert!(started.elapsed() < LIMIT, "no answer came to the check");
+        sleep(Duration::from_millis(1));
+    }
+}
+
+/// A click on Start copying, and its check's answer.
+pub(crate) fn start_copying(gui: &mut Gui) {
+    click(gui, "Start copying");
+    settle_check(gui);
 }
 
 /// Hears the worker until the sync's end has reached the model, as `M::Wake` and `M::Gone`
@@ -470,6 +525,9 @@ pub(crate) enum Step {
     Fails(&'static str),
     /// The body to its end.
     ScrollEnd,
+    /// A message the Emulator cannot send, as its subscriptions hear no events, and how many
+    /// actions its task performs, each awaited, as nothing says it is done.
+    Send(M, usize),
     /// Reaches the state the Emulator holds, as to set what a later click will use.
     Set(Arc<dyn Fn(&mut Gui) + Send + Sync>),
 }
@@ -492,7 +550,7 @@ pub(crate) fn play_steps(discover: Discover, steps: Vec<Step>) -> Gui {
     let mut emulator = Emulator::new(events, &program, Mode::Zen, WINDOW);
     let mut steps = steps.into_iter();
     let started = Instant::now();
-    let (mut go_on, mut must_fail, mut scrolling) = (false, false, false);
+    let (mut go_on, mut must_fail, mut awaited) = (false, false, 0);
     // The click of a `Step::Fails` whose `expect` is running.
     let mut click_next = None;
     loop {
@@ -515,8 +573,12 @@ pub(crate) fn play_steps(discover: Discover, steps: Vec<Step>) -> Gui {
                     emulator.run(&program, Instruction::Expect(Expectation::Text(words)));
                 }
                 Some(Step::ScrollEnd) => {
-                    scrolling = true;
+                    awaited = 1;
                     emulator.update(&program, M::ScrollEndForTest);
+                }
+                Some(Step::Send(message, actions)) => {
+                    awaited = actions;
+                    emulator.update(&program, message);
                 }
                 Some(Step::Set(reach)) => {
                     // Its task is none, so nothing will say it is done.
@@ -528,9 +590,9 @@ pub(crate) fn play_steps(discover: Discover, steps: Vec<Step>) -> Gui {
         match heard.try_recv() {
             Ok(Event::Action(action)) => {
                 emulator.perform(&program, action);
-                if scrolling {
-                    scrolling = false;
-                    go_on = true;
+                if awaited > 0 {
+                    awaited -= 1;
+                    go_on = awaited == 0;
                 }
             }
             Ok(Event::Failed(line)) => {

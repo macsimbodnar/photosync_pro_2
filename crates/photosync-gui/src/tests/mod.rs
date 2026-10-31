@@ -12,12 +12,17 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use iced::event::Status;
+use iced::keyboard::key::Named;
 use iced::widget::{Space, button, column, container, row, scrollable, text_input};
-use iced::{Color, Element, Length, Size, Theme, window};
+use iced::{Color, Element, Length, Size, Theme, keyboard, window};
 use iced_test::Simulator;
 use iced_test::core::Settings;
 use iced_test::emulator::{Emulator, Event, Mode};
 use iced_test::futures::futures::channel::mpsc::{self as emulator_channel, TryRecvError};
+use iced_test::futures::futures::executor::LocalPool;
+use iced_test::futures::futures::task::LocalSpawnExt;
+use iced_test::futures::subscription::{self, Tracker};
 use iced_test::selector::{self, Target};
 use photosync_core::{Counts, Event as CoreEvent, EventKind, Phase, Progress, SourceProgress};
 use photosync_front::app::{Effect, Exit, Job, Key, Msg, Outcome, Screen};
@@ -26,9 +31,9 @@ use photosync_front::{flow, text};
 use crate::args::{Options, parse};
 use crate::common::TempDir;
 use crate::gui::{
-    self, BANNER, BODY, CANCELLING, CARDS_ONLY_READ, CLOSE_AGAIN, DO_NOT_FORMAT, DRIVE_GONE,
-    Discover, Gui, LEAST, LIBRARY_HELP, LOOKING, M, NAME_HELP, NOT_SAFE, PICK_A_DRIVE, SCANNING,
-    THE_DATE_TO_COME, TITLE, WINDOW, WorkerSend, banner, card_line, share, update, view,
+    self, BANNER, BODY, CANCELLING, CARDS_ONLY_READ, CHECKING, CLOSE_AGAIN, DO_NOT_FORMAT,
+    DRIVE_GONE, Discover, Gui, LEAST, LIBRARY_HELP, LOOKING, M, NAME_HELP, NOT_SAFE, PICK_A_DRIVE,
+    SCANNING, THE_DATE_TO_COME, TITLE, WINDOW, WorkerSend, banner, card_line, share, update, view,
 };
 use crate::png;
 use crate::widgets::{row_under_cursor, words};
@@ -298,7 +303,7 @@ fn nothing_goes_on_from_the_copying_screen() {
     let folders = Folders::new();
     fs::create_dir_all(&folders.library).unwrap();
     let mut gui = to_the_check(&folders);
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
     assert_eq!(gui.app.screen(), Screen::Running);
     assert!(says(&gui, TITLE));
     assert!(
@@ -997,7 +1002,7 @@ fn clicks_drawn_on_the_screen_left_do_nothing_on_a_field() {
     let mut gui = on_the_drive_screen(&[DRIVE_A]);
     click(&mut gui, "Next");
     for on in [Screen::Library, Screen::Name] {
-        let _ = update(&mut gui, M::Field("typed".to_string()));
+        let _ = update(&mut gui, M::Field(on, "typed".to_string()));
         for message in [
             M::Row(PathBuf::from(CARD_A)),
             M::Row(PathBuf::from(DRIVE_A)),
@@ -1199,16 +1204,16 @@ fn no_words_on_these_screens_name_a_key() {
     let folders = Folders::new();
     let mut gui = on_the_library_screen(&folders);
     no_key_named(&gui, "library");
-    let _ = update(&mut gui, M::Field(String::new()));
+    fill(&mut gui, "");
     click(&mut gui, "Next");
     assert!(gui.app.hint().is_some());
     no_key_named(&gui, "the hint of no library");
-    let _ = update(&mut gui, M::Field(folders.library.clone()));
+    fill(&mut gui, &folders.library);
     click(&mut gui, "Next");
     no_key_named(&gui, "name");
     click(&mut gui, "Next");
     no_key_named(&gui, "check");
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
     assert_eq!(gui.app.screen(), Screen::Refused);
     no_key_named(&gui, "refused");
     click(&mut gui, REFUSED_BACK);
@@ -2289,7 +2294,8 @@ fn field_of(gui: &Gui) -> String {
 }
 
 fn fill(gui: &mut Gui, value: &str) {
-    let _ = update(gui, M::Field(value.to_string()));
+    let on = gui.app.screen();
+    let _ = update(gui, M::Field(on, value.to_string()));
 }
 
 fn goes_to(gui: &Gui) -> String {
@@ -2573,7 +2579,7 @@ fn a_long_library_shows_whole_on_the_name_screen_and_the_check() {
 fn a_library_that_is_not_there_is_refused_at_start_and_can_be_fixed() {
     let folders = Folders::new();
     let mut gui = to_the_check(&folders);
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
 
     let library = PathBuf::from(&folders.library);
     let sentence = text::refusal(&flow::start_found(&library, None).unwrap_err());
@@ -2637,7 +2643,7 @@ fn start_copying_gives_the_worker_the_job_it_asked_for_once() {
     let given = Arc::new(Mutex::new(Vec::new()));
     gui.test_worker = Some(keeping_the_job(given.clone()));
     assert_eq!(gui.syncs_started, 0);
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
     assert_eq!(gui.app.screen(), Screen::Running);
     assert!(gui.app.in_session());
     assert_eq!(gui.syncs_started, 1);
@@ -2671,7 +2677,7 @@ fn a_bad_name_is_refused_the_same_with_no_card_read_and_can_be_fixed() {
         click(&mut gui, "Next");
         fill(&mut gui, name);
         click(&mut gui, "Next");
-        click(&mut gui, "Start copying");
+        start_copying(&mut gui);
 
         let library = PathBuf::from(&folders.library);
         let sentence = text::refusal(&flow::start_found(&library, Some(name)).unwrap_err());
@@ -2697,7 +2703,7 @@ fn a_bad_name_is_refused_the_same_with_no_card_read_and_can_be_fixed() {
         assert_eq!(gui.app.name(), name, "still there to fix");
         fill(&mut gui, "Tirana");
         click(&mut gui, "Next");
-        click(&mut gui, "Start copying");
+        start_copying(&mut gui);
         assert_eq!(gui.app.screen(), Screen::Running);
         assert!(gui.app.in_session());
     }
@@ -2707,7 +2713,7 @@ fn a_bad_name_is_refused_the_same_with_no_card_read_and_can_be_fixed() {
 fn refused_buttons_answer_and_quit_quits() {
     let folders = Folders::new();
     let mut gui = to_the_check(&folders);
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
     click(&mut gui, "Quit");
     assert!(gui.quit);
     assert_eq!(gui.app.exit().code, 2);
@@ -2733,7 +2739,7 @@ fn no_sync_starts_with_the_only_card_dropped_by_look_again() {
     click(&mut gui, "Next");
     assert_eq!(gui.app.screen(), Screen::Confirm);
 
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
     assert_eq!(gui.app.screen(), Screen::Confirm);
     assert!(!gui.app.in_session());
     assert_eq!(gui.syncs_started, 0);
@@ -2747,7 +2753,7 @@ fn no_sync_starts_with_the_only_card_dropped_by_look_again() {
 fn the_banner_holds_on_the_library_name_and_check_screens() {
     let folders = Folders::new();
     let mut gui = to_the_check(&folders);
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
     let message = gui.app.exit().message.unwrap();
     assert_eq!(gui.app.exit().code, 2);
     assert!(message.contains("does not exist"), "{message}");
@@ -2796,7 +2802,7 @@ fn a_long_banner_leaves_each_field_and_button() {
     fill(&mut gui, &long);
     click(&mut gui, "Next");
     click(&mut gui, "Next");
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
     let message = gui.app.exit().message.unwrap();
     click(&mut gui, REFUSED_BACK);
     fixed_in_sight(&gui, LEAST, &[NOT_SAFE]);
@@ -2846,7 +2852,7 @@ fn stale_clicks_start_nothing_on_the_check_or_the_refusal() {
     // Left from the name screen: its Next, and Enter in its field, send this.
     for message in [
         M::Next,
-        M::Field("q r n".to_string()),
+        M::Field(Screen::Name, "q r n".to_string()),
         M::Row(PathBuf::from(&folders.card)),
         M::LookAgain,
     ] {
@@ -2862,12 +2868,12 @@ fn stale_clicks_start_nothing_on_the_check_or_the_refusal() {
 
     let folders = Folders::new();
     let mut gui = to_the_check(&folders);
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
     assert_eq!(gui.app.screen(), Screen::Refused);
     for message in [
         M::Start,
         M::Next,
-        M::Field("q r n".to_string()),
+        M::Field(Screen::Name, "q r n".to_string()),
         M::Row(PathBuf::from(&folders.card)),
         M::LookAgain,
     ] {
@@ -2880,7 +2886,7 @@ fn stale_clicks_start_nothing_on_the_check_or_the_refusal() {
     let folders = Folders::new();
     fs::create_dir_all(&folders.library).unwrap();
     let mut gui = to_the_check(&folders);
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
     let _ = update(&mut gui, M::Start);
     let _ = update(&mut gui, M::Quit);
     let _ = update(&mut gui, M::Back);
@@ -2891,7 +2897,7 @@ fn stale_clicks_start_nothing_on_the_check_or_the_refusal() {
     // A field's stale words reach no list either: a space would pick the row.
     let folders = Folders::new();
     let mut gui = booted(literal(&[&folders.card], &[&folders.drive]));
-    let _ = update(&mut gui, M::Field(" ".to_string()));
+    let _ = update(&mut gui, M::Field(Screen::Name, " ".to_string()));
     let _ = update(&mut gui, M::Start);
     assert_eq!(gui.app.screen(), Screen::Sources);
     assert!(gui.app.picked().is_empty());
@@ -2923,7 +2929,7 @@ fn the_second_click_of_a_double_lands_on_nothing_that_starts_or_quits() {
         assert!(apart(next, start), "Next {next:?}, Start copying {start:?}");
         assert!(apart(next, quit), "Next {next:?}, Quit {quit:?}");
 
-        click(&mut gui, "Start copying");
+        start_copying(&mut gui);
         let back = across(&gui, size, REFUSED_BACK);
         let refused_quit = across(&gui, size, "Quit");
         assert!(apart(start, back), "Start {start:?}, Back {back:?}");
@@ -3023,7 +3029,7 @@ fn a_marked_drive_goes_below_the_fold_at_the_number_the_decisions_give() {
     click(&mut gui, "Next");
     click(&mut gui, "Next");
     click(&mut gui, "Next");
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
     assert_eq!(gui.app.screen(), Screen::Refused);
     for _ in 0..4 {
         let _ = update(&mut gui, M::Back);
@@ -3040,6 +3046,7 @@ fn a_marked_drive_goes_below_the_fold_at_the_number_the_decisions_give() {
     let _ = update(&mut gui, M::Next);
     let _ = update(&mut gui, M::Next);
     let _ = update(&mut gui, M::Start);
+    settle_check(&mut gui);
     assert_eq!(gui.app.screen(), Screen::Refused);
     for _ in 0..4 {
         let _ = update(&mut gui, M::Back);
@@ -3477,7 +3484,7 @@ fn the_window_never_waits_for_the_worker_that_holds_the_session() {
             }
         }
     }));
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
     reached.recv_timeout(LIMIT).expect("the worker scanned");
 
     // The sync holds the session's lock in its scan. A lock taken here waits out the limit.
@@ -3624,7 +3631,7 @@ fn planning_has_its_own_words_and_can_be_cancelled() {
     let mut gui = to_the_check(&folders);
     let given = Arc::new(Mutex::new(Vec::new()));
     gui.test_worker = Some(keeping_the_job(given.clone()));
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
     let lines = scan_lines(1);
     hear_scans(&mut gui, &lines);
     let progress = snapshot(
@@ -3652,7 +3659,7 @@ fn cancel_says_so_on_the_screen_and_is_held_after_it() {
     let mut gui = to_the_check(&folders);
     let given = Arc::new(Mutex::new(Vec::new()));
     gui.test_worker = Some(keeping_the_job(given.clone()));
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
     assert!(!says(&gui, CANCELLING));
     assert!(!says(&gui, CLOSE_AGAIN));
     let progress = snapshot(
@@ -3683,7 +3690,7 @@ fn a_close_while_copying_cancels_and_stays() {
     let mut gui = to_the_check(&folders);
     let given = Arc::new(Mutex::new(Vec::new()));
     gui.test_worker = Some(keeping_the_job(given.clone()));
-    click(&mut gui, "Start copying");
+    start_copying(&mut gui);
     let _ = update(&mut gui, M::CloseRequested);
     assert!(given.lock().unwrap()[0].0.cancel.is_cancelled());
     assert!(!gui.quit);
@@ -3772,8 +3779,543 @@ fn cancel_stands_apart_from_start_copying() {
         let mut gui = to_the_check(&folders);
         let start = across(&gui, size, "Start copying");
         gui.test_worker = Some(keeping_the_job(Arc::new(Mutex::new(Vec::new()))));
-        click(&mut gui, "Start copying");
+        start_copying(&mut gui);
         let cancel = across(&gui, size, "Cancel");
         assert!(apart(start, cancel), "Start {start:?}, Cancel {cancel:?}");
     }
+}
+
+// The first start's check, on its own thread (S065, DEC-081 (1)).
+
+/// On the check screen, with a library there, and each check held as by a stuck drive.
+fn held_at_the_check(folders: &Folders) -> (Gui, mpsc::Receiver<AskedCheck>) {
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(folders);
+    let (check, asked) = blocked_check();
+    gui.check = check;
+    (gui, asked)
+}
+
+/// A press of Start copying, which comes back with the check still out.
+fn press_start(gui: &mut Gui, asked: &mpsc::Receiver<AskedCheck>) -> AskedCheck {
+    let _ = update(gui, M::Start);
+    assert!(gui.checking(), "the check must not run on this thread");
+    next_check(asked)
+}
+
+/// What the real check says, given as the held one's answer.
+fn answer_as_the_real_one(check: AskedCheck) {
+    let answer = flow::start_found(&check.library, check.name.as_deref());
+    check.answer.send(answer).unwrap();
+}
+
+fn wait_for_dropped_checks(gui: &mut Gui, count: u64) {
+    let started = Instant::now();
+    while gui.dropped_checks < count {
+        let _ = update(gui, M::Checked);
+        assert!(started.elapsed() < LIMIT, "no answer came to the check");
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn a_stuck_check_leaves_the_window_live_saying_so_with_start_held() {
+    let folders = Folders::new();
+    let (mut gui, asked) = held_at_the_check(&folders);
+    gui.test_worker = Some(keeping_the_job(Arc::new(Mutex::new(Vec::new()))));
+    let this_thread = thread::current().id();
+
+    let check = press_start(&mut gui, &asked);
+
+    assert_ne!(check.thread, this_thread);
+    assert_eq!(check.library, PathBuf::from(&folders.library));
+    assert_eq!(check.name, None);
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    assert!(!gui.app.in_session());
+    assert_eq!(gui.syncs_started, 0);
+    let library = folders.library.as_str();
+    let words = [
+        TITLE,
+        CHECK_HEADING,
+        CHECKING,
+        library,
+        "Start copying",
+        "Back",
+        "Quit",
+    ];
+    screen_check(&gui, "S065", "checking", &words);
+    let fixed = [
+        TITLE,
+        CHECK_HEADING,
+        CHECKING,
+        "Start copying",
+        "Back",
+        "Quit",
+    ];
+    fixed_in_sight(&gui, LEAST, &fixed);
+    fixed_in_sight(&gui, WINDOW, &fixed);
+    assert!(clicks(&gui, "Start copying").is_empty(), "drawn held");
+    no_key_named(&gui, "checking");
+
+    answer_as_the_real_one(check);
+    settle_check(&mut gui);
+    assert_eq!(gui.app.screen(), Screen::Running);
+    assert!(gui.app.in_session());
+    assert_eq!(gui.syncs_started, 1);
+    assert!(!says(&gui, CHECKING));
+}
+
+#[test]
+fn before_a_start_nothing_says_checking_and_start_is_live() {
+    let folders = Folders::new();
+    let (gui, _asked) = held_at_the_check(&folders);
+    assert!(!gui.checking());
+    assert!(!says(&gui, CHECKING));
+    assert_eq!(clicks(&gui, "Start copying").len(), 1);
+}
+
+#[test]
+fn a_second_press_while_checking_starts_nothing() {
+    let folders = Folders::new();
+    let (mut gui, asked) = held_at_the_check(&folders);
+    gui.test_worker = Some(keeping_the_job(Arc::new(Mutex::new(Vec::new()))));
+    let check = press_start(&mut gui, &asked);
+
+    for _ in 0..3 {
+        let _ = update(&mut gui, M::Start);
+    }
+    answer_as_the_real_one(check);
+    settle_check(&mut gui);
+    assert_eq!(gui.syncs_started, 1);
+    assert!(
+        asked.recv_timeout(Duration::from_millis(200)).is_err(),
+        "a second check was started"
+    );
+}
+
+#[test]
+fn a_close_while_checking_is_heard_and_so_is_quit() {
+    let folders = Folders::new();
+    let (mut gui, asked) = held_at_the_check(&folders);
+    let _check = press_start(&mut gui, &asked);
+    let _ = update(&mut gui, M::CloseRequested);
+    assert!(gui.quit, "a close");
+
+    let folders = Folders::new();
+    let (mut gui, asked) = held_at_the_check(&folders);
+    let _check = press_start(&mut gui, &asked);
+    click(&mut gui, "Quit");
+    assert!(gui.quit, "the button");
+}
+
+#[test]
+fn back_while_checking_drops_the_answer_whatever_it_says() {
+    // The library is gone by the answer, so it would refuse, and mark the session not safe.
+    let folders = Folders::new();
+    let (mut gui, asked) = held_at_the_check(&folders);
+    let check = press_start(&mut gui, &asked);
+    click(&mut gui, "Back");
+    assert_eq!(gui.app.screen(), Screen::Name);
+    assert!(!gui.checking());
+    fs::remove_dir(&folders.library).unwrap();
+    answer_as_the_real_one(check);
+    wait_for_dropped_checks(&mut gui, 1);
+    assert_eq!(gui.app.screen(), Screen::Name);
+    assert!(gui.app.outcome().is_none());
+    assert_eq!(gui.app.exit().code, 0);
+    assert!(!gui.app.in_session());
+
+    // A good answer starts nothing either.
+    let folders = Folders::new();
+    let (mut gui, asked) = held_at_the_check(&folders);
+    let check = press_start(&mut gui, &asked);
+    click(&mut gui, "Back");
+    answer_as_the_real_one(check);
+    wait_for_dropped_checks(&mut gui, 1);
+    assert_eq!(gui.app.screen(), Screen::Name);
+    assert!(!gui.app.in_session());
+    assert_eq!(gui.syncs_started, 0);
+}
+
+#[test]
+fn back_and_start_again_goes_by_the_newest_answer_in_either_order() {
+    for oldest_first in [true, false] {
+        let folders = Folders::new();
+        let (mut gui, asked) = held_at_the_check(&folders);
+        let given = Arc::new(Mutex::new(Vec::new()));
+        gui.test_worker = Some(keeping_the_job(given.clone()));
+        let old = press_start(&mut gui, &asked);
+
+        // Back past the name, to another library.
+        click(&mut gui, "Back");
+        click(&mut gui, "Back");
+        let other = folders.dir.0.join("DRIVE/Other");
+        fs::create_dir_all(&other).unwrap();
+        fill(&mut gui, &other.display().to_string());
+        click(&mut gui, "Next");
+        click(&mut gui, "Next");
+        assert_eq!(gui.app.screen(), Screen::Confirm);
+        assert!(!says(&gui, CHECKING), "this one is not asked yet");
+        let new = press_start(&mut gui, &asked);
+        assert_eq!(new.library, other);
+
+        if oldest_first {
+            answer_as_the_real_one(old);
+            wait_for_dropped_checks(&mut gui, 1);
+            assert!(gui.checking(), "the newest is still waited for");
+            assert_eq!(gui.syncs_started, 0);
+            answer_as_the_real_one(new);
+            settle_check(&mut gui);
+        } else {
+            answer_as_the_real_one(new);
+            settle_check(&mut gui);
+            answer_as_the_real_one(old);
+            wait_for_dropped_checks(&mut gui, 1);
+        }
+        assert_eq!(gui.app.screen(), Screen::Running);
+        assert_eq!(gui.syncs_started, 1);
+        let given = given.lock().unwrap();
+        let [(job, _)] = &given[..] else {
+            panic!("{} jobs", given.len());
+        };
+        assert_eq!(flow::lock(&job.session).library(), other, "the one named");
+    }
+}
+
+#[test]
+fn the_same_library_after_back_still_waits_for_its_own_answer() {
+    // The first answer would have done, but the click it belongs to was taken back.
+    let folders = Folders::new();
+    let (mut gui, asked) = held_at_the_check(&folders);
+    let old = press_start(&mut gui, &asked);
+    click(&mut gui, "Back");
+    click(&mut gui, "Next");
+    answer_as_the_real_one(old);
+    wait_for_dropped_checks(&mut gui, 1);
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    assert!(!gui.checking());
+    assert!(!gui.app.in_session());
+    assert_eq!(gui.syncs_started, 0);
+}
+
+#[test]
+fn a_refusal_answer_is_the_refused_screen_and_start_works_after_it() {
+    let folders = Folders::new();
+    let mut gui = to_the_check(&folders);
+    let (check, asked) = blocked_check();
+    gui.check = check;
+    let held = press_start(&mut gui, &asked);
+    answer_as_the_real_one(held);
+    settle_check(&mut gui);
+    assert_eq!(gui.app.screen(), Screen::Refused);
+    assert_eq!(gui.app.exit().code, 2);
+    assert!(!gui.app.in_session());
+
+    click(&mut gui, REFUSED_BACK);
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    assert!(!says(&gui, CHECKING));
+    fs::create_dir_all(&folders.library).unwrap();
+    gui.test_worker = Some(keeping_the_job(Arc::new(Mutex::new(Vec::new()))));
+    let held = press_start(&mut gui, &asked);
+    answer_as_the_real_one(held);
+    settle_check(&mut gui);
+    assert_eq!(gui.app.screen(), Screen::Running);
+}
+
+#[test]
+fn the_check_says_what_it_says_above_a_banner_at_the_least_size() {
+    // A refusal fills the banner, then the second try is held: all must still stand.
+    let folders = Folders::new();
+    let mut gui = on_the_library_screen(&folders);
+    fill(&mut gui, &"/not_there".repeat(100));
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    start_copying(&mut gui);
+    assert_eq!(gui.app.screen(), Screen::Refused);
+    click(&mut gui, REFUSED_BACK);
+    let (check, asked) = blocked_check();
+    gui.check = check;
+    let _held = press_start(&mut gui, &asked);
+    let fixed = [
+        TITLE,
+        CHECK_HEADING,
+        NOT_SAFE,
+        CHECKING,
+        "Start copying",
+        "Back",
+        "Quit",
+    ];
+    fixed_in_sight(&gui, LEAST, &fixed);
+    fixed_in_sight(&gui, WINDOW, &fixed);
+    let _ = picture_at(&gui, WINDOW, "S065", "checking_banner");
+    let _ = picture_at(&gui, LEAST, "S065", "checking_banner_least");
+}
+
+#[test]
+fn the_next_card_of_a_session_needs_no_check() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    gui.test_worker = Some(keeping_the_job(Arc::new(Mutex::new(Vec::new()))));
+    let asked = Arc::new(AtomicU32::new(0));
+    let counting = asked.clone();
+    gui.check = Arc::new(move |library, name| {
+        counting.fetch_add(1, Ordering::SeqCst);
+        flow::start_found(library, name)
+    });
+    start_copying(&mut gui);
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+
+    assert!(
+        gui.app
+            .update(Msg::Crashed("test crash".to_string()))
+            .is_none()
+    );
+    assert!(matches!(
+        key(&mut gui, Key::Char('n')),
+        Some(Effect::Discover)
+    ));
+    assert!(key(&mut gui, Key::Char(' ')).is_none());
+    assert!(key(&mut gui, Key::Enter).is_none());
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+
+    let _ = update(&mut gui, M::Start);
+    assert!(!gui.checking(), "a session says the library stays");
+    assert_eq!(gui.app.screen(), Screen::Running);
+    assert_eq!(gui.syncs_started, 2);
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn start_with_no_card_left_gives_the_models_hint_and_no_check() {
+    let folders = Folders::new();
+    let (mut gui, _asked) = held_at_the_check(&folders);
+    // `r` on the drive screen can drop the only card, and the check still opens.
+    assert!(gui.app.update(Msg::Volumes(Default::default())).is_none());
+    assert!(gui.app.picked().is_empty());
+    let _ = update(&mut gui, M::Start);
+    assert!(!gui.checking());
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    assert!(gui.app.hint().is_some());
+}
+
+#[test]
+fn through_the_real_runtime_the_threads_answer_reaches_the_screen() {
+    // Plain `update` drops the task that says the check has ended: only this runs it.
+    let folders = Folders::new();
+    let gui = play(
+        literal(&[&folders.card], &[&folders.drive]),
+        &[
+            r#"click "Next""#,
+            r#"click "Next""#,
+            r#"click "Next""#,
+            r#"click "Next""#,
+            r#"click "Start copying""#,
+            r#"expect "Stopped, no report""#,
+        ],
+    );
+    assert_eq!(gui.app.screen(), Screen::Refused);
+    assert!(!gui.checking());
+    assert!(!gui.app.in_session());
+}
+
+// A field's message names its screen (S065, DEC-081 (3)).
+
+#[test]
+fn a_fields_message_arriving_on_the_other_field_is_dropped() {
+    let folders = Folders::new();
+    let mut gui = on_the_library_screen(&folders);
+    let library = gui.app.library().to_string();
+
+    let _ = update(&mut gui, M::Field(Screen::Name, "for the name".to_string()));
+    assert_eq!(gui.app.library(), library, "a name's on the library");
+    assert_eq!(gui.app.name(), "");
+
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Name);
+    let _ = update(
+        &mut gui,
+        M::Field(Screen::Library, "for the library".to_string()),
+    );
+    assert_eq!(gui.app.name(), "", "a library's on the name");
+    assert_eq!(gui.app.library(), library);
+
+    // A field's own still lands.
+    let _ = update(&mut gui, M::Field(Screen::Name, "Tirana".to_string()));
+    assert_eq!(gui.app.name(), "Tirana");
+}
+
+#[test]
+fn enter_and_a_key_in_one_tick_put_nothing_in_the_name() {
+    // The real events on one view, as iced handles a tick's: the key comes from the library's
+    // field, with all that field held.
+    let folders = Folders::new();
+    let mut gui = on_the_library_screen(&folders);
+    let library = gui.app.library().to_string();
+    let messages: Vec<M> = {
+        let mut ui = screen(&gui, WINDOW);
+        ui.click(library.as_str()).unwrap();
+        ui.tap_key(Named::Enter);
+        ui.typewrite("x");
+        ui.into_messages().collect()
+    };
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    for message in messages {
+        let _ = update(&mut gui, message);
+    }
+    assert_eq!(gui.app.screen(), Screen::Name);
+    assert_eq!(gui.app.name(), "");
+    assert_eq!(gui.app.library(), library);
+}
+
+// Esc on a field goes back (S065, DEC-081 (4)).
+
+fn esc_press() -> iced::Event {
+    iced_test::simulator::press_key(Named::Escape, None)
+}
+
+fn held_esc() -> iced::Event {
+    let mut event = esc_press();
+    let iced::Event::Keyboard(keyboard::Event::KeyPressed { repeat, .. }) = &mut event else {
+        panic!("no press: {event:?}");
+    };
+    *repeat = true;
+    event
+}
+
+/// What the program's subscription sends for `event`, as the real window's loop gives it:
+/// the Emulator gives its subscriptions no events.
+fn heard_by_the_subscription(gui: &Gui, event: iced::Event, status: Status) -> Vec<M> {
+    let (sender, mut heard) = emulator_channel::channel(8);
+    let mut tracker = Tracker::new();
+    let mut pool = LocalPool::new();
+    let recipes = subscription::into_recipes(gui::subscription(gui));
+    for future in tracker.update(recipes.into_iter(), sender) {
+        pool.spawner().spawn_local(future).unwrap();
+    }
+    pool.run_until_stalled();
+    tracker.broadcast(subscription::Event::Interaction {
+        window: window::Id::unique(),
+        event,
+        status,
+    });
+    pool.run_until_stalled();
+    let mut messages = Vec::new();
+    while let Ok(message) = heard.try_recv() {
+        messages.push(message);
+    }
+    messages
+}
+
+#[test]
+fn the_subscription_hears_esc_whether_the_field_took_it_or_not() {
+    let gui = two_cards();
+    let the_escape = |event, status| heard_by_the_subscription(&gui, event, status);
+    for status in [Status::Captured, Status::Ignored] {
+        let heard = the_escape(esc_press(), status);
+        assert!(matches!(heard[..], [M::Escape]), "{status:?}: {heard:?}");
+        let heard = the_escape(held_esc(), status);
+        assert!(heard.is_empty(), "a held key: {status:?}: {heard:?}");
+        let release = iced_test::simulator::release_key(Named::Escape);
+        assert!(the_escape(release, status).is_empty(), "a release");
+        let other = iced_test::simulator::press_key(Named::Enter, None);
+        assert!(the_escape(other, status).is_empty(), "another key");
+    }
+}
+
+#[test]
+fn a_focused_field_takes_esc_so_only_the_captured_status_hears_it_there() {
+    // Why not `keyboard::listen`: this pins iced's side of it.
+    let folders = Folders::new();
+    let gui = on_the_library_screen(&folders);
+    let library = gui.app.library().to_string();
+    let mut ui = screen(&gui, WINDOW);
+    ui.click(library.as_str()).unwrap();
+    assert_eq!(ui.tap_key(Named::Escape), Status::Captured);
+    assert_eq!(ui.tap_key(Named::Escape), Status::Ignored, "focus is gone");
+}
+
+#[test]
+fn esc_on_a_field_goes_back_and_keeps_what_was_typed() {
+    let folders = Folders::new();
+    let mut gui = on_the_library_screen(&folders);
+    click(&mut gui, "Next");
+    fill(&mut gui, "Tirana");
+    let library = gui.app.library().to_string();
+
+    let _ = update(&mut gui, M::Escape);
+    assert_eq!(gui.app.screen(), Screen::Library);
+    assert_eq!(gui.app.name(), "Tirana");
+    let edited = format!("{library}2");
+    fill(&mut gui, &edited);
+
+    let _ = update(&mut gui, M::Escape);
+    assert_eq!(gui.app.screen(), Screen::Drive);
+    assert_eq!(gui.app.library(), edited);
+    assert_eq!(gui.app.name(), "Tirana");
+}
+
+#[test]
+fn esc_off_a_field_does_nothing() {
+    // The model's Esc on the cards quits, on the check goes back, on the copying screen waits:
+    // a key for those is left out, as DEC-068 (8) says.
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = booted(literal(&[&folders.card], &[&folders.drive]));
+    let _ = update(&mut gui, M::Escape);
+    assert_eq!(gui.app.screen(), Screen::Sources);
+    assert!(!gui.quit);
+
+    click(&mut gui, "Next");
+    let _ = update(&mut gui, M::Escape);
+    assert_eq!(gui.app.screen(), Screen::Drive);
+
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    click(&mut gui, "Next");
+    let _ = update(&mut gui, M::Escape);
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+
+    gui.test_worker = Some(keeping_the_job(Arc::new(Mutex::new(Vec::new()))));
+    start_copying(&mut gui);
+    let _ = update(&mut gui, M::Escape);
+    assert_eq!(gui.app.screen(), Screen::Running);
+    assert!(!gui.app.running().unwrap().cancelling);
+}
+
+#[test]
+fn after_esc_typing_and_enter_go_on_with_no_click() {
+    // Through the real runtime, as only it runs the task that gives the focus back. `type
+    // escape` is the field losing its focus; the Emulator's subscriptions hear nothing, so
+    // the message comes by `Step::Send`.
+    const LOSES_FOCUS: Step = Step::Line("type escape");
+    let esc = || Step::Send(M::Escape, 3);
+    let gui = play_steps(
+        literal(&[CARD_A], &[DRIVE_A]),
+        vec![
+            Step::Line(r#"click "Next""#),
+            Step::Line(r#"click "Next""#),
+            Step::Line(r#"type "1""#),
+            Step::Line("type enter"),
+            Step::Line(r#"type "Tirana""#),
+            // Name back to library.
+            LOSES_FOCUS,
+            esc(),
+            Step::Line(r#"expect "3/5  Library folder on the drive""#),
+            Step::Line(r#"type "2""#),
+            // Library back to drive, then its Next takes us to a field with the focus.
+            LOSES_FOCUS,
+            esc(),
+            Step::Line(r#"expect "2/5  Pick the drive to copy to""#),
+            Step::Line(r#"click "Next""#),
+            Step::Line(r#"type "3""#),
+            Step::Line("type enter"),
+            Step::Line(r#"type "!""#),
+            Step::Line("type enter"),
+            Step::Line(r#"expect "Start copying""#),
+        ],
+    );
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    assert_eq!(gui.app.library(), "/Volumes/DRIVE_A/Photos123");
+    assert_eq!(gui.app.name(), "Tirana!");
 }

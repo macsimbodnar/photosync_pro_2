@@ -725,19 +725,28 @@ impl App {
                 } else {
                     flow::start(&library, name.as_deref())
                 };
-                match started {
-                    Ok(session) => {
-                        let session = Arc::new(Mutex::new(session));
-                        self.session = Some(session.clone());
-                        session
-                    }
-                    Err(e) => {
-                        self.refused_before_session(&e);
-                        return None;
-                    }
-                }
+                return self.begin(started);
             }
         };
+        Some(self.job(session))
+    }
+
+    /// The first start's check, and the session it made, or its refusal.
+    fn begin(&mut self, started: Result<Session, SyncError>) -> Option<Job> {
+        match started {
+            Ok(session) => {
+                let session = Arc::new(Mutex::new(session));
+                self.session = Some(session.clone());
+                Some(self.job(session))
+            }
+            Err(e) => {
+                self.refused_before_session(&e);
+                None
+            }
+        }
+    }
+
+    fn job(&mut self, session: Shared) -> Job {
         let cancel = Cancel::new();
         self.running = Some(Running {
             scanned: Vec::new(),
@@ -747,11 +756,31 @@ impl App {
             sources: self.picked.clone(),
         });
         self.screen = Screen::Running;
-        Some(Job {
+        Job {
             session,
             sources: self.picked.clone(),
             cancel,
-        })
+        }
+    }
+
+    /// The library and name to check, when Enter on the check screen would run the first
+    /// start's check, for a front-end that cannot wait for it on its own thread (DEC-081).
+    /// `None`: Enter needs no check, so send it.
+    #[allow(dead_code)] // The GUI's, and this file also compiles in the binary (DEC-067 (2)).
+    pub fn first_start(&self) -> Option<(PathBuf, Option<String>)> {
+        let waits =
+            self.screen == Screen::Confirm && !self.picked.is_empty() && self.session.is_none();
+        waits.then(|| (PathBuf::from(self.library.trim()), self.name_arg()))
+    }
+
+    /// What Enter does with that check's answer. Off the check screen, or with a session
+    /// made, the answer is of something else, and does nothing.
+    #[allow(dead_code)] // As `first_start`.
+    pub fn first_start_answered(&mut self, started: Result<Session, SyncError>) -> Option<Effect> {
+        self.first_start()?;
+        self.hint = None;
+        self.scroll = 0;
+        self.begin(started).map(Effect::Start)
     }
 
     fn refused_before_session(&mut self, e: &SyncError) {
@@ -881,6 +910,70 @@ mod tests {
         keys.iter()
             .filter_map(|k| app.update(Msg::Key(*k)))
             .collect()
+    }
+
+    /// On the check screen with a card picked and the library typed.
+    fn on_the_check(library: &str) -> App {
+        let mut app = App::checking_library();
+        app.update(Msg::Volumes(found(&["/Volumes/CARD"], &["/Volumes/DRIVE"])));
+        keys(&mut app, &[Key::Char(' '), Key::Enter, Key::Enter]);
+        while !app.library().is_empty() {
+            keys(&mut app, &[Key::Backspace]);
+        }
+        typed(&mut app, library);
+        keys(&mut app, &[Key::Enter, Key::Enter]);
+        assert_eq!(app.screen(), Screen::Confirm);
+        app
+    }
+
+    #[test]
+    fn an_answer_given_from_outside_starts_as_enter_does() {
+        let dir = TempDir::new();
+        let library = dir.0.display().to_string();
+        let mut app = on_the_check(&format!(" {library} "));
+        assert_eq!(app.first_start(), Some((dir.0.clone(), None)));
+        let started = flow::start_found(&dir.0, None);
+        let Some(Effect::Start(job)) = app.first_start_answered(started) else {
+            panic!("no start");
+        };
+        assert_eq!(flow::lock(&job.session).library(), dir.0);
+        assert_eq!(job.sources, [PathBuf::from("/Volumes/CARD")]);
+        assert_eq!(app.screen(), Screen::Running);
+        assert!(app.in_session());
+        assert_eq!(app.first_start(), None, "the session stays");
+    }
+
+    #[test]
+    fn a_refusal_given_from_outside_is_what_enter_gives() {
+        let dir = TempDir::new();
+        let missing = dir.0.join("missing");
+        let library = missing.display().to_string();
+        let mut by_enter = on_the_check(&library);
+        assert!(keys(&mut by_enter, &[Key::Enter]).is_empty());
+
+        let mut app = on_the_check(&library);
+        let started = flow::start_found(&missing, None);
+        assert!(app.first_start_answered(started).is_none());
+        assert_eq!(app.screen(), Screen::Refused);
+        assert!(!app.in_session());
+        assert_eq!(app.exit().code, by_enter.exit().code);
+        assert_eq!(app.exit().message, by_enter.exit().message);
+    }
+
+    #[test]
+    fn there_is_no_first_start_to_answer_off_the_check_or_with_no_card() {
+        let dir = TempDir::new();
+        let mut app = on_the_check(&dir.0.display().to_string());
+        keys(&mut app, &[Key::Esc]);
+        assert_eq!(app.first_start(), None);
+        let started = flow::start_found(&dir.0, None);
+        assert!(app.first_start_answered(started).is_none());
+        assert_eq!(app.screen(), Screen::Name);
+        assert!(!app.in_session());
+
+        keys(&mut app, &[Key::Enter]);
+        app.update(Msg::Volumes(found(&[], &["/Volumes/DRIVE"])));
+        assert_eq!(app.first_start(), None, "Enter gives its hint");
     }
 
     fn typed(app: &mut App, text: &str) {
