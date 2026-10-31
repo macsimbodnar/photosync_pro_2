@@ -1,0 +1,30 @@
+[package]
+name = "photosync-gui"
+version.workspace = true
+edition.workspace = true
+
+# A library with all the unit tests, and a thin binary, as `tests/smoke_window.rs`
+# needs the view and `CARGO_BIN_EXE_photosync-gui` both (DEC-072 (1)).
+[lib]
+name = "photosync_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "photosync-gui"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+# Software drawing only, and the font the tests draw with, so what is tested is
+# what ships (DEC-065).
+iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "crisp", "web-colors", "thread-pool", "lazy", "fira-sans"] }
+photosync = { path = "../photosync" }
+photosync-core = { path = "../photosync-core" }
+
+# iced stops the build on Linux without a window system.
+[target.'cfg(target_os = "linux")'.dependencies]
+iced = { version = "=0.14.0", default-features = false, features = ["x11", "wayland"] }
+
+[dev-dependencies]
+iced_test = "=0.14.0"
+libc = "0.2.191"

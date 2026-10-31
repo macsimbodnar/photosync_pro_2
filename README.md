@@ -6,7 +6,8 @@ separate folders under one folder per sync, optionally named
 (`2026-10-28 - Tirana/RAW/`). Photos already in the library are skipped. Mac
 first, then Linux.
 
-Status: early development. The CLI and the TUI work; a GUI comes later. What
+Status: early development. The CLI and the TUI work. A GUI is being built: `photosync-gui`
+opens its window and lists the cards, and it cannot copy yet. What
 it must do is in `adocs/specs.md`, and the plan is in `adocs/plan.md`.
 
 ## Usage
@@ -183,6 +184,9 @@ Exit codes:
   report). The model keeps one session for the whole run and lends it to
   the worker for each card. `tui` and `tui/view` are the terminal shell
   around them.
+- `crates/photosync-gui`: the native GUI in iced, the only crate that depends on iced, a
+  binary `photosync-gui` over a library `photosync_gui`. It drives the same model by its
+  keys. `widgets.rs` is the one file that draws words, and `tests/gui_split.rs` holds that.
 
 ## Build and test
 
@@ -261,6 +265,20 @@ sudo ./target/debug/photosync drives  # must refuse, exit 2
 For the camera over cable: X-T5 off, MENU > Setup > CONNECTION SETTING >
 PC CONNECTION MODE > USB CARD READER, connect a USB-C data cable, switch on,
 then repeat the sync. Write down each command's output and exit code.
+
+### GUI tests
+
+`cargo test --workspace` runs them with no window. `src/tests/harness.rs` has what each
+screen's test uses: `screen_check` finds its words and writes
+`target/gui_screens/<step>_<screen>.png` to read; `play` runs the real program, tasks and
+threads included. One test opens a real window, so it is ignored and never in the gate. By hand,
+with the mouse off the window, as a hovered button changes the picture:
+
+```sh
+cargo test -p photosync-gui --test smoke_window -- --ignored
+```
+
+It compares the window with the headless picture, 0 pixels off, or says the screen's scale is not 2.
 
 ### Real syncs in plain `cargo test` (macOS)
 

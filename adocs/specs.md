@@ -160,7 +160,9 @@ picks. It is simple to use.
     (DEC-062, DEC-064).
   - A closed stdout never stops a sync nor panics: the exit code stays
     within 0/1/2.
-  - GUI: a native Rust GUI in iced (DEC-065), not built yet (steps S051 on). It
+  - GUI: a native Rust GUI in iced (DEC-065), being built step by step: today its window
+    and the cards screen; the other screens are a bare title until their steps (S052 on), so
+    it cannot copy yet. What follows is what it must become. It
     must need no change to the core beyond new API, which keeps INV-8 true.
     It is its own binary, `photosync-gui`, over the same model, worker and
     sentences as the TUI (DEC-067, DEC-068), so it walks the same screens by the

@@ -17,19 +17,18 @@ not change the order.
 
 ## Open
 
-1. S051  GUI crate, window, test harness, cards list
-2. S052  GUI: cards and drive screens
-3. S053  GUI: library, name, check, refusals before a session
-4. S054  GUI: copying: worker, progress per card and overall, ETA, cancel
-5. S055  GUI: report, refused, scrolling, next card in one session
-6. S056  GUI: closing, quitting, root, what the process returns
-7. S057  GUI: real syncs by its clicks on disk images, in the gate
-8. S058  GUI: Mac .app package (signing for other Macs needs the user, left out)
-9. S059  GUI: compile check for Linux from this Mac
-10. S060  GUI: hand checks on Mac (waits for the user and real hardware)
-11. S061  GUI: run on Linux, AppImage (waits for the user and a Linux machine)
-12. S025  first run on Linux: build, tests, hand checks (waits for the user)
-13. S017  hardware hand checks on Mac (waits for the user)
+1. S052  GUI: cards and drive screens
+2. S053  GUI: library, name, check, refusals before a session
+3. S054  GUI: copying: worker, progress per card and overall, ETA, cancel
+4. S055  GUI: report, refused, scrolling, next card in one session
+5. S056  GUI: closing, quitting, root, what the process returns
+6. S057  GUI: real syncs by its clicks on disk images, in the gate
+7. S058  GUI: Mac .app package (signing for other Macs needs the user, left out)
+8. S059  GUI: compile check for Linux from this Mac
+9. S060  GUI: hand checks on Mac (waits for the user and real hardware)
+10. S061  GUI: run on Linux, AppImage (waits for the user and a Linux machine)
+11. S025  first run on Linux: build, tests, hand checks (waits for the user)
+12. S017  hardware hand checks on Mac (waits for the user)
 
 Later, not yet steps: re-run the adversarial audit after the GUI, covering
 it too; the audit loop stops when a run reports no high and no medium.
@@ -38,8 +37,8 @@ it too; the audit loop stops when a run reports no high and no medium.
 
 Last five; the full record is `plan_done/`.
 
+- S051  GUI crate, window, test harness, cards list
 - S050  shared layer gets a library target, no behaviour change
 - S036  plan the GUI: iced confirmed, crate layout, steps S050 to S061
 - S049  list sentence and Cancelling stay in sight (S047 fast check)
 - S048  a large report stays quick to scroll (S037 fast check)
-- S047  TUI's other screens cut lines (found in S037)
