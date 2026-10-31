@@ -8,7 +8,7 @@ Updated: 2026-10-31, by Claude (S066 done)
 
 - Last done: S066  double close, long paths, Cmd-Q code (625 passed, 39 ignored; script 636)
 - In progress: none
-- Next: S058  GUI: Mac .app package (signing for other Macs needs the user, left out)
+- Next: S067  tests cannot delete outside images; GUI not-safe roads proved; then the rest of plan.md's Open list
 - Waiting for the user: S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
