@@ -22,6 +22,7 @@ use crate::common::{
 };
 
 /// What `tests::ignored_image_tests_pass_on_real_mounts` wants run.
+#[cfg(target_os = "macos")]
 pub(super) const MUST_RUN: [&str; 14] = [
     "tests::on_images::a_one_card_found_for_real_goes_under_its_name_and_the_same_sync_copies_nothing",
     "tests::on_images::b_two_cards_at_once_each_on_its_thread_and_the_counts_add_up",

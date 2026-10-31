@@ -242,6 +242,8 @@ Linux is built in but not yet verified on a real machine. What is known:
   shows the tests that need real mounts as `ignored`: no successful sync is
   proved until you run them as below.
 
+From a Mac, `scripts/check_linux_from_mac.sh` checks that the workspace, tests too, compiles for `aarch64-unknown-linux-gnu` and `x86_64-unknown-linux-gnu`; its exit code says it. It needs the network and installs nothing of yours: the toolchain, its Linux targets and the crates go to a temp folder it removes. Your `~/.rustup` is compared before and after. Compiling proves it compiles: it does not link, opens no window and runs no test on Linux. blake3's C for aarch64 is left out, as there is no Linux C compiler here (DEC-089). It is not in `cargo test` or `scripts/test_exfat.sh`, as it downloads all that each run.
+
 Image tests on Linux (needs root to mount; not yet run, S025 checks it):
 
 ```sh

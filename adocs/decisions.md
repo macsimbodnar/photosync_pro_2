@@ -105,6 +105,7 @@ Why: one line.
 - DEC-086 2026-10-31 — no test deletes on what a variable names unless it is a test image of the harness's: the guard, and why it reads no `hdiutil` (S067)
 - DEC-087 2026-10-31 — the check opens with where the copy goes; two cards at once proved by order, as a barrier in the watch cannot be met; a refusal in a session made by the library going away (S067)
 - DEC-088 2026-10-31 — small choices of the Mac package: what ends the wait, stderr must be empty, what the script removes and leaves (S058)
+- DEC-089 2026-10-31 — the Linux compile check: crates in the throwaway folder too, blake3 `pure` on aarch64 only, the shared library empty in test mode, no link (S059)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -2025,3 +2026,13 @@ Decision: the agent's choice, not yet confirmed by the user. Under DEC-070.
 (6) `open` and the test's unzip leave entries in Launch Services' database, outside the repo, for `target/package/phoosync pro 2.app` and for `target/package/unzipped.*/`, which is gone by then. Read by `lsregister -dump`, and not cleaned, as `lsregister -u` is one more write outside the repo and the entries do nothing while the app is opened by its path. No file named for the app in `~/Library`'s Saved Application State, Containers, Preferences or Caches.
 (7) What the README tells a user on another Mac about Gatekeeper's words and Open Anyway is what macOS usually does, not measured: there is one Mac here. Measured: `spctl -a -vv` says `rejected`, with no quarantine on the file; arm64 only; minos 11.0.
 Why: a future reader would ask why the wait reads processes, why stderr fails it, and what the run leaves outside `target/`.
+
+## DEC-089  2026-10-31  the Linux compile check: crates in the throwaway folder too, blake3 `pure` on aarch64 only, the shared library empty in test mode, no link (S059)
+Tags: linux, tests, packaging
+Decision: the agent's choice, not yet confirmed by the user. Under DEC-070 (3). Amends DEC-067 (2) on what `src/lib.rs` holds.
+(1) `scripts/check_linux_from_mac.sh` also points `CARGO_HOME` at its throwaway folder, beyond S059's `accepts`: the Linux-only crates would otherwise stay in the user's `~/.cargo/registry`, and it must remove what it made. Cost: every run downloads the toolchain and all crates. 39 s here.
+(2) On `aarch64-unknown-linux-gnu` the check passes `--features blake3/pure`, a departure from S059's `accepts`, which names the plain command. blake3's build script compiles NEON C there and panics with no `aarch64-linux-gnu-gcc`; a compiler is a system install, which this step may not do. x86_64 needs no compiler (blake3 falls back to its Rust intrinsics), so it runs the plain command and checks more of blake3. So not checked for aarch64: blake3's NEON C, and blake3's Rust around it. `pure` is on that command line only; no manifest changes and the app's build keeps NEON. Rejected: `CARGO_FEATURE_PURE` in the environment, which fakes what cargo owns.
+(3) `cargo check --all-targets` compiles `photosync_front`'s `#[cfg(test)]` code although `test = false`, and that code names `crate::common`, so the command failed on this Mac too, since DEC-067: not a Linux fault. `src/lib.rs` now starts with `#![cfg(not(test))]`: in test mode the library is empty, which is what DEC-067 (2) meant by "with none". Nothing is lost: `main.rs` compiles the same files with their tests. Rejected: `#[path] mod common` in `lib.rs`, as `main.rs` does, which `ui_split.rs` rightly refuses outside `main.rs`; leaving out `--all-targets`, which `accepts` names.
+(4) No `cargo test --no-run` for Linux and no `cargo build`: they link, and there is no Linux linker or C library here. `--all-targets` type-checks the test code, Linux-only parts too, without linking. So not proved: that it links, that a C part of any crate compiles (build scripts run on this Mac), that any window opens or any test passes on Linux. S061 and S025 do that.
+(5) The script compares path, modified time and size of every entry of the user's rustup folder, before and after, and fails if they differ.
+Why: a future reader would ask why the crates are thrown away too, why one target has a flag, and why `lib.rs` is empty in test mode.

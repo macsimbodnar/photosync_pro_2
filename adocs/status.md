@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-31, by Claude (S058 done)
+Updated: 2026-10-31, by Claude (S059 done)
 
-- Last done: S058  GUI: Mac .app package, ad hoc signed, its window 0 pixels off the headless picture (633 passed, 43 ignored; script 647)
+- Last done: S059  GUI: the workspace, tests too, compiles for Linux on x86_64 and aarch64, checked from this Mac by script; nothing linked or run there (633 passed, 43 ignored; script 647)
 - In progress: none
-- Next: S059  GUI: compile check for Linux from this Mac; then the rest of plan.md's Open list
+- Next: S060  GUI: hand checks on Mac (waits for the user and real hardware)
 - Waiting for the user: S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
@@ -19,7 +19,7 @@ Updated: 2026-10-31, by Claude (S058 done)
     DEC-050, DEC-051, DEC-052, DEC-053, DEC-054, DEC-055, DEC-056, DEC-057,
     DEC-058, DEC-059, DEC-060, DEC-061, DEC-062, DEC-063, DEC-064, DEC-065,
     DEC-066 (all but (1), the user's yes to iced_test), DEC-067, DEC-068, DEC-069, DEC-070,
-    DEC-071, DEC-072, DEC-073, DEC-074, DEC-075, DEC-076, DEC-077, DEC-078, DEC-079, DEC-080, DEC-081, DEC-082, DEC-083, DEC-084, DEC-085, DEC-086, DEC-087, DEC-088.
+    DEC-071, DEC-072, DEC-073, DEC-074, DEC-075, DEC-076, DEC-077, DEC-078, DEC-079, DEC-080, DEC-081, DEC-082, DEC-083, DEC-084, DEC-085, DEC-086, DEC-087, DEC-088, DEC-089.
     Each says "not yet confirmed by the user" in decisions.md.
   - The GUI's banner and refused screen give the shared refusal's CLI words, "`photosync drives` lists them", "run the sync again" (S062; S053 read them on the library, name, check and refused pictures and left them, as `text.rs` is outside its step and S055 wants the words byte for byte). For the user to take or leave.
   - A marked drive can stand below the fold when the drive screen opens with Next live, past 13 drives at 900x650 and 9 at 640x480, down to 9 and 4 under the banner (S053 measured it; DEC-075 (9) said about 25). Harm is bounded: Next takes the drive the user clicked, and the check names the library before any copy. For the user to take or leave.
@@ -33,6 +33,7 @@ Updated: 2026-10-31, by Claude (S058 done)
   - A report line that is not all ASCII is in Fira Sans, not the fixed font, as the fixed font's fallback draws kanji as nothing (DEC-082 (3), departing from S055's `accepts`). Tables stay fixed. For the user to take or leave.
   - The window stands still about 3.5 s when a report of 50000 lines arrives (release, measured; 0.35 s at 5000), 7 times DEC-068 (6)'s number, cause not looked for (DEC-082 (6)). For the user to take or leave.
   - `open` in `scripts/test_package_mac.sh` leaves entries in Launch Services' database, outside the repo, one for a folder already gone (DEC-088 (6)). They do nothing while the app is opened by its path; not cleaned. What the README says Gatekeeper does on another Mac is not measured (DEC-088 (7)). For the user to take or leave.
+  - The Linux check leaves out blake3's NEON C on aarch64, as there is no Linux C compiler here, and links nothing (DEC-089 (2), (4)). S061 and S025 build for real on Linux. For the user to take or leave.
   - The GUI no longer waits for S025 (user, 2026-10-30: do all that needs no
     input or hardware). The audit re-runs after the GUI.
   - Planned GUI: Cmd-Q and the Dock's Quit cannot be stopped without `objc2` as a new direct dependency,
