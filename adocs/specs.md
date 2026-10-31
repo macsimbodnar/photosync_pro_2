@@ -352,6 +352,8 @@ picks. It is simple to use.
   every part of it and the end. The result stands in a box over the report that
   grows to hold it. Only a result too tall to leave three rows of report under
   its box has no box: it comes first in what scrolls (DEC-061).
+  A large report stays quick to scroll: it is wrapped again only when the
+  terminal's room or the report changes (DEC-063).
 - The report is never built from inputs that would make it wrong: a source
   given twice (in any spelling), or a plan or copy that is not of these
   scans (a file not listed, listed with another size or mtime, left out, a

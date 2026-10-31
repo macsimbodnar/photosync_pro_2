@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-31, by Claude (S047 done)
+Updated: 2026-10-31, by Claude (S048 done)
 
-- Last done: S047  the TUI's other screens do not cut: every sentence wraps, what is too tall scrolls, a refusal read to its end (DEC-062)
+- Last done: S048  a large report stays quick to scroll: wrapped once, until the room or the report changes (DEC-063)
 - In progress: none
-- Next: S048  a large report stays quick to scroll; then S036 and the rest of plan.md's Open list
+- Next: S036  plan the GUI: confirm iced, layout, steps; then the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
@@ -17,7 +17,7 @@ Updated: 2026-10-31, by Claude (S047 done)
     DEC-030 to DEC-032, DEC-034, DEC-035 (1)-(3), DEC-036 to DEC-040,
     DEC-042, DEC-043, DEC-044, DEC-045, DEC-046, DEC-047, DEC-048, DEC-049,
     DEC-050, DEC-051, DEC-052, DEC-053, DEC-054, DEC-055, DEC-056, DEC-057,
-    DEC-058, DEC-059, DEC-060, DEC-061, DEC-062.
+    DEC-058, DEC-059, DEC-060, DEC-061, DEC-062, DEC-063.
     Each says "not yet confirmed by the user" in decisions.md.
   - The GUI no longer waits for S025 (user, 2026-10-30: do all that needs no
     input or hardware). The audit re-runs after the GUI.

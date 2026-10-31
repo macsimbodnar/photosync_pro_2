@@ -81,6 +81,7 @@ pub fn run_loop<B: Backend>(
     let mut app = App::checking_library();
     let mut effects = vec![Effect::Discover];
     let mut from_worker: Option<mpsc::Receiver<Msg>> = None;
+    let mut report = view::ReportCache::default();
     loop {
         while let Some(effect) = effects.pop() {
             match effect {
@@ -110,7 +111,7 @@ pub fn run_loop<B: Backend>(
                 }
             }
         }
-        draw_frame(terminal, &mut app)?;
+        draw_frame(terminal, &mut report, &mut app)?;
         if let Some(key) = next_key(&app)? {
             effects.extend(app.update(Msg::Key(key)));
         }
@@ -119,15 +120,19 @@ pub fn run_loop<B: Backend>(
 
 /// Draws, then tells the model how the report wrapped: only a drawing knows
 /// the size of the screen, and the scroll keys stop by it.
-fn draw_frame<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
-    let mut report = (0, 0);
+fn draw_frame<B: Backend>(
+    terminal: &mut Terminal<B>,
+    report: &mut view::ReportCache,
+    app: &mut App,
+) -> io::Result<()> {
+    let mut drawn = (0, 0);
     terminal
         .draw(|frame| {
-            view::render(app, frame);
-            report = view::report_rows(app, frame.area());
+            view::render(app, report, frame);
+            drawn = view::report_rows(app, report, frame.area());
         })
         .map_err(|e| io::Error::other(e.to_string()))?;
-    app.report_drawn(report.0, report.1);
+    app.report_drawn(drawn.0, drawn.1);
     Ok(())
 }
 

@@ -79,6 +79,7 @@ Why: one line.
 - DEC-060 2026-10-31 — the closed-stdout test proves its pipe has no reader; the binary was not at fault (S046)
 - DEC-061 2026-10-31 — the TUI's report wraps by itself and scrolls by rows; the result's box grows (S037)
 - DEC-062 2026-10-31 — the TUI's other screens wrap and scroll as the report does; the copying screen's gauge goes on top (S047)
+- DEC-063 2026-10-31 — the TUI keeps the report's wrapped rows in the view, keyed by the outcome's number and the body's area (S048)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1599,3 +1600,25 @@ the screen says the rest); the keys row and hint on a terminal so low that the b
 (about 6 rows); a sentence inside a box under 3 columns wide; the empty list's sentence, in a box with one row
 on such a low terminal; a list row taller than the list itself. Hint and empty-list sentence do not scroll.
 Why: the prime rule: what the user must read is never cut, and the step's goal covers all these screens.
+
+## DEC-063  2026-10-31  the TUI keeps the report's wrapped rows in the view, keyed by the outcome's number and the body's area (S048)
+Tags: tui, report
+Decision: the agent's choice in S048, not yet confirmed by the user.
+(1) `view::ReportCache` holds the report's rows and is owned by `run_loop`, not `App`: what a width makes of the text
+belongs to a terminal, and a GUI replaces the view and keeps the model. Rejected: a `RefCell` in `App`, which puts rows
+in the model and makes a reader mutate it.
+(2) It is kept while `App::outcome_id` and the body's `Rect` are the same. Every outcome goes through `App::set_outcome`,
+which changes the number. Rejected: comparing the text, which needs a second copy of the report and walks it on every
+drawing; comparing the strings' addresses, as a new report can land where the old one was.
+(3) The whole `Rect` is the key, so a hint that changes the body's height wraps again though the width did not. Height
+also decides whether the result has a box, and a hint on this screen is rare.
+(4) Only the report is kept. The other screens still wrap on each draw, and more than once: they are short, and a
+count test holds them to what they cost before S048. `wrapped` calls were counted with a `#[cfg(test)]` counter per thread.
+(5) Measured, not estimated, 5000 lines of 165 bytes (826000 bytes), 80x24, `TestBackend`, on this Mac, scratch test not
+kept. A draw after the first, before and after: release 40.5 ms to 0.16 ms, debug 701 ms to 1.9 ms; `wrapped` calls 10006 to 3.
+At 200x50, where most lines fit a row: release 8.8 ms to 0.27 ms. The review's estimate is not used. The first draw, or a
+resize, still wraps all: release 21 ms, debug 241 ms. A real terminal's own cost is not in these numbers.
+(6) `wrapped` measures with `Span::raw`, no `Line` per grapheme. Same width, as a test holds. Its gain on the whole report
+in release is small, about 20 ms a wrap before and 21 ms after with the first draw's cold memory in it; the refused
+screen, which has no cache, went from 448 µs to 293 µs a draw. The cache is what mattered.
+Why: S048: at one key per draw, 40 ms a draw puts every key of a large report behind the wrapping; a held key's queue was reasoned, not run.

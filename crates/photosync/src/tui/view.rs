@@ -35,7 +35,7 @@ fn screen_areas(app: &App, area: Rect) -> [Rect; 4] {
     .areas(area)
 }
 
-pub fn render(app: &App, frame: &mut Frame) {
+pub fn render(app: &App, report: &mut ReportCache, frame: &mut Frame) {
     let [title, body, hint, keys] = screen_areas(app, frame.area());
 
     frame.render_widget(
@@ -52,7 +52,7 @@ pub fn render(app: &App, frame: &mut Frame) {
         Screen::Name => field(frame, body, "Name (optional)", app.name()),
         Screen::Confirm => frame.render_widget(Block::bordered(), body),
         Screen::Running => running(app, frame, body),
-        Screen::Refused | Screen::Report => outcome(app, frame, body),
+        Screen::Refused | Screen::Report => outcome(app, report, frame, body),
     }
     if let Some(column) = column(app, body) {
         draw_column(app, frame, column);
@@ -398,7 +398,7 @@ fn ratio(done: u64, total: u64) -> f64 {
     }
 }
 
-fn outcome(app: &App, frame: &mut Frame, area: Rect) {
+fn outcome(app: &App, report: &mut ReportCache, frame: &mut Frame, area: Rect) {
     match app.outcome() {
         // Its sentence is a `column`.
         Some(Outcome::Refused { .. }) => frame.render_widget(Block::bordered(), area),
@@ -408,12 +408,9 @@ fn outcome(app: &App, frame: &mut Frame, area: Rect) {
             complete,
         }) => {
             let color = if *complete { Color::Green } else { Color::Red };
-            let view = report_view(result, lines, area);
+            let view = report.view(app, result, lines, area);
             if view.result_in_rows == 0 {
-                let boxed: Vec<Line> = wrapped(result, view.top.width.saturating_sub(2))
-                    .into_iter()
-                    .map(Line::from)
-                    .collect();
+                let boxed: Vec<Line> = view.boxed.iter().map(|r| Line::from(r.as_str())).collect();
                 frame.render_widget(
                     Paragraph::new(boxed)
                         .fg(color)
@@ -448,10 +445,10 @@ fn outcome(app: &App, frame: &mut Frame, area: Rect) {
 
 /// How many rows what scrolls takes and how many show, in a screen of `area`.
 /// The model's scroll keys stop by these.
-pub fn report_rows(app: &App, area: Rect) -> (usize, usize) {
+pub fn report_rows(app: &App, report: &mut ReportCache, area: Rect) -> (usize, usize) {
     match app.outcome() {
         Some(Outcome::Report { lines, result, .. }) if app.screen() == Screen::Report => {
-            let view = report_view(result, lines, screen_areas(app, area)[1]);
+            let view = report.view(app, result, lines, screen_areas(app, area)[1]);
             (view.rows.len(), usize::from(view.rest.height))
         }
         _ => column(app, screen_areas(app, area)[1]).map_or((0, 0), |column| {
@@ -460,11 +457,44 @@ pub fn report_rows(app: &App, area: Rect) -> (usize, usize) {
     }
 }
 
+/// The report as last wrapped, kept from draw to draw: the loop draws every
+/// 50 ms and takes one key per draw, so wrapping it each time makes a large
+/// report slow to scroll. Kept here, not in the model: rows belong to a terminal.
+#[derive(Default)]
+pub struct ReportCache {
+    kept: Option<KeptReport>,
+}
+
+struct KeptReport {
+    outcome_id: u64,
+    area: Rect,
+    view: ReportView,
+}
+
+impl ReportCache {
+    /// `report_view`, made again only for another report or another `area`.
+    fn view(&mut self, app: &App, result: &str, lines: &[String], area: Rect) -> &ReportView {
+        let outcome_id = app.outcome_id();
+        self.kept
+            .take_if(|kept| kept.outcome_id != outcome_id || kept.area != area);
+        &self
+            .kept
+            .get_or_insert_with(|| KeptReport {
+                outcome_id,
+                area,
+                view: report_view(result, lines, area),
+            })
+            .view
+    }
+}
+
 /// Where the report's parts go. The rows are drawn one by one, past any `u16`
 /// of a `Paragraph`'s scroll, and counted here as they are drawn.
 struct ReportView {
     /// The result's box; no height when the result is in `rows`.
     top: Rect,
+    /// What the result's box holds; nothing when the result is in `rows`.
+    boxed: Vec<String>,
     rest: Rect,
     rows: Vec<String>,
     /// How many of `rows` are the result, when it has no box.
@@ -472,7 +502,8 @@ struct ReportView {
 }
 
 fn report_view(result: &str, lines: &[String], area: Rect) -> ReportView {
-    let result_rows = wrapped(result, area.width.saturating_sub(2)).len();
+    let boxed = wrapped(result, area.width.saturating_sub(2));
+    let result_rows = boxed.len();
     let body = lines.iter().flat_map(|l| wrapped(l, area.width));
     if result_rows + 2 + MIN_REPORT_ROWS <= usize::from(area.height) {
         let [top, rest] = Layout::vertical([
@@ -482,6 +513,7 @@ fn report_view(result: &str, lines: &[String], area: Rect) -> ReportView {
         .areas(area);
         return ReportView {
             top,
+            boxed,
             rest,
             rows: body.collect(),
             result_in_rows: 0,
@@ -494,6 +526,7 @@ fn report_view(result: &str, lines: &[String], area: Rect) -> ReportView {
     rows.extend(body);
     ReportView {
         top: Rect::default(),
+        boxed: Vec::new(),
         rest: area,
         rows,
         result_in_rows,
@@ -504,6 +537,8 @@ fn report_view(result: &str, lines: &[String], area: Rect) -> ReportView {
 /// a space, or inside a word too long for a row. By graphemes and columns as
 /// the drawing counts them, so a wide character never runs past the edge.
 fn wrapped(text: &str, width: u16) -> Vec<String> {
+    #[cfg(test)]
+    WRAPS.with(|wraps| wraps.set(wraps.get() + 1));
     let width = usize::from(width).max(1);
     let mut rows = Vec::new();
     for line in text.split('\n') {
@@ -517,7 +552,7 @@ fn wrapped(text: &str, width: u16) -> Vec<String> {
         // Where a break would keep a word whole: bytes and columns before it.
         let mut after_space = None;
         for grapheme in span.styled_graphemes(Style::new()) {
-            let columns = Line::from(grapheme.symbol).width();
+            let columns = Span::raw(grapheme.symbol).width();
             if used > 0 && used + columns > width {
                 match after_space.take() {
                     Some((bytes, columns_before)) => {
@@ -544,6 +579,18 @@ fn wrapped(text: &str, width: u16) -> Vec<String> {
 }
 
 #[cfg(test)]
+thread_local! {
+    /// How many times this thread called `wrapped`: a count, as a time bound
+    /// could flake under load.
+    static WRAPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub fn wraps_so_far() -> usize {
+    WRAPS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
@@ -561,7 +608,8 @@ mod tests {
     /// The screen as text, one string per row.
     pub fn draw(app: &App, width: u16, height: u16) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|f| render(app, f)).unwrap();
+        let mut report = ReportCache::default();
+        terminal.draw(|f| render(app, &mut report, f)).unwrap();
         rows(terminal.backend())
     }
 
@@ -844,6 +892,20 @@ mod tests {
             result: result.to_string(),
             complete: false,
         })
+    }
+
+    /// S048: `wrapped` measures with a `Span`, a drawn row with a `Line`. Mixed
+    /// graphemes (wide, combining, a flag, a joined emoji) must fit both ways.
+    #[test]
+    fn wrapped_rows_of_mixed_graphemes_fit_as_a_drawn_line_measures_them() {
+        let text = "Tiranë e\u{301} 写真カード 🇦🇱 flag 👩‍💻 joined /Volumes/DCIM/写真写真写真写真";
+        for width in 2..40 {
+            let rows = wrapped(text, width);
+            for row in &rows {
+                assert!(Line::from(row.as_str()).width() <= usize::from(width), "{row:?} at {width}");
+            }
+            assert_eq!(rows.concat(), text, "at {width}");
+        }
     }
 
     /// S037: the reason comes last on the line, so it was what a cut took.

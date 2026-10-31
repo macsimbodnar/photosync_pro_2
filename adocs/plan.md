@@ -17,10 +17,9 @@ not change the order.
 
 ## Open
 
-1. S048  a large report stays quick to scroll (S037 fast check)
-2. S036  plan the GUI: confirm iced, layout, steps
-3. S025  first run on Linux: build, tests, hand checks (waits for the user)
-4. S017  hardware hand checks on Mac (waits for the user)
+1. S036  plan the GUI: confirm iced, layout, steps
+2. S025  first run on Linux: build, tests, hand checks (waits for the user)
+3. S017  hardware hand checks on Mac (waits for the user)
 
 Later, not yet steps: re-run the adversarial audit after the GUI, covering
 it too; the audit loop stops when a run reports no high and no medium.
@@ -29,8 +28,8 @@ it too; the audit loop stops when a run reports no high and no medium.
 
 Last five; the full record is `plan_done/`.
 
+- S048  a large report stays quick to scroll (S037 fast check)
 - S047  TUI's other screens cut lines (found in S037)
 - S037  TUI report cuts long lines (found in S028)
 - S046  closed-stdout test fails now and then (found in S045)
 - S045  a killed hdiutil never counts as ended well (found in S035)
-- S035  CLI bytes per source (F10)

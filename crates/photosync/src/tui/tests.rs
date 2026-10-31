@@ -54,10 +54,15 @@ fn report_app(lines: Vec<String>, result: String) -> App {
 
 /// Sends `key` until the screen stops changing, keeping every row shown.
 /// Each draw goes through what `run_loop` draws with.
-fn read_with(key: Key, app: &mut App, terminal: &mut Terminal<TestBackend>) -> Vec<String> {
+fn read_with(
+    key: Key,
+    app: &mut App,
+    terminal: &mut Terminal<TestBackend>,
+    report: &mut view::ReportCache,
+) -> Vec<String> {
     let mut seen = Vec::new();
     loop {
-        draw_frame(terminal, app).unwrap();
+        draw_frame(terminal, report, app).unwrap();
         let screen = rows(terminal.backend());
         let same = seen.ends_with(&screen);
         if same {
@@ -86,8 +91,9 @@ fn every_part_of_a_wrapped_report_is_reached_by_line_and_by_page() {
         for key in [Key::Down, Key::PageDown] {
             let (lines, words) = numbered_report(30, 40);
             let mut app = report_app(lines, "Result: NOT COMPLETE.".into());
+            let mut report = view::ReportCache::default();
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            let seen = read_with(key, &mut app, &mut terminal);
+            let seen = read_with(key, &mut app, &mut terminal, &mut report);
             assert_eq!(
                 missing(&words, &seen),
                 Vec::<String>::new(),
@@ -103,8 +109,9 @@ fn every_part_of_a_wrapped_report_is_reached_by_line_and_by_page() {
 fn a_line_taller_than_the_screen_is_read_to_its_end() {
     let (lines, words) = numbered_report(1, 300);
     let mut app = report_app(lines, "Result: NOT COMPLETE.".into());
+    let mut report = view::ReportCache::default();
     let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
-    let seen = read_with(Key::Down, &mut app, &mut terminal);
+    let seen = read_with(Key::Down, &mut app, &mut terminal, &mut report);
     assert_eq!(missing(&words, &seen), Vec::<String>::new());
 }
 
@@ -113,9 +120,10 @@ fn a_line_taller_than_the_screen_is_read_to_its_end() {
 fn scrolling_back_up_reaches_the_start() {
     let (lines, words) = numbered_report(30, 40);
     let mut app = report_app(lines, "Result: NOT COMPLETE.".into());
+    let mut report = view::ReportCache::default();
     let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
-    read_with(Key::PageDown, &mut app, &mut terminal);
-    let seen = read_with(Key::PageUp, &mut app, &mut terminal);
+    read_with(Key::PageDown, &mut app, &mut terminal, &mut report);
+    let seen = read_with(Key::PageUp, &mut app, &mut terminal, &mut report);
     assert_eq!(missing(&words, &seen), Vec::<String>::new());
     let top = rows(terminal.backend());
     assert!(top.iter().any(|r| r.contains("w0. ")), "{top:#?}");
@@ -128,10 +136,11 @@ fn a_resize_keeps_the_end_of_the_report_in_reach() {
     let (lines, words) = numbered_report(30, 40);
     let end = words.last().unwrap().as_str();
     let mut app = report_app(lines, "Result: NOT COMPLETE.".into());
+    let mut report = view::ReportCache::default();
     let mut small = Terminal::new(TestBackend::new(40, 12)).unwrap();
-    read_with(Key::PageDown, &mut app, &mut small);
+    read_with(Key::PageDown, &mut app, &mut small, &mut report);
     let mut wide = Terminal::new(TestBackend::new(120, 30)).unwrap();
-    draw_frame(&mut wide, &mut app).unwrap();
+    draw_frame(&mut wide, &mut report, &mut app).unwrap();
     let screen = rows(wide.backend());
     assert!(screen.iter().any(|r| r.contains(end)), "{screen:#?}");
     assert!(screen[..6].iter().all(|r| !r.trim().is_empty()), "{screen:#?}");
@@ -145,11 +154,12 @@ fn a_result_taller_than_the_screen_is_read_to_its_end() {
     let (_, result_words) = numbered_report(1, 200);
     let result = result_words.join(" ");
     let mut app = report_app(lines, result);
+    let mut report = view::ReportCache::default();
     let mut terminal = Terminal::new(TestBackend::new(30, 10)).unwrap();
-    draw_frame(&mut terminal, &mut app).unwrap();
+    draw_frame(&mut terminal, &mut report, &mut app).unwrap();
     let top = rows(terminal.backend());
     assert!(top.iter().any(|r| r.contains("w0. ")), "{top:#?}");
-    let seen = read_with(Key::Down, &mut app, &mut terminal);
+    let seen = read_with(Key::Down, &mut app, &mut terminal, &mut report);
     assert_eq!(missing(&result_words, &seen), Vec::<String>::new());
     assert_eq!(missing(&words, &seen), Vec::<String>::new());
 }
@@ -159,12 +169,13 @@ fn a_result_taller_than_the_screen_is_read_to_its_end() {
 fn the_end_of_a_report_over_65535_rows_is_reached() {
     let lines: Vec<String> = (0..70_000).map(|n| format!("line {n}")).collect();
     let mut app = report_app(lines, "Result: NOT COMPLETE.".into());
+    let mut report = view::ReportCache::default();
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-    draw_frame(&mut terminal, &mut app).unwrap();
+    draw_frame(&mut terminal, &mut report, &mut app).unwrap();
     for _ in 0..7_001 {
         app.update(Msg::Key(Key::PageDown));
     }
-    draw_frame(&mut terminal, &mut app).unwrap();
+    draw_frame(&mut terminal, &mut report, &mut app).unwrap();
     let screen = rows(terminal.backend());
     assert!(screen.iter().any(|r| r.contains("line 69999")), "{screen:#?}");
 }
@@ -191,15 +202,16 @@ fn a_refusal_and_the_result_after_it_are_read_to_their_end() {
             let mut app = App::with_outcome_for_test(Outcome::Refused {
                 sentence: sentence.clone(),
             });
+            let mut report = view::ReportCache::default();
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            let seen = read_with(key, &mut app, &mut terminal);
+            let seen = read_with(key, &mut app, &mut terminal, &mut report);
             assert_eq!(
                 missing_in_box(&all, &seen),
                 Vec::<String>::new(),
                 "{width}x{height} with {key:?}"
             );
             let end = rows(terminal.backend());
-            let up = read_with(Key::PageUp, &mut app, &mut terminal);
+            let up = read_with(Key::PageUp, &mut app, &mut terminal, &mut report);
             assert!(up.iter().any(|r| r.contains("w0. ")), "{end:#?}");
         }
     }
@@ -212,9 +224,10 @@ fn the_refused_screen_offers_scrolling_only_when_it_is_needed() {
         let mut app = App::with_outcome_for_test(Outcome::Refused {
             sentence: words(0, 100).join(" "),
         });
+        let mut report = view::ReportCache::default();
         let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
-        draw_frame(&mut terminal, &mut app).unwrap();
-        draw_frame(&mut terminal, &mut app).unwrap();
+        draw_frame(&mut terminal, &mut report, &mut app).unwrap();
+        draw_frame(&mut terminal, &mut report, &mut app).unwrap();
         rows(terminal.backend()).concat()
     };
     assert!(keys_on(8).contains("PgDn"));
@@ -238,14 +251,15 @@ fn a_scrolled_check_screen_starts_at_its_top_when_come_back_to() {
         app.update(Msg::Key(Key::Enter));
     }
     assert_eq!(app.screen(), Screen::Confirm);
+    let mut report = view::ReportCache::default();
     let mut terminal = Terminal::new(TestBackend::new(30, 8)).unwrap();
-    draw_frame(&mut terminal, &mut app).unwrap();
+    draw_frame(&mut terminal, &mut report, &mut app).unwrap();
     app.update(Msg::Key(Key::PageDown));
     assert!(app.scroll() > 0, "did not scroll");
     app.update(Msg::Key(Key::Esc));
     app.update(Msg::Key(Key::Enter));
     assert_eq!(app.screen(), Screen::Confirm);
-    draw_frame(&mut terminal, &mut app).unwrap();
+    draw_frame(&mut terminal, &mut report, &mut app).unwrap();
     let screen = rows(terminal.backend());
     assert!(screen.iter().any(|r| r.contains("Copy from:")), "{screen:#?}");
 }
@@ -271,8 +285,9 @@ fn notes_taller_than_the_screen_are_read_to_their_end() {
         for k in press {
             app.update(Msg::Key(k));
         }
+        let mut report = view::ReportCache::default();
         let mut terminal = Terminal::new(TestBackend::new(40, 14)).unwrap();
-        let seen = read_with(first_key, &mut app, &mut terminal);
+        let seen = read_with(first_key, &mut app, &mut terminal, &mut report);
         assert_eq!(missing(&all, &seen), Vec::<String>::new());
         let screen = rows(terminal.backend());
         assert!(screen.iter().any(|r| r.contains("/V/")), "{screen:#?}");
@@ -299,8 +314,9 @@ fn a_check_screen_taller_than_the_terminal_is_read_to_its_end() {
     }
     app.update(Msg::Key(Key::Enter));
     assert_eq!(app.screen(), Screen::Confirm);
+    let mut report = view::ReportCache::default();
     let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
-    let seen = read_with(Key::Down, &mut app, &mut terminal);
+    let seen = read_with(Key::Down, &mut app, &mut terminal, &mut report);
     let mut want: Vec<String> = cards.iter().map(|c| c.display().to_string()).collect();
     want.push("skipped.".to_string());
     assert_eq!(missing_in_box(&want, &seen), Vec::<String>::new());
@@ -318,8 +334,9 @@ fn the_help_of_a_field_is_read_to_its_end() {
     app.update(Msg::Key(Key::Enter));
     app.update(Msg::Key(Key::Enter));
     assert_eq!(app.screen(), Screen::Library);
+    let mut report = view::ReportCache::default();
     let mut terminal = Terminal::new(TestBackend::new(30, 9)).unwrap();
-    let seen = read_with(Key::Down, &mut app, &mut terminal);
+    let seen = read_with(Key::Down, &mut app, &mut terminal, &mut report);
     let want = ["must", "exist:", "Photos", "skipped."].map(String::from);
     assert_eq!(missing(&want, &seen), Vec::<String>::new());
 }
@@ -343,8 +360,9 @@ fn scan_lines_taller_than_the_screen_are_read_to_their_end() {
     for chunk in all.chunks(20) {
         app.update(Msg::Scanned(chunk.join(" ")));
     }
+    let mut report = view::ReportCache::default();
     let mut terminal = Terminal::new(TestBackend::new(40, 14)).unwrap();
-    let seen = read_with(Key::Down, &mut app, &mut terminal);
+    let seen = read_with(Key::Down, &mut app, &mut terminal, &mut report);
     assert_eq!(missing(&all, &seen), Vec::<String>::new());
 }
 
@@ -794,6 +812,8 @@ fn tui_sync_on_exfat_end_to_end() {
             .any(|r| r.contains(&format!("Source {}", card.display()))),
         "{screen:#?}"
     );
+    // S048: the second sync's own report, not what was kept of the first.
+    assert!(screen.concat().contains("over 2 syncs"), "{screen:#?}");
     let exit = app.exit();
     assert_eq!(exit.code, EXIT_OK, "{exit:?}");
     // What is printed after the screen closes is the session's report:
@@ -827,4 +847,195 @@ fn tui_sync_on_exfat_end_to_end() {
         "{report}"
     );
     assert!(exit.message.is_none(), "{:?}", exit.message);
+}
+
+/// A report as a card of duplicates makes it, with two long paths on each line
+/// and non-ASCII in some: `DSCF<n>.RAF:` starts each, so a line can be looked for.
+fn large_report(lines: usize) -> Vec<String> {
+    (0..lines)
+        .map(|n| {
+            let trip = if n % 5 == 0 { "Tiranë 写真 trip" } else { "Tirana trip" };
+            format!(
+                "DSCF{n:05}.RAF: already at /Volumes/SSD_Photos/Library/2026-10-31 {trip}/RAW/\
+                 DSCF{n:05}.RAF, same as /Volumes/X-T5_CARD/DCIM/100_FUJI/{trip}/DSCF{n:05}.RAF"
+            )
+        })
+        .collect()
+}
+
+const LARGE: usize = 5000;
+
+/// How many times one draw calls `view::wrapped`.
+fn wraps_of_a_draw(
+    app: &mut App,
+    terminal: &mut Terminal<TestBackend>,
+    report: &mut view::ReportCache,
+) -> usize {
+    let before = view::wraps_so_far();
+    draw_frame(terminal, report, app).unwrap();
+    view::wraps_so_far() - before
+}
+
+/// What a drawing with nothing kept shows: keeping rows must not change it.
+fn drawn_afresh(app: &App, width: u16, height: u16) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    let mut report = view::ReportCache::default();
+    terminal
+        .draw(|frame| view::render(app, &mut report, frame))
+        .unwrap();
+    rows(terminal.backend())
+}
+
+/// S048: the loop draws every 50 ms and takes one key per draw, so a draw that
+/// wraps the whole report makes every key wait for it. A count, not a time: a
+/// report of any size then costs a draw what a report of one line costs.
+#[test]
+fn a_large_report_is_not_wrapped_again_while_nothing_changes() {
+    let mut small = report_app(large_report(1), "Result: NOT COMPLETE.".into());
+    let mut report = view::ReportCache::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    wraps_of_a_draw(&mut small, &mut terminal, &mut report);
+    let of_a_small_report = wraps_of_a_draw(&mut small, &mut terminal, &mut report);
+
+    let mut app = report_app(large_report(LARGE), "Result: NOT COMPLETE.".into());
+    let mut report = view::ReportCache::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let first = wraps_of_a_draw(&mut app, &mut terminal, &mut report);
+    assert!(first >= LARGE, "the first draw wraps it: {first}");
+    let mut scrolled = rows(terminal.backend());
+    for key in [Key::Down, Key::PageDown, Key::PageDown, Key::PageUp, Key::Up, Key::PageDown] {
+        app.update(Msg::Key(key));
+        // Handled within this one draw: what shows has moved, with no wrapping.
+        assert_eq!(
+            wraps_of_a_draw(&mut app, &mut terminal, &mut report),
+            of_a_small_report,
+            "{key:?}"
+        );
+        let screen = rows(terminal.backend());
+        assert_ne!(screen, scrolled, "{key:?} moved nothing");
+        assert_eq!(screen, drawn_afresh(&app, 80, 24), "{key:?}");
+        scrolled = screen;
+    }
+    assert_eq!(
+        wraps_of_a_draw(&mut app, &mut terminal, &mut report),
+        of_a_small_report
+    );
+}
+
+/// S048: another width makes other rows, and another height may take the box
+/// away. Each wraps once, then is kept again, and shows what nothing kept shows.
+#[test]
+fn a_resize_wraps_a_large_report_again_once() {
+    let mut app = report_app(large_report(LARGE), "Result: NOT COMPLETE.".into());
+    let mut report = view::ReportCache::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    wraps_of_a_draw(&mut app, &mut terminal, &mut report);
+    let kept = wraps_of_a_draw(&mut app, &mut terminal, &mut report);
+    assert!(kept < LARGE, "{kept}");
+    for _ in 0..5 {
+        app.update(Msg::Key(Key::PageDown));
+    }
+    for (width, height) in [(100, 24), (100, 40), (60, 7), (80, 24)] {
+        let mut resized = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let again = wraps_of_a_draw(&mut app, &mut resized, &mut report);
+        assert!(again >= LARGE, "{width}x{height}: {again}");
+        assert_eq!(
+            wraps_of_a_draw(&mut app, &mut resized, &mut report),
+            kept,
+            "{width}x{height}"
+        );
+        assert_eq!(
+            rows(resized.backend()),
+            drawn_afresh(&app, width, height),
+            "{width}x{height}"
+        );
+    }
+}
+
+/// S048: a later sync's report, the same size as the one before: only its text
+/// differs. What was kept of the first must not show.
+#[test]
+fn a_new_outcome_wraps_again_and_shows() {
+    let mut app = report_app(large_report(LARGE), "Result: NOT COMPLETE.".into());
+    let mut report = view::ReportCache::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    wraps_of_a_draw(&mut app, &mut terminal, &mut report);
+    let later: Vec<String> = large_report(LARGE)
+        .iter()
+        .map(|line| line.replace("DSCF", "XXXX"))
+        .collect();
+    app.replace_outcome_for_test(Outcome::Report {
+        lines: later,
+        result: "Result: all done, and more.".into(),
+        complete: true,
+    });
+    let again = wraps_of_a_draw(&mut app, &mut terminal, &mut report);
+    assert!(again >= LARGE, "{again}");
+    let screen = rows(terminal.backend());
+    assert!(screen.concat().contains("XXXX00000.RAF:"), "{screen:#?}");
+    assert!(screen.concat().contains("all done"), "{screen:#?}");
+    assert_eq!(screen, drawn_afresh(&app, 80, 24));
+}
+
+/// S048: the rows kept are all the rows: paging reaches every line and the end,
+/// and comes back to the start.
+#[test]
+fn every_line_of_a_large_report_is_reached_by_page_and_back() {
+    let lines = large_report(LARGE);
+    let starts: Vec<String> = (0..LARGE).map(|n| format!("DSCF{n:05}.RAF:")).collect();
+    let end = lines.last().unwrap().rsplit('/').next().unwrap().to_string();
+    let mut app = report_app(lines, "Result: NOT COMPLETE.".into());
+    let mut report = view::ReportCache::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let seen = read_with(Key::PageDown, &mut app, &mut terminal, &mut report);
+    assert_eq!(missing(&starts, &seen), Vec::<String>::new());
+    let bottom = rows(terminal.backend());
+    assert!(bottom.concat().contains(&end), "{bottom:#?}");
+    let up = read_with(Key::PageUp, &mut app, &mut terminal, &mut report);
+    assert_eq!(missing(&starts, &up), Vec::<String>::new());
+    let top = rows(terminal.backend());
+    assert!(top.concat().contains("DSCF00000.RAF:"), "{top:#?}");
+}
+
+/// S048: the screens S047 wrapped cost no more than they did. The bounds are the
+/// counts measured before S048; these screens are short, so they keep nothing.
+#[test]
+fn the_other_screens_wrap_no_more_than_before() {
+    let mut app = App::new();
+    app.update(Msg::Volumes(Volumes {
+        sources: (0..3).map(|n| PathBuf::from(format!("/Volumes/CARD{n}"))).collect(),
+        destinations: vec![PathBuf::from("/V/SSD")],
+        failures: vec![ScanError {
+            path: PathBuf::from("/V"),
+            source: io::Error::other("no"),
+        }],
+    }));
+    let mut report = view::ReportCache::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let mut draw = |app: &mut App| {
+        wraps_of_a_draw(app, &mut terminal, &mut report);
+        wraps_of_a_draw(app, &mut terminal, &mut report)
+    };
+    for (screen, before, key) in [
+        (Screen::Sources, 11, Key::Char(' ')),
+        (Screen::Sources, 11, Key::Enter),
+        (Screen::Drive, 9, Key::Enter),
+        (Screen::Library, 7, Key::Enter),
+        (Screen::Name, 7, Key::Enter),
+        (Screen::Confirm, 17, Key::Enter),
+    ] {
+        assert_eq!(app.screen(), screen);
+        let wraps = draw(&mut app);
+        assert!(wraps <= before, "{screen:?}: {wraps} over {before}");
+        app.update(Msg::Key(key));
+    }
+    assert_eq!(app.screen(), Screen::Running);
+    for n in 0..3 {
+        app.update(Msg::Scanned(format!("scanned /V/CARD{n}: 2 photos")));
+    }
+    let wraps = draw(&mut app);
+    assert!(wraps <= 11, "Running: {wraps}");
+    let mut app = App::with_outcome_for_test(Outcome::Refused { sentence: "x".into() });
+    let wraps = draw(&mut app);
+    assert!(wraps <= 5, "Refused: {wraps}");
 }

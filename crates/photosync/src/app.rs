@@ -177,6 +177,8 @@ pub struct App {
     session: Option<Shared>,
     /// The last sync's end, for its screen.
     outcome: Option<Outcome>,
+    /// Another number for every outcome: see `outcome_id`.
+    outcome_id: u64,
     /// The exit as the session said at the last sync's end: its worst
     /// outcome (DEC-033). Kept here so that quitting never waits for the
     /// worker's lock; only a later end changes it, and the session never
@@ -223,6 +225,7 @@ impl App {
             running: None,
             session: None,
             outcome: None,
+            outcome_id: 0,
             ended: None,
             not_complete: None,
             folder: None,
@@ -255,6 +258,12 @@ impl App {
             outcome: Some(outcome),
             ..App::new()
         }
+    }
+
+    /// Another outcome on the same model, as a later sync's end makes.
+    #[cfg(test)]
+    pub fn replace_outcome_for_test(&mut self, outcome: Outcome) {
+        self.set_outcome(outcome);
     }
 
     pub fn screen(&self) -> Screen {
@@ -310,6 +319,15 @@ impl App {
     }
     pub fn outcome(&self) -> Option<&Outcome> {
         self.outcome.as_ref()
+    }
+    /// Changes whenever the outcome does, so a front-end can keep what it made
+    /// of a long report without comparing its text on every drawing.
+    pub fn outcome_id(&self) -> u64 {
+        self.outcome_id
+    }
+    fn set_outcome(&mut self, outcome: Outcome) {
+        self.outcome = Some(outcome);
+        self.outcome_id += 1;
     }
     /// Whether a session is open: its library and name are then fixed, and
     /// the next card goes from the cards straight to Confirm.
@@ -436,9 +454,9 @@ impl App {
                 first
             }
         };
-        (self.outcome, self.screen) = match &last.end {
+        let (outcome, screen) = match &last.end {
             RunEnd::Report(_) => (
-                Some(Outcome::Report {
+                Outcome::Report {
                     lines: report
                         .unwrap_or_default()
                         .lines()
@@ -446,22 +464,24 @@ impl App {
                         .collect(),
                     result: text::session_result(session),
                     complete: session.verdict() == Verdict::Complete,
-                }),
+                },
                 Screen::Report,
             ),
             RunEnd::Refused(e) => (
-                Some(Outcome::Refused {
+                Outcome::Refused {
                     sentence: sentence(text::refusal(e)),
-                }),
+                },
                 Screen::Refused,
             ),
             RunEnd::Crashed(what) => (
-                Some(Outcome::Refused {
+                Outcome::Refused {
                     sentence: sentence(text::crash(what)),
-                }),
+                },
                 Screen::Refused,
             ),
         };
+        self.set_outcome(outcome);
+        self.screen = screen;
     }
 
     fn key(&mut self, key: Key) -> Option<Effect> {
@@ -739,7 +759,7 @@ impl App {
             report: None,
             message: Some(sentence.clone()),
         });
-        self.outcome = Some(Outcome::Refused { sentence });
+        self.set_outcome(Outcome::Refused { sentence });
         self.screen = Screen::Refused;
     }
 
