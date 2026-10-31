@@ -210,7 +210,7 @@ picks. It is simple to use.
     a click. With no drive listed, Next stays and says why (DEC-077). What is typed in the Library and Name fields stays on its one
     line, as in the TUI; the name screen and the check show it whole, and each field has the focus when its screen opens. Only Start copying starts a
     sync: a click left from another screen does not, and it stands apart from where Next was, so the second click of a double
-    does not pass the check, which names the library before any copy (DEC-079). The first Start copying checks the library
+    does not pass the check, which names the library before any copy (DEC-079). The check opens with the library and the folder, then the cards, so many cards or a long one never push out where the copy goes; only a library over 200 bytes stands under the cards (DEC-087). The first Start copying checks the library
     on a thread of its own: the window stays live and says it is checking, Start copying is held, Back, Quit and a close still answer, and an
     answer from before a Back is dropped, so it neither starts nor refuses (DEC-081). A key for one field never lands in the other. Esc on the
     Library or Name screen is Back and keeps what is typed; on other screens it does nothing. Each screen is checked with no window, on

@@ -37,7 +37,7 @@ use crate::args::{Options, parse};
 use crate::common::TempDir;
 use crate::gui::{
     self, BANNER, BEFORE_YOU_QUIT, BODY, CANCELLING, CARDS_ONLY_READ, CHECKING, CLOSE_AGAIN,
-    CLOSE_GUARD, DO_NOT_FORMAT, DRIVE_GONE, Discover, ExitSlot, Gui, LEAST, LIBRARY_HELP, LOOKING, M, NAME_HELP,
+    CLOSE_GUARD, DO_NOT_FORMAT, DRIVE_GONE, Discover, ExitSlot, Gui, LEAST, LIBRARY_HELP, LIBRARY_TAKES_THE_SCREEN, LOOKING, M, NAME_HELP,
     NOT_SAFE, Opening, PICK_A_DRIVE, QUIT_ANYWAY, REPORT_HEADING, RESULT, SCANNING,
     THE_DATE_TO_COME, TITLE, WINDOW, WorkerSend, banner, before_you_quit_screen, card_line,
     report_screen, share, update, view, warns_first,
@@ -5807,6 +5807,51 @@ fn the_guard_reads_real_time_unless_a_test_holds_it() {
     let gui = two_cards();
     let before = Instant::now();
     assert!((gui.clock)() >= before);
+}
+
+/// S067: what Start copying will do is in sight when it is live, however long or many the cards
+/// are: the library and the name, at the least size, under a banner (DEC-079 (2), DEC-087).
+#[test]
+fn the_library_and_the_name_are_in_sight_on_the_check_over_any_cards() {
+    let folders = Folders::new();
+    let long_card = long_path("/Volumes");
+    let many: Vec<String> = (0..20).map(|n| format!("/Volumes/CARD_{n:02}")).collect();
+    let one = [long_card.as_str()];
+    let twenty: Vec<&str> = many.iter().map(String::as_str).collect();
+    // At the most bytes a library may have and still stand first, too.
+    let longest = format!("/not_there/{}", "a".repeat(LIBRARY_TAKES_THE_SCREEN - 11));
+    assert_eq!(longest.len(), LIBRARY_TAKES_THE_SCREEN);
+    for (name, cards, library) in [
+        ("long_card", &one[..], folders.library.clone()),
+        ("many_cards", &twenty[..], folders.library.clone()),
+        ("long_card_long_library", &one[..], longest.clone()),
+    ] {
+        let mut gui = booted(literal(cards, &[&folders.drive]));
+        for card in cards {
+            let _ = update(&mut gui, M::Row(PathBuf::from(card)));
+        }
+        assert_eq!(gui.app.picked().len(), cards.len());
+        click(&mut gui, "Next");
+        click(&mut gui, "Next");
+        fill(&mut gui, &library);
+        click(&mut gui, "Next");
+        fill(&mut gui, "Tirana");
+        click(&mut gui, "Next");
+        // Refused, as the library is not there: back on the check with the banner over it.
+        start_copying(&mut gui);
+        let message = gui.app.exit().message.unwrap();
+        click(&mut gui, REFUSED_BACK);
+        assert_eq!(gui.app.screen(), Screen::Confirm);
+        assert!(!gui.checking());
+        assert!(!clicks(&gui, "Start copying").is_empty(), "Start copying is live");
+        let line = format!("{}   {THE_DATE_TO_COME}", gui.app.folder_preview());
+        assert!(line.contains("Tirana"), "{line}");
+        in_sight(&gui, LEAST, &[&library, &line]);
+        fixed_in_sight(&gui, LEAST, &[NOT_SAFE]);
+        fixed_in_sight(&gui, LEAST, &CHECK_BUTTONS);
+        fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
+        picture_at(&gui, LEAST, "S067", &format!("check_{name}_least"));
+    }
 }
 
 /// S066: the check, name and library screens with every path 300 bytes long, as the walk gives

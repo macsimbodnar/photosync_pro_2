@@ -290,7 +290,7 @@ cargo test -p photosync-gui --test smoke_window -- --ignored
 
 It compares the window with the headless picture, 0 pixels off, or says the screen's scale is not 2. A comparison fails if the folder holds a second picture, as another renderer's name would pass having compared nothing.
 
-`src/tests/on_images.rs` runs real syncs through those clicks, on the images below: one card by real discovery, two at once, a next card into one folder, a twin that cannot be read, a name collision, a library on a card, a real cancel, a complete card after a failed one, and a double close on a report just raised. Each compares the screen's report byte for byte with `text`, and the drive's and the card's bytes. `tests::ignored_image_tests_pass_on_real_mounts` runs them in plain `cargo test`, with no window. What only a window shows is S060's: the close button, Cmd-Q, Esc, the real mouse.
+`src/tests/on_images.rs` runs real syncs through those clicks, on the images below: one card by real discovery, two at once, a next card into one folder, a twin that cannot be read, a name collision, a library on a card, a real cancel, a complete card after a failed one, a double close on a report just raised, a card read only in part and a real read failure (on a folder on the binary's own disk, as chmod does nothing on exFAT), and a refused sync in a session, then the same card complete, or a swapped one at that path. Each compares the screen's report byte for byte with `text`, and the drive's and the card's bytes. `tests::ignored_image_tests_pass_on_real_mounts` runs them in plain `cargo test`, with no window. What only a window shows is S060's: the close button, Cmd-Q, Esc, the real mouse.
 
 ### Real syncs in plain `cargo test` (macOS)
 

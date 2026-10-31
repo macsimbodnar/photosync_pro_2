@@ -88,6 +88,8 @@ pub const FIELD: &str = "field";
 const BANNER_MOST: f32 = 104.0;
 /// What the result's words take of its 240, with `result_box`'s padding (DEC-071 (4), DEC-082 (1)).
 const RESULT_MOST: f32 = 224.0;
+/// Past this many bytes the check's cards stand over the library (DEC-087 (2)).
+pub(crate) const LIBRARY_TAKES_THE_SCREEN: usize = 200;
 /// A close this soon after the last one heard is the second click of a double (DEC-085 (1)).
 pub(crate) const CLOSE_GUARD: Duration = Duration::from_millis(500);
 
@@ -995,15 +997,21 @@ fn check(gui: &Gui) -> Element<'_, M> {
     } else {
         THE_DATE_TO_COME
     };
-    let mut body = column![
-        under("Copy from:", cards.spacing(2)),
-        under("Into the library:", column![words(app.library().trim())]),
-        under(
-            "New photos go to the folder:",
-            column![words(format!("{}   {fixed}", app.folder_preview()))],
-        ),
-    ]
-    .spacing(14);
+    let into = under("Into the library:", column![words(app.library().trim())]);
+    let folder = under(
+        "New photos go to the folder:",
+        column![words(format!("{}   {fixed}", app.folder_preview()))],
+    );
+    let from = under("Copy from:", cards.spacing(2));
+    // Start copying is live while this opens, so where the copy goes comes first: many cards or a
+    // long one must not push it out. Only a library this long would push out all else by itself
+    // (DEC-079 (2), DEC-087).
+    let mut body = if app.library().trim().len() > LIBRARY_TAKES_THE_SCREEN {
+        column![from, into, folder]
+    } else {
+        column![into, folder, from]
+    }
+    .spacing(10);
     if in_session {
         body = body.push(words(format!(
             "Sync {} of this session: the library and name stay as they are. Click Quit to change them.",

@@ -6,21 +6,23 @@
 //! (b) and (g) have no such seam, so `Gui::run`'s own road is run too.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::slice;
 use std::sync::mpsc::Receiver;
 use std::thread::ThreadId;
 
-use photosync_core::{Cancel, RunEnd, SourceScan, Watch, discover_volumes};
+use photosync_core::{Cancel, RunEnd, SourceScan, Verdict, Watch, discover_volumes};
 
 use super::*;
 use crate::common::images::{CARD, TWIN_A, TWIN_B, assert_may_delete};
 use crate::common::{
-    LoseOnCopy, OnDrive, at, date_command, image_path, manifest, test_drive, twin_cards, write_file,
+    LoseOnCopy, OnDrive, at, date_command, disk_of_the_binary, image_path, manifest, test_drive,
+    twin_cards, write_file,
 };
 
 /// What `tests::ignored_image_tests_pass_on_real_mounts` wants run.
-pub(super) const MUST_RUN: [&str; 10] = [
+pub(super) const MUST_RUN: [&str; 14] = [
     "tests::on_images::a_one_card_found_for_real_goes_under_its_name_and_the_same_sync_copies_nothing",
     "tests::on_images::b_two_cards_at_once_each_on_its_thread_and_the_counts_add_up",
     "tests::on_images::c_a_session_into_one_folder_says_all_of_it_and_each_screen_opens_at_its_top",
@@ -31,6 +33,10 @@ pub(super) const MUST_RUN: [&str; 10] = [
     "tests::on_images::g_a_cancel_that_cannot_miss_leaves_no_doubt_on_the_drive",
     "tests::on_images::h_a_complete_card_after_a_failed_one_hides_nothing",
     "tests::on_images::i_the_second_click_of_a_double_on_close_leaves_the_report_a_fast_sync_raised",
+    "tests::on_images::j_a_card_read_only_in_part_is_not_green_and_says_do_not_format",
+    "tests::on_images::k_a_real_read_failure_with_no_twin_fails_in_the_words_of_text",
+    "tests::on_images::l_a_refused_sync_then_the_same_card_complete_clears_as_the_clis",
+    "tests::on_images::l_a_swapped_card_at_that_path_clears_nothing",
 ];
 
 const TAKEN: u64 = 1_700_000_000;
@@ -381,6 +387,43 @@ fn card_of(gui: &Gui) -> PathBuf {
     gui.app.sources()[0].clone()
 }
 
+/// What hears the copy threads says who started and who finished, in order. Both cards' first
+/// files must be in flight together: both started before either finished. A barrier here cannot
+/// be met, as the core calls its watch under one lock, so the second card's `FileStarted` waits
+/// for the first's to return (DEC-087 (3)). So the first holds that lock long enough for the other
+/// thread to reach it, if there is one. Card by card, the other starts only after this card ends.
+#[derive(Default)]
+struct InFlight {
+    order: Mutex<Vec<(PathBuf, bool)>>,
+}
+
+impl InFlight {
+    /// Far above what a thread takes to reach its first file, and far below `LIMIT`.
+    const HOLD: Duration = Duration::from_secs(1);
+
+    fn started(&self, card: &Path) {
+        let first = {
+            let mut order = self.order.lock().unwrap();
+            order.push((card.to_path_buf(), false));
+            order.len() == 1
+        };
+        if first {
+            thread::sleep(Self::HOLD);
+        }
+    }
+
+    fn done(&self, card: &Path) {
+        self.order.lock().unwrap().push((card.to_path_buf(), true));
+    }
+
+    /// The cards that had started when the first file of all was done.
+    fn started_before_any_was_done(&self) -> BTreeSet<PathBuf> {
+        let order = self.order.lock().unwrap();
+        let seen = order.iter().take_while(|(_, done)| !done);
+        seen.map(|(card, _)| card.clone()).collect()
+    }
+}
+
 /// (b) No seam but what hears the worker, so `Gui::run`'s own road goes to the end.
 #[test]
 #[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
@@ -404,11 +447,12 @@ fn b_two_cards_at_once_each_on_its_thread_and_the_counts_add_up() {
     let threads = Arc::new(Mutex::new(BTreeMap::<PathBuf, BTreeSet<String>>::new()));
     let last = Arc::new(Mutex::new(None));
     let snapshots_wrong = Arc::new(Mutex::new(Vec::new()));
-    let (seen_threads, seen_last, seen_wrong) =
-        (threads.clone(), last.clone(), snapshots_wrong.clone());
+    let both = Arc::new(InFlight::default());
+    let (seen_threads, seen_last, seen_wrong, seen_both) =
+        (threads.clone(), last.clone(), snapshots_wrong.clone(), both.clone());
     let hear_all = set(move |gui| {
         let (threads, last, wrong) = (seen_threads.clone(), seen_last.clone(), seen_wrong.clone());
-        let (root_a, root_b) = (root_a.clone(), root_b.clone());
+        let (root_a, root_b, both) = (root_a.clone(), root_b.clone(), seen_both.clone());
         gui.before_send = Some(Arc::new(move |msg| {
             let Msg::Progress(event) = msg else { return };
             let progress = &event.progress;
@@ -440,6 +484,11 @@ fn b_two_cards_at_once_each_on_its_thread_and_the_counts_add_up() {
                     .entry(card.clone())
                     .or_default()
                     .insert(format!("{thread:?}"));
+                both.started(card);
+            }
+            if let EventKind::FileDone(path) = &event.kind {
+                let card = if path.starts_with(&root_a) { &root_a } else { &root_b };
+                both.done(card);
             }
             *last.lock().unwrap() = Some(progress.clone());
         }));
@@ -462,6 +511,8 @@ fn b_two_cards_at_once_each_on_its_thread_and_the_counts_add_up() {
     let (of_a, of_b) = (of(&a.0), of(&b.0));
     assert_eq!((of_a.len(), of_b.len()), (1, 1), "{threads:?}");
     assert_ne!(of_a, of_b, "each card on its thread");
+    let at_once = both.started_before_any_was_done();
+    assert_eq!(at_once.len(), 2, "one card waited for the other: {at_once:?}");
 
     let wrong = snapshots_wrong.lock().unwrap();
     assert!(wrong.is_empty(), "a snapshot does not add up: {wrong:#?}");
@@ -638,6 +689,24 @@ fn c_a_session_into_one_folder_says_all_of_it_and_each_screen_opens_at_its_top()
     assert!(kanji_line.lock().unwrap().contains(KANJI));
     assert_eq!(fs::read(&old).unwrap(), THE_OLD_BYTES, "INV-2");
     no_temp_under(&library);
+    // Every file on the drive, and each one's bytes as its own card holds them: the 30 from the
+    // first card, the two only on a later one, the old photo, and nothing more.
+    let raw = dated(&library, "Trip").join("RAW");
+    let on_card = |card: &Path, name: &str| fs::read(card.join("DCIM/100_FUJI").join(name)).unwrap();
+    let mut wanted = BTreeMap::from([(old.clone(), THE_OLD_BYTES.to_vec())]);
+    for n in 1..=30 {
+        let name = format!("DSCF{n:04}.RAF");
+        wanted.insert(raw.join(&name), on_card(&a.0, &name));
+    }
+    wanted.insert(raw.join("DSCF0100.RAF"), on_card(&b.0, "DSCF0100.RAF"));
+    wanted.insert(raw.join("DSCF0200.RAF"), on_card(&c, "DSCF0200.RAF"));
+    let on_drive = files_under(&library);
+    assert_eq!(
+        on_drive.keys().collect::<Vec<_>>(),
+        wanted.keys().collect::<Vec<_>>(),
+        "the exact list"
+    );
+    assert!(on_drive == wanted, "a file is not its card's");
     for (card, before) in [&a.0, &b.0, &c].iter().zip(&before) {
         assert_eq!(&manifest(card), before, "INV-1: {}", card.display());
     }
@@ -754,7 +823,10 @@ fn d_a_twin_that_cannot_be_read_is_named_never_plain_complete() {
     steps.extend(to_the_report_named(""));
     let gui = play_steps(literal(&[&card_a, &card_b], &[&shown(&ours.0)]), steps);
 
-    let (lines, result, _) = the_report_is_the_sessions(&gui, &kept);
+    let (lines, result, complete) = the_report_is_the_sessions(&gui, &kept);
+    assert!(complete, "every photo is on the drive: {result}");
+    assert_eq!(gui.app.exit().code, 0);
+    drawn_as(&gui, true, "s067_d");
     let warning =
         format!("1 could not be read on {card_a} and was copied from another card: check that card.");
     assert!(result.ends_with(&warning), "{result}");
@@ -1115,4 +1187,260 @@ fn i_the_second_click_of_a_double_on_close_leaves_the_report_a_fast_sync_raised(
     assert!(gui.quit, "past the guard, a close on a report quits as before");
     let exit = gui.exit_slot.lock().unwrap().clone().expect("no Exit");
     assert_eq!(exit.code, 1);
+}
+
+/// Given no reading, and given it back on drop, on a panic too: a build folder holding a folder
+/// of mode 000 could not be removed. Made after the card, so it drops first. Only a kill leaves
+/// one (DEC-087 (4)).
+struct Locked(PathBuf);
+
+impl Locked {
+    fn new(path: PathBuf) -> Locked {
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        Locked(path)
+    }
+}
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        if let Err(e) = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700)) {
+            eprintln!("{}: {e}: chmod it, or the build folder cannot be removed", self.0.display());
+        }
+    }
+}
+
+/// A card on the binary's own disk, with a real `DCIM`: chmod does nothing on exFAT. Its library
+/// is on an image, so INV-10 lets it through.
+fn a_card_with_chmod(name: &str) -> OnDrive {
+    let card = OnDrive::new(&disk_of_the_binary(), name);
+    fs::create_dir(card.0.join("DCIM")).unwrap();
+    card
+}
+
+/// (j) What no image can give: a folder of the card that cannot be read, with the rest read. A
+/// green box or code 0 here would tell the user to format a card with photos on it nobody saw.
+#[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
+fn j_a_card_read_only_in_part_is_not_green_and_says_do_not_format() {
+    let card = a_card_with_chmod("S067-j");
+    let (ours, library) = a_drive("S067-j");
+    photo_on(&card.0, "DSCF0001.RAF", b"read");
+    let closed = card.0.join("DCIM/101_FUJI");
+    write_file(&closed, "DSCF0002.RAF", b"never seen", at(TAKEN));
+    let before = manifest(&card.0);
+    let locked = Locked::new(closed.clone());
+    let kept = Kept::default();
+
+    let mut steps = vec![keeping_the_session(&kept)];
+    steps.extend(to_the_report_named(""));
+    let gui = play_steps(literal(&[&shown(&card.0)], &[&shown(&ours.0)]), steps);
+
+    let (lines, result, complete) = the_report_is_the_sessions(&gui, &kept);
+    assert!(!complete, "{result}");
+    assert_eq!(gui.app.exit().code, 1);
+    assert_eq!(
+        result,
+        "Result: NOT COMPLETE: 0 failed, 0 cancelled, 1 unreadable. Do not format the card. Fix \
+         the cause and run the same sync again: files already on the drive are skipped."
+    );
+    let told = line_saying(&lines, "  unreadable  ");
+    assert!(told.contains(&shown(&closed)), "{told}");
+    assert!(told.contains("Permission denied"), "{told}");
+    drawn_as(&gui, false, "s067_j");
+    a_report_screen_check(&gui, "j_report");
+
+    let raw = library.join(date_command(TAKEN)).join("RAW");
+    let wanted = BTreeMap::from([(raw.join("DSCF0001.RAF"), b"read".to_vec())]);
+    assert_eq!(files_under(&library), wanted, "only what was read");
+    drop(locked);
+    assert_eq!(manifest(&card.0), before, "INV-1");
+}
+
+/// (k) A file the scan lists and the copy cannot open, on the one card there is: failed, by the
+/// real worker, with no seam.
+#[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
+fn k_a_real_read_failure_with_no_twin_fails_in_the_words_of_text() {
+    let card = a_card_with_chmod("S067-k");
+    let (ours, library) = a_drive("S067-k");
+    photo_on(&card.0, "DSCF0001.RAF", b"read");
+    let closed = photo_on(&card.0, "DSCF0002.RAF", b"cannot be read");
+    let before = manifest(&card.0);
+    let locked = Locked::new(closed.clone());
+    let kept = Kept::default();
+
+    let mut steps = vec![keeping_the_session(&kept)];
+    steps.extend(to_the_report_named(""));
+    let gui = play_steps(literal(&[&shown(&card.0)], &[&shown(&ours.0)]), steps);
+
+    let (lines, result, complete) = the_report_is_the_sessions(&gui, &kept);
+    assert!(!complete, "{result}");
+    assert_eq!(gui.app.exit().code, 1);
+    assert_eq!(
+        result,
+        "Result: NOT COMPLETE: 1 failed, 0 cancelled, 0 unreadable. Do not format the card. Fix \
+         the cause and run the same sync again: files already on the drive are skipped."
+    );
+    let told = line_saying(&lines, "  failed      ");
+    assert!(told.contains(&shown(&closed)), "{told}");
+    assert!(told.contains("Permission denied"), "{told}");
+    drawn_as(&gui, false, "s067_k");
+    a_report_screen_check(&gui, "k_report");
+
+    let raw = library.join(date_command(TAKEN)).join("RAW");
+    let wanted = BTreeMap::from([(raw.join("DSCF0001.RAF"), b"read".to_vec())]);
+    assert_eq!(files_under(&library), wanted, "no copy of what could not be read");
+    no_temp_under(&library);
+    drop(locked);
+    assert_eq!(manifest(&card.0), before, "INV-1");
+}
+
+/// (l) A real refusal in a session: the first card's sync makes the session, so the check is
+/// behind us, and then the library goes as a drive does. `between` runs at the refusal, with the
+/// library back, and the same path synced again ends the walk on its report.
+fn refused_then_again(
+    first: &str,
+    card: &str,
+    library: &Path,
+    kept: &Kept,
+    between: impl Fn() + Send + Sync + 'static,
+) -> Vec<Step> {
+    let aside = library.with_file_name("Photos-aside");
+    let (from, to) = (library.to_path_buf(), aside.clone());
+    let mut steps = vec![keeping_the_session(kept), click_on(first)];
+    steps.extend(to_the_report_named(""));
+    steps.extend([
+        set(move |gui| {
+            assert_eq!(gui.app.exit().code, 0, "the first card is complete");
+            fs::rename(&from, &to).unwrap();
+        }),
+        Step::Line(r#"click "Next card""#),
+        click_on(card),
+        Step::Line(r#"click "Next""#),
+        Step::Line(r#"click "Start copying""#),
+    ]);
+    let (back, to) = (library.to_path_buf(), aside);
+    let shown_library = shown(library);
+    steps.push(set(move |gui| {
+        assert_eq!(gui.app.screen(), Screen::Refused);
+        assert_eq!(gui.app.exit().code, 2);
+        let sentence = the_sentence(gui);
+        assert!(sentence.contains(&shown_library), "{sentence}");
+        assert!(says(gui, NEXT_CARD), "a refusal in a session offers the next card");
+        fs::rename(&to, &back).unwrap();
+        between();
+    }));
+    steps.extend([
+        Step::Line(r#"click "Next card""#),
+        click_on(card),
+        Step::Line(r#"click "Next""#),
+        Step::Line(r#"click "Start copying""#),
+    ]);
+    steps
+}
+
+/// (l) DEC-050, as `a_refused_sync_fixed_and_retried_exits_0` has it of the CLI: every photo is
+/// on the drive, so code 0, green, no "do not format", and the refusal stays in the report.
+#[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
+fn l_a_refused_sync_then_the_same_card_complete_clears_as_the_clis() {
+    let (first, again) = (a_card(TWIN_A, "S067-l-first"), a_card(TWIN_B, "S067-l-same"));
+    let (ours, library) = a_drive("S067-l-same");
+    photo_on(&first.0, "DSCF0001.RAF", b"on the first card");
+    photo_on(&again.0, "DSCF0002.RAF", b"on the card refused");
+    let (card_first, card) = (shown(&first.0), shown(&again.0));
+    let kept = Kept::default();
+
+    let mut steps = refused_then_again(&card_first, &card, &library, &kept, || {});
+    steps.push(set(|gui| {
+        drawn_as(gui, true, "s067_l_same");
+        a_report_screen_check(gui, "l_same_report");
+    }));
+    steps.push(Step::Line(r#"click "Next card""#));
+    steps.push(set(|gui| {
+        assert_eq!(gui.app.screen(), Screen::Sources);
+        assert!(!says(gui, NOT_SAFE), "nothing is left to warn of");
+    }));
+    steps.push(Step::Line(r#"click "Quit""#));
+    let gui = play_steps(literal(&[&card_first, &card], &[&shown(&ours.0)]), steps);
+
+    assert!(gui.quit, "code 0, so Quit asks nothing");
+    assert_eq!(gui.app.exit().code, 0);
+    let shared = the_session(&kept);
+    let session = flow::lock(&shared);
+    assert_eq!(session.verdict(), Verdict::Complete);
+    assert_eq!(session.runs()[1].verdict(), Verdict::Refused, "it stays refused");
+    assert!(session.completed_later(1));
+    let report = text::session_report(&session).unwrap();
+    let result = text::session_result(&session);
+    assert!(!result.contains("Do not format"), "{result}");
+    assert!(!result.contains("NOT COMPLETE"), "{result}");
+    assert_eq!(
+        result,
+        "Result: all 2 photos or videos on the drive (2 copied, 0 already there), over 3 syncs."
+    );
+    assert!(report.contains("Its cards completed later."), "{report}");
+    assert!(report.contains(&format!("Sync 2 of 3: {card}\n")), "{report}");
+    the_process_ends_with(&gui, 0, &report);
+    let raw = library.join(date_command(TAKEN)).join("RAW");
+    assert_eq!(
+        files_under(&library),
+        BTreeMap::from([
+            (raw.join("DSCF0001.RAF"), b"on the first card".to_vec()),
+            (raw.join("DSCF0002.RAF"), b"on the card refused".to_vec()),
+        ])
+    );
+}
+
+/// (l) A swapped card comes back at that path, and its sync is complete. The refused card's
+/// photos are on no drive, so nothing clears: code 2, red, "do not format", as the CLI has it.
+#[test]
+#[ignore = "needs disk images; on macOS ignored_image_tests_pass_on_real_mounts runs it"]
+fn l_a_swapped_card_at_that_path_clears_nothing() {
+    let (first, swapped) = (a_card(TWIN_A, "S067-l-other"), a_card(TWIN_B, "S067-l-swap"));
+    let (ours, library) = a_drive("S067-l-swap");
+    photo_on(&first.0, "DSCF0001.RAF", b"on the first card");
+    photo_on(&swapped.0, "DSCF0002.RAF", b"on the card refused");
+    let (card_first, card) = (shown(&first.0), shown(&swapped.0));
+    let kept = Kept::default();
+
+    let dcim = swapped.0.join("DCIM");
+    let root = swapped.0.clone();
+    let swap = move || {
+        assert_may_delete(&dcim);
+        fs::remove_dir_all(&dcim).unwrap();
+        fs::create_dir(&dcim).unwrap();
+        photo_on(&root, "DSCF0003.RAF", b"on another card, at that path");
+    };
+    let steps = refused_then_again(&card_first, &card, &library, &kept, swap);
+    let gui = play_steps(literal(&[&card_first, &card], &[&shown(&ours.0)]), steps);
+
+    let (_, result, complete) = the_report_is_the_sessions(&gui, &kept);
+    assert!(!complete, "{result}");
+    assert_eq!(gui.app.exit().code, 2);
+    assert!(
+        result.starts_with(&format!(
+            "Result: NOT COMPLETE: 1 of 3 syncs not complete: sync 2 ({card}): refused, nothing \
+             copied."
+        )),
+        "{result}"
+    );
+    assert!(result.contains("Do not format"), "{result}");
+    let shared = the_session(&kept);
+    {
+        let session = flow::lock(&shared);
+        assert_eq!(session.verdict(), Verdict::Refused);
+        assert!(!session.completed_later(1));
+    }
+    drawn_as(&gui, false, "s067_l_swap");
+    a_report_screen_check(&gui, "l_swap_report");
+    let raw = library.join(date_command(TAKEN)).join("RAW");
+    assert_eq!(
+        files_under(&library),
+        BTreeMap::from([
+            (raw.join("DSCF0001.RAF"), b"on the first card".to_vec()),
+            (raw.join("DSCF0003.RAF"), b"on another card, at that path".to_vec()),
+        ]),
+        "the refused card's photo is not there"
+    );
 }
