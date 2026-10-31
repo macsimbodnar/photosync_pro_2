@@ -269,16 +269,19 @@ then repeat the sync. Write down each command's output and exit code.
 ### GUI tests
 
 `cargo test --workspace` runs them with no window. `src/tests/harness.rs` has what each
-screen's test uses: `screen_check` finds its words and writes
-`target/gui_screens/<step>_<screen>.png` to read; `play` runs the real program, tasks and
-threads included; `play_steps` adds a line that must fail and scrolling to the end. One test opens a real window, so it is ignored and never in the gate. By hand,
+screen's test uses: `screen_check` finds its words in sight at 800x600 and 640x480, checks
+that the body keeps room for two rows, and writes `target/gui_screens/<step>_<screen>.png`
+and `<step>_<screen>_least.png` to read; `screen_check_scrolling` adds texts that must be in
+the body, in sight or not; `in_sight` is that check for what may never scroll; `click` fails
+on a click that sends nothing, and `clicks` proves a button held; `play` runs the real program, tasks and
+threads included, and a script ends by asserting on its state, as a click there shows no messages; `play_steps` adds a line that must fail and scrolling to the end. One test opens a real window, so it is ignored and never in the gate. By hand,
 with the mouse off the window, as a hovered button changes the picture:
 
 ```sh
 cargo test -p photosync-gui --test smoke_window -- --ignored
 ```
 
-It compares the window with the headless picture, 0 pixels off, or says the screen's scale is not 2.
+It compares the window with the headless picture, 0 pixels off, or says the screen's scale is not 2. A comparison fails if the folder holds a second picture, as another renderer's name would pass having compared nothing.
 
 ### Real syncs in plain `cargo test` (macOS)
 

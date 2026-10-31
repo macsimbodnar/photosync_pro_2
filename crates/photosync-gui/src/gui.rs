@@ -144,14 +144,19 @@ impl Gui {
         }
     }
 
-    /// The model's keys move the cursor one row at a time, and stop at the ends.
-    fn cursor_to(&mut self, row: usize) {
-        while self.app.cursor() < row {
-            self.app.update(Msg::Key(Key::Down));
+    /// The model's keys move the cursor one row at a time, and stop at the ends. As many
+    /// keys as there are rows to go, so a key that moves nothing cannot hold the window.
+    /// Whether it got there.
+    pub(crate) fn cursor_to(&mut self, row: usize) -> bool {
+        let key = if self.app.cursor() < row {
+            Key::Down
+        } else {
+            Key::Up
+        };
+        for _ in 0..self.app.cursor().abs_diff(row) {
+            self.app.update(Msg::Key(key));
         }
-        while self.app.cursor() > row {
-            self.app.update(Msg::Key(Key::Up));
-        }
+        self.app.cursor() == row
     }
 
     fn pick(&mut self, path: &PathBuf) -> Task<M> {
@@ -165,7 +170,9 @@ impl Gui {
         let Some(row) = rows.iter().position(|p| p == path) else {
             return Task::none();
         };
-        self.cursor_to(row);
+        if !self.cursor_to(row) {
+            return Task::none();
+        }
         if on_cards {
             self.key(Key::Char(' '))
         } else {

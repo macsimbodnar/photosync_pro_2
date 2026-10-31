@@ -5,6 +5,8 @@
 
 #[path = "../../photosync/tests/common/mod.rs"]
 mod common;
+#[path = "support/one_picture.rs"]
+mod one_picture;
 
 use std::ffi::OsString;
 use std::fs;
@@ -17,6 +19,7 @@ use common::TempDir;
 use iced::Theme;
 use iced_test::Simulator;
 use iced_test::core::Settings;
+use one_picture::same_picture;
 use photosync_core::discover_volumes;
 use photosync_gui::gui::{Gui, M, WINDOW, update, view};
 
@@ -85,16 +88,18 @@ fn the_real_window_draws_what_the_headless_picture_draws() {
         sleep(Duration::from_millis(1));
     }
 
-    // `matches_image` writes the file if none is there, and adds the renderer's name to it.
-    let compared = work.0.join("real-tiny-skia.png");
+    // Its own folder, as `same_picture` wants one picture there.
+    let compare = TempDir::new();
+    let compared = compare.0.join("real-tiny-skia.png");
     fs::write(&compared, &bytes).unwrap();
     let snapshot = Simulator::with_size(Settings::default(), WINDOW, view(&gui))
         .snapshot(&Theme::Dark)
         .unwrap();
-    assert!(
-        snapshot.matches_image(work.0.join("real.png")).unwrap(),
-        "the window's pixels differ from the headless picture; a mouse resting on a button changes them, so move it away and run again"
-    );
+    if let Err(e) = same_picture(&snapshot, &compare.0, "real") {
+        panic!(
+            "the window against the headless picture: {e}; a mouse resting on a button changes the pixels, so move it away and run again"
+        );
+    }
     assert_eq!(
         fs::read(&compared).unwrap(),
         bytes,

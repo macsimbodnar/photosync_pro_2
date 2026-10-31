@@ -1,30 +1,37 @@
 //! All the GUI's unit tests, in one test binary (DEC-072 (1)).
 
 mod harness;
+#[path = "../../tests/support/one_picture.rs"]
+mod one_picture;
 
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
-use iced::{Theme, window};
+use iced::widget::{Space, button, column, scrollable};
+use iced::{Color, Element, Length, Size, Theme, window};
 use iced_test::Simulator;
 use iced_test::core::Settings;
 use iced_test::emulator::{Emulator, Event, Mode};
-use iced_test::futures::futures::StreamExt as _;
-use iced_test::futures::futures::channel::mpsc as emulator_channel;
-use iced_test::futures::futures::executor::block_on;
+use iced_test::futures::futures::channel::mpsc::{self as emulator_channel, TryRecvError};
 use iced_test::selector::{self, Target};
 use photosync_front::app::{Effect, Exit, Key, Msg, Outcome, Screen};
 
 use crate::args::{Options, parse};
 use crate::common::TempDir;
 use crate::gui::{
-    self, BANNER, Discover, Gui, LEAST, LOOKING, M, NOT_SAFE, TITLE, WINDOW, banner, update, view,
+    self, BANNER, BODY, Discover, Gui, LEAST, LOOKING, M, NOT_SAFE, TITLE, WINDOW, banner, update,
+    view,
 };
 use crate::png;
+use crate::widgets::{row_under_cursor, words};
 use harness::*;
+use one_picture::same_picture;
 
 const CARD_A: &str = "/Volumes/CARD_A";
 const CARD_B: &str = "/Volumes/CARD_B";
@@ -183,7 +190,6 @@ fn the_cards_screen_shows_its_rows_notes_and_buttons() {
     ];
     screen_check(&gui, "S051", "cards", &words);
     in_sight(&gui, LEAST, &words);
-    picture_at(&gui, LEAST, "S051", "cards_least");
 }
 
 #[test]
@@ -645,7 +651,7 @@ fn many_notes_scroll_and_leave_the_rows_in_sight() {
         "Look again",
         "Quit",
     ];
-    screen_check(&gui, "S052", "cards_notes", &words);
+    screen_check_scrolling(&gui, "S052", "cards_notes", &words, &[last]);
     in_sight(&gui, LEAST, &words);
     assert!(says(&gui, last), "found, though out of sight");
 
@@ -662,7 +668,8 @@ fn many_notes_leave_an_empty_lists_sentence_in_sight() {
 
 #[test]
 fn the_end_of_many_notes_can_be_reached() {
-    play_steps(
+    // A note is no button: its click sends nothing, and passes only if it is in sight.
+    let gui = play_steps(
         with_notes(&[CARD_A], &[DRIVE_A]),
         vec![
             Step::Fails(r#"click "warning: cannot scan /Volumes/BAD_99: test""#),
@@ -670,6 +677,8 @@ fn the_end_of_many_notes_can_be_reached() {
             Step::Line(r#"click "warning: cannot scan /Volumes/BAD_99: test""#),
         ],
     );
+    assert_eq!(gui.app.screen(), Screen::Sources);
+    assert!(gui.app.picked().is_empty());
 }
 
 // No key is named in any words shown (DEC-068 (3)).
@@ -790,11 +799,14 @@ fn the_next_screen_opens_at_its_top() {
         ],
     );
     assert_eq!(gui.app.screen(), Screen::Sources);
+    // Next took the row with none ticked, and the last click, which landed, unticked it.
+    assert!(gui.app.picked().is_empty());
+    assert_eq!(gui.app.cursor(), 0);
 }
 
 #[test]
 fn a_new_look_opens_at_its_top() {
-    play_steps(
+    let gui = play_steps(
         with_notes(&[CARD_A], &[DRIVE_A]),
         vec![
             Step::ScrollEnd,
@@ -803,6 +815,7 @@ fn a_new_look_opens_at_its_top() {
             Step::Line(r#"click "/Volumes/CARD_A""#),
         ],
     );
+    assert_eq!(picked(&gui), [CARD_A], "the click reached the row");
 }
 
 // The banner (DEC-071 (2), (3)).
@@ -945,7 +958,6 @@ fn forty_named_syncs_leave_the_rows_and_next_in_sight_and_the_wheel_reaches_the_
     in_sight(&gui, LEAST, &words);
     screen_check(&gui, "S052", "cards_banner_long", &words);
     assert!(!says(&gui, "Back"), "no back on the cards in a session");
-    picture_at(&gui, LEAST, "S052", "cards_banner_long_least");
 
     let mut ui = screen(&gui, LEAST);
     let (start, height, content) = scroll_of(&mut ui, BANNER);
@@ -1111,6 +1123,244 @@ fn screen_check_replaces_an_old_picture() {
     assert_ne!(first_bytes, fs::read(&second).unwrap());
 }
 
+// The checks see what they say they see (S062).
+
+const FIXED: &str = "A fixed sentence.";
+const TWO_LINES: &str = "A warning of two lines,\nits second line can be lost.";
+const IN_THE_BODY: &str = "A sentence in the body.";
+const UNDER_THE_BODY: &str = "Next";
+
+fn simulator<'a>(size: Size, view: impl Into<Element<'a, M>>) -> Simulator<'a, M> {
+    Simulator::with_size(Settings::default(), size, view)
+}
+
+/// A fixed part `height` high, then `sentence`, the body that takes what is left, and a
+/// sentence under it, as the real screens' are.
+fn a_screen(height: f32, sentence: &str) -> Element<'_, M> {
+    let body = column![words(IN_THE_BODY)];
+    column![
+        Space::new().height(height),
+        words(sentence),
+        scrollable(body).id(BODY).height(Length::Fill),
+        words(UNDER_THE_BODY),
+    ]
+    .into()
+}
+
+/// The height the words take, with room for them.
+fn height_of(sentence: &str) -> f32 {
+    let mut ui = simulator(Size::new(LEAST.width, 2000.0), words(sentence));
+    ui.find(sentence).unwrap().bounds().height
+}
+
+/// How high the fixed part must be to fill the window exactly over `sentence`.
+fn filling(sentence: &str) -> f32 {
+    LEAST.height - height_of(sentence) - height_of(UNDER_THE_BODY)
+}
+
+#[test]
+fn the_checks_pass_a_screen_that_fits() {
+    let mut ui = simulator(LEAST, a_screen(100.0, FIXED));
+    see_in_sight(&mut ui, LEAST, &[FIXED, IN_THE_BODY, UNDER_THE_BODY]).unwrap();
+    screen_words(&mut ui, LEAST, &[FIXED, UNDER_THE_BODY], &[IN_THE_BODY]).unwrap();
+}
+
+#[test]
+fn screen_check_fails_on_a_body_squeezed_to_no_height() {
+    let mut ui = simulator(LEAST, a_screen(filling(FIXED), FIXED));
+    let body = ui.find(selector::id(BODY)).unwrap();
+    assert_eq!(body.bounds().height, 0.0, "the test's own screen");
+    screen_words(&mut ui, LEAST, &[FIXED], &[]).unwrap_err();
+    screen_words(&mut ui, LEAST, &[IN_THE_BODY], &[]).unwrap_err();
+    screen_words(&mut ui, LEAST, &[], &[IN_THE_BODY]).unwrap_err();
+}
+
+#[test]
+fn screen_check_fails_on_a_fixed_sentence_pushed_out() {
+    let mut ui = simulator(LEAST, a_screen(LEAST.height + 100.0, FIXED));
+    screen_words(&mut ui, LEAST, &[UNDER_THE_BODY], &[]).unwrap_err();
+    screen_words(&mut ui, LEAST, &[FIXED], &[]).unwrap_err();
+}
+
+/// A fixed sentence with no room left, while a body of a fixed height keeps its rows, so
+/// only the sentence's own check can fail.
+#[test]
+fn in_sight_fails_on_a_sentence_with_no_room_under_a_body_that_has_room() {
+    let body = column![words(IN_THE_BODY)];
+    let view = column![
+        scrollable(body).id(BODY).height(100.0),
+        Space::new().height(LEAST.height),
+        words(UNDER_THE_BODY),
+    ];
+    let mut ui = simulator(LEAST, view);
+    let error = see_in_sight(&mut ui, LEAST, &[UNDER_THE_BODY]).unwrap_err();
+    assert!(error.contains("out of sight"), "{error}");
+}
+
+#[test]
+fn a_text_said_to_be_in_the_body_must_be_there() {
+    let mut ui = simulator(LEAST, a_screen(100.0, FIXED));
+    screen_words(&mut ui, LEAST, &[], &[IN_THE_BODY]).unwrap();
+    screen_words(&mut ui, LEAST, &[], &[FIXED]).unwrap_err();
+    screen_words(&mut ui, LEAST, &[], &[UNDER_THE_BODY]).unwrap_err();
+}
+
+#[test]
+fn a_text_far_down_the_body_is_in_the_body_and_out_of_sight() {
+    let last = "warning: cannot scan /Volumes/BAD_99: test";
+    let gui = booted(with_notes(&[CARD_A], &[DRIVE_A]));
+    let mut ui = screen(&gui, LEAST);
+    assert!(ui.find(last).unwrap().visible_bounds().is_none());
+    screen_words(&mut ui, LEAST, &[CARD_A, "Next"], &[last]).unwrap();
+    screen_words(&mut ui, LEAST, &[last], &[]).unwrap_err();
+}
+
+#[test]
+fn in_sight_fails_when_the_fixed_part_is_1_to_40_too_tall() {
+    let fits = filling(TWO_LINES);
+    let mut passed = Vec::new();
+    for over in 1..=40 {
+        let over = over as f32;
+        let mut ui = simulator(LEAST, a_screen(fits + over, TWO_LINES));
+        if see_in_sight(&mut ui, LEAST, &[TWO_LINES]).is_ok() {
+            passed.push(over);
+        }
+    }
+    assert!(
+        passed.is_empty(),
+        "too tall by these, and it passed: {passed:?}"
+    );
+}
+
+#[test]
+fn in_sight_fails_when_the_body_keeps_no_row() {
+    let mut ui = simulator(LEAST, a_screen(filling(FIXED) - 10.0, FIXED));
+    let error = see_in_sight(&mut ui, LEAST, &[FIXED, UNDER_THE_BODY]).unwrap_err();
+    assert!(error.contains("the body keeps 9.9"), "{error}");
+}
+
+#[test]
+fn in_sight_fails_on_a_row_of_which_the_body_shows_a_sliver() {
+    // Rows to the body's end, and the last only just begun.
+    let rows = column![Space::new().height(100.0), words(IN_THE_BODY)];
+    let view = column![words(FIXED), scrollable(rows).id(BODY).height(Length::Fill),];
+    let height = height_of(FIXED) + 103.0;
+    let size = Size::new(LEAST.width, height);
+    let mut ui = simulator(size, view);
+    let error = see_in_sight(&mut ui, size, &[IN_THE_BODY]).unwrap_err();
+    assert!(error.contains("out of sight"), "{error}");
+}
+
+#[test]
+fn in_sight_fails_on_a_screen_with_no_body() {
+    let mut ui = simulator(LEAST, words(FIXED));
+    let error = see_in_sight(&mut ui, LEAST, &[FIXED]).unwrap_err();
+    assert!(error.contains("no body"), "{error}");
+}
+
+#[test]
+#[should_panic(expected = "sends nothing")]
+fn click_fails_on_a_held_button() {
+    let (discover, looks) = blocked_discovery();
+    let (mut gui, _) = Gui::boot(discover, None);
+    next_look(&looks);
+    click(&mut gui, "Next");
+}
+
+#[test]
+#[should_panic(expected = "sends nothing")]
+fn click_fails_on_words_that_are_no_button() {
+    let mut gui = two_cards();
+    click(&mut gui, TITLE);
+}
+
+#[test]
+fn a_picture_of_another_renderers_name_compares_nothing_and_fails() {
+    let gui = booted(literal(&[], &[]));
+    let dir = TempDir::new();
+    fs::write(dir.0.join("shot-other.png"), b"not looked at").unwrap();
+    let snapshot = screen(&gui, LEAST).snapshot(&Theme::Dark).unwrap();
+    let error = same_picture(&snapshot, &dir.0, "shot").unwrap_err();
+    assert!(error.contains("compared nothing"), "{error}");
+}
+
+#[test]
+fn a_second_picture_in_the_folder_fails_the_comparison() {
+    let gui = booted(literal(&[], &[]));
+    let dir = TempDir::new();
+    let snapshot = screen(&gui, LEAST).snapshot(&Theme::Dark).unwrap();
+    same_picture(&snapshot, &dir.0, "shot").unwrap_err();
+    // The same picture, by the renderer's name: only the stray file can fail it now.
+    assert!(snapshot.matches_image(dir.0.join("shot.png")).unwrap());
+    same_picture(&snapshot, &dir.0, "shot").unwrap();
+    fs::write(dir.0.join("stray.png"), b"x").unwrap();
+    same_picture(&snapshot, &dir.0, "shot").unwrap_err();
+}
+
+#[test]
+fn walking_the_cursor_ends_on_a_screen_whose_key_moves_nothing() {
+    let mut gui = on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut gui, "Next");
+    assert_eq!(gui.app.screen(), Screen::Library);
+    let (walked, heard) = mpsc::channel();
+    thread::spawn(move || {
+        let got_there = gui.cursor_to(1);
+        walked.send((got_there, gui.app.cursor())).unwrap();
+    });
+    let cursor = heard
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the walk spins for ever");
+    assert_eq!(cursor, (false, 0));
+}
+
+#[test]
+fn a_stale_row_on_a_screen_with_no_list_ends_and_does_nothing() {
+    let mut gui = on_the_drive_screen(&[DRIVE_A, DRIVE_B]);
+    click(&mut gui, "Next");
+    let (walked, heard) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = update(&mut gui, M::Row(PathBuf::from(DRIVE_B)));
+        walked.send(gui.app.cursor()).unwrap();
+    });
+    let cursor = heard
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the walk spins for ever");
+    assert_eq!(cursor, 0);
+}
+
+/// The WCAG ratio of two opaque colours.
+fn contrast(one: Color, other: Color) -> f32 {
+    let light = |c: Color| {
+        let part = |v: f32| {
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * part(c.r) + 0.7152 * part(c.g) + 0.0722 * part(c.b)
+    };
+    let (a, b) = (light(one), light(other));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+#[test]
+fn the_row_under_the_cursor_can_be_read() {
+    for status in [button::Status::Active, button::Status::Hovered] {
+        let style = row_under_cursor(&Theme::Dark, status);
+        let Some(iced::Background::Color(behind)) = style.background else {
+            panic!("the row must show: {style:?}");
+        };
+        let ratio = contrast(style.text_color, behind);
+        // Over WCAG's 4.5 for plain text, as these are thin letters on a bar.
+        assert!(ratio >= 5.5, "{status:?}: {ratio}");
+        assert!(
+            contrast(behind, Theme::Dark.palette().background) >= 1.5,
+            "{status:?}: the bar cannot be told from the window"
+        );
+    }
+}
+
 // The arguments.
 
 fn arguments(words: &[&str]) -> Result<Options, String> {
@@ -1163,11 +1413,17 @@ fn a_written_picture_reads_back_as_the_same_pixels_as_the_headless_one() {
     let program = gui::program(literal(&[CARD_A], &[]), None);
     let (events, mut heard) = emulator_channel::channel(1);
     let mut emulator = Emulator::new(events, &program, Mode::Zen, WINDOW);
+    let started = Instant::now();
     loop {
-        match block_on(heard.next()).expect("the runtime stopped") {
-            Event::Action(action) => emulator.perform(&program, action),
-            Event::Failed(line) => panic!("{line}"),
-            Event::Ready => break,
+        match heard.try_recv() {
+            Ok(Event::Action(action)) => emulator.perform(&program, action),
+            Ok(Event::Failed(line)) => panic!("{line}"),
+            Ok(Event::Ready) => break,
+            Err(TryRecvError::Closed) => panic!("the runtime stopped"),
+            Err(TryRecvError::Empty) => {
+                assert!(started.elapsed() < LIMIT, "nothing happened for too long");
+                thread::sleep(Duration::from_millis(1));
+            }
         }
     }
     let shot = emulator.screenshot(&program, &Theme::Dark, 2.0);
@@ -1184,7 +1440,7 @@ fn a_written_picture_reads_back_as_the_same_pixels_as_the_headless_one() {
     let (state, _) = emulator.into_state();
     let mut ui = Simulator::with_size(Settings::default(), WINDOW, view(&state));
     let snapshot = ui.snapshot(&Theme::Dark).unwrap();
-    assert!(snapshot.matches_image(dir.0.join("shot.png")).unwrap());
+    same_picture(&snapshot, &dir.0, "shot").unwrap();
     assert_eq!(
         before,
         fs::read(&file).unwrap(),

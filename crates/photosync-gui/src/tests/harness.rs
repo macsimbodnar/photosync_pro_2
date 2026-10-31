@@ -1,7 +1,7 @@
 //! How a GUI test sees a screen with no window (DEC-066). Later steps use these:
-//! `screen_check` for a screen's words and picture, `in_sight` for what may never scroll,
-//! `clicks` and `click` for buttons, `play` for the real program, tasks and threads
-//! included, and `blocked_discovery` to hold a look.
+//! `screen_check` for a screen's words and pictures, `in_sight` for what may never scroll,
+//! `click` for a button that must answer and `clicks` to prove one held, `play` for the
+//! real program, tasks and threads included, and `blocked_discovery` to hold a look.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,20 +10,28 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use iced::{Size, Theme};
+use iced::{Rectangle, Size, Theme};
 use iced_test::core::Settings;
+use iced_test::core::widget::Id;
 use iced_test::emulator::{Emulator, Event, Mode};
 use iced_test::futures::futures::channel::mpsc::{self as emulator_channel, TryRecvError};
-use iced_test::selector::Candidate;
+use iced_test::selector::{self, Candidate, Target};
 use iced_test::{Instruction, Simulator};
 use photosync_core::{ScanError, Volumes};
 
-use crate::gui::{self, Discover, Gui, LEAST, M, WINDOW, update, view};
+use crate::gui::{self, BODY, Discover, Gui, LEAST, M, WINDOW, update, view};
 
 /// A test that waits longer than this has found a fault: never hang the gate.
-const LIMIT: Duration = Duration::from_secs(120);
+pub(crate) const LIMIT: Duration = Duration::from_secs(120);
 /// DEC-066 (5a) names it beside the least size.
 const COMMON: Size = Size::new(800.0, 600.0);
+/// Two list rows and the space between. A fixed child cut short keeps full-looking bounds,
+/// and the body gets only what the fixed part left, so room here proves none was cut.
+const BODY_KEEPS: f32 = 67.0;
+/// One line of words. A text a scrollable cuts shows at least this, or it is not in sight.
+const ONE_LINE: f32 = 20.0;
+/// Layout gives fractions of a pixel, and a bound can pass by less than that.
+const ROUND: f32 = 0.5;
 
 /// `Settings::default()` is what makes the Simulator draw in Fira Sans.
 pub(crate) fn screen(gui: &Gui, size: Size) -> Simulator<'_, M> {
@@ -109,9 +117,12 @@ pub(crate) fn clicks(gui: &Gui, words: &str) -> Vec<M> {
     ui.into_messages().collect()
 }
 
-/// A click on `words`, its messages fed to `update`. Their tasks are dropped.
+/// A click on `words`, its messages fed to `update`. Their tasks are dropped. Panics if
+/// it sends nothing, as a test that goes on would prove nothing: `clicks` shows one held.
 pub(crate) fn click(gui: &mut Gui, words: &str) {
-    for message in clicks(gui, words) {
+    let messages = clicks(gui, words);
+    assert!(!messages.is_empty(), "a click on {words:?} sends nothing");
+    for message in messages {
         let _ = update(gui, message);
     }
 }
@@ -124,36 +135,125 @@ pub(crate) fn says(gui: &Gui, sentence: &str) -> bool {
 /// Each sentence is in sight at `size`, with no scrolling: this is the check for a warning,
 /// a button, or anything else of the fixed part (DEC-071 (1)).
 pub(crate) fn in_sight(gui: &Gui, size: Size, sentences: &[&str]) {
-    let mut ui = screen(gui, size);
-    for sentence in sentences {
-        let found = ui
-            .find(*sentence)
-            .unwrap_or_else(|e| panic!("{sentence:?} at {size:?}: {e}"));
-        assert!(
-            found.visible_bounds().is_some(),
-            "{sentence:?} is out of sight at {size:?}"
-        );
+    if let Err(e) = see_in_sight(&mut screen(gui, size), size, sentences) {
+        panic!("{e}");
     }
 }
 
-/// A SCREEN CHECK (DEC-066 (5)). At 800x600 and the least size, each sentence is found by
-/// its whole words, in sight, or in a `scrollable` and no wider than the window: use
-/// `in_sight` too for a warning, which may not scroll. Then the picture, drawn at the
-/// window's size, for the agent to read: `target/gui_screens/<step>_<screen>.png`.
+/// The body has room for rows at `size`. A screen with none has nothing to prove its fixed
+/// part was not cut, so it fails too.
+fn body_has_room(ui: &mut Simulator<'_, M>, size: Size) -> Result<(), String> {
+    let found = ui
+        .find(selector::id(BODY))
+        .map_err(|e| format!("no body at {size:?}: {e}"))?;
+    let Target::Scrollable { bounds, .. } = found else {
+        return Err(format!("the body is no scrollable: {found:?}"));
+    };
+    if bounds.height < BODY_KEEPS {
+        return Err(format!(
+            "the body keeps {} at {size:?}: the fixed part is too tall, and may be cut",
+            bounds.height
+        ));
+    }
+    Ok(())
+}
+
+/// `in_sight`, on any element. Only a scrollable can cut a text's visible bounds, and it
+/// must leave a line. A text with no room left has no height, so no visible bounds.
+pub(crate) fn see_in_sight(
+    ui: &mut Simulator<'_, M>,
+    size: Size,
+    sentences: &[&str],
+) -> Result<(), String> {
+    body_has_room(ui, size)?;
+    for sentence in sentences {
+        let found = ui
+            .find(*sentence)
+            .map_err(|e| format!("{sentence:?} at {size:?}: {e}"))?;
+        let out = || format!("{sentence:?} is out of sight at {size:?}: {found:?}");
+        let seen = found.visible_bounds().ok_or_else(out)?;
+        let cut = seen.height < found.bounds().height - ROUND;
+        if cut && seen.height < ONE_LINE {
+            return Err(out());
+        }
+    }
+    Ok(())
+}
+
+/// Each sentence is a text inside the body's scrollable, in sight or not. The walk meets
+/// the body and then what is in it, and after it, what is under it, whose visible bounds
+/// the body does not hold. With no room for the body, `body_has_room` has failed already.
+fn see_in_body(ui: &mut Simulator<'_, M>, size: Size, sentences: &[&str]) -> Result<(), String> {
+    body_has_room(ui, size)?;
+    let body = Id::new(BODY);
+    for sentence in sentences {
+        let mut view: Option<Option<Rectangle>> = None;
+        let mut inside = false;
+        let _ = ui.find(|candidate: Candidate<'_>| {
+            match candidate {
+                Candidate::Scrollable {
+                    id, visible_bounds, ..
+                } if id == Some(&body) => view = Some(visible_bounds),
+                Candidate::Text {
+                    content,
+                    bounds,
+                    visible_bounds,
+                    ..
+                } if content == *sentence => {
+                    inside |= match (view, visible_bounds) {
+                        (None, _) => false,
+                        (Some(_), None) => bounds.height > 0.0,
+                        (Some(view), Some(seen)) => view.is_some_and(|view| {
+                            seen.y >= view.y - ROUND
+                                && seen.y + seen.height <= view.y + view.height + ROUND
+                        }),
+                    };
+                }
+                _ => {}
+            }
+            None::<()>
+        });
+        if !inside {
+            return Err(format!("{sentence:?} is not in the body at {size:?}"));
+        }
+    }
+    Ok(())
+}
+
+/// What `screen_check` asks at one size.
+pub(crate) fn screen_words(
+    ui: &mut Simulator<'_, M>,
+    size: Size,
+    sentences: &[&str],
+    body: &[&str],
+) -> Result<(), String> {
+    see_in_sight(ui, size, sentences)?;
+    see_in_body(ui, size, body)
+}
+
+/// A SCREEN CHECK (DEC-066 (5), DEC-076). At 800x600 and the least size, each sentence is
+/// found by its whole words and in sight, and the body has room. Then the pictures for the
+/// agent to read: `target/gui_screens/<step>_<screen>.png` at the window's size, the size
+/// that first opens, and `<step>_<screen>_least.png` at the least size.
 pub(crate) fn screen_check(gui: &Gui, step: &str, name: &str, sentences: &[&str]) {
+    screen_check_scrolling(gui, step, name, sentences, &[]);
+}
+
+/// `screen_check`, with texts that are in the body and may be scrolled out of sight.
+pub(crate) fn screen_check_scrolling(
+    gui: &Gui,
+    step: &str,
+    name: &str,
+    sentences: &[&str],
+    body: &[&str],
+) {
     for size in [COMMON, LEAST] {
-        let mut ui = screen(gui, size);
-        for sentence in sentences {
-            let found = ui
-                .find(*sentence)
-                .unwrap_or_else(|e| panic!("{step}_{name}: {sentence:?} at {size:?}: {e}"));
-            assert!(
-                found.visible_bounds().is_some() || found.bounds().width <= size.width,
-                "{step}_{name}: {sentence:?} is wider than {size:?}"
-            );
+        if let Err(e) = screen_words(&mut screen(gui, size), size, sentences, body) {
+            panic!("{step}_{name}: {e}");
         }
     }
     picture_at(gui, WINDOW, step, name);
+    picture_at(gui, LEAST, step, &format!("{name}_least"));
 }
 
 /// The picture alone, at a size of the test's choosing. Returns where it is.
@@ -202,8 +302,9 @@ pub(crate) enum Step {
 
 /// Runs the real program with no window, tasks and threads included, and each of `lines`
 /// in turn, as `click "Next"` or `expect "Report"`: `expect` passes for words out of
-/// sight, `click` does not (DEC-072 (5)). Each line waits for all tasks. Gives the
-/// state at the end.
+/// sight, `click` does not (DEC-072 (5)). A click that sends nothing passes here, as the
+/// Emulator shows no messages: a script ends by asserting on the state it gives. Each line
+/// waits for all tasks.
 pub(crate) fn play(discover: Discover, lines: &[&'static str]) -> Gui {
     let steps: Vec<Step> = lines.iter().map(|line| Step::Line(line)).collect();
     play_steps(discover, steps)

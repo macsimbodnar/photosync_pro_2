@@ -36,6 +36,10 @@ const NO_LITERAL_IN: &[&str] = &[
     "column![",
     "row![",
     ".push(",
+    "Button::new(",
+    "Container::new(",
+    "Scrollable::new(",
+    "Element::from(",
 ];
 
 fn gui_dir() -> PathBuf {
@@ -353,6 +357,12 @@ fn the_form_matcher_catches_each_kind() {
         "row![\"x\"]",
         "a.push(\"x\")",
         "column![\n    \"x\",\n]",
+        "Button::new(\"x\")",
+        "iced::widget::Button::new(\"x\")",
+        "Element::from(\"x\")",
+        "Element::from(\n    \"x\",\n)",
+        "Container::new(\"x\")",
+        "Scrollable::new(\"x\")",
     ] {
         assert!(!draws_past_the_helper(line).is_empty(), "{line}");
     }

@@ -4,7 +4,7 @@
 
 use iced::widget::text::Wrapping;
 use iced::widget::{Text, button, checkbox, column, container, row, scrollable, text};
-use iced::{Alignment, Element, Length, Theme};
+use iced::{Alignment, Element, Length, Theme, border};
 
 /// Words on the screen, never cut.
 pub fn words<'a>(content: impl text::IntoFragment<'a>) -> Text<'a> {
@@ -63,11 +63,27 @@ pub fn list_row<'a, M: Clone + 'a>(
         .width(Length::Fill)
         // Next with none ticked takes this row, so it must show (DEC-068 (2)).
         .style(if under_cursor {
-            button::secondary
+            row_under_cursor
         } else {
             button::text
         })
         .into()
+}
+
+/// A bar with light words, as the other rows have. The theme's secondary pair gives dark
+/// thin words on mid grey, 4.87 to 1 (S062).
+pub fn row_under_cursor(theme: &Theme, status: button::Status) -> button::Style {
+    let background = theme.extended_palette().background;
+    let pair = match status {
+        button::Status::Hovered => background.strong,
+        _ => background.strongest,
+    };
+    button::Style {
+        background: Some(pair.color.into()),
+        text_color: pair.text,
+        border: border::rounded(2),
+        ..button::Style::default()
+    }
 }
 
 /// With no `on_toggle` a checkbox draws as disabled, and this one is not.

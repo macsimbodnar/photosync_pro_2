@@ -1,9 +1,0 @@
-id:         S062
-goal:       the GUI harness's checks fail when a thing is not seen, before more screens build on them
-accepts:    self-tests first, each failing on today's harness, then passing: (1) `screen_check`: a Fill body squeezed to no height, and a fixed sentence pushed out, both fail; the width branch, which cannot fail because the layout clamps width, is removed or replaced; a text said to be in the scrolling body is checked to be there; (2) `in_sight`: a sentence whose fixed part is 1 to 40 px too tall at 640x480, so that it is partly cut or its second line lost, fails: give the body scrollable a fixed id and assert it keeps at least some rows at that size, since height left over 0 proves no fixed child was clamped; (3) `click` panics on a click that sends no message, and `clicks` stays for proving a held button; `play` scripts that relied on a dead click are given end-state asserts; (4) smoke_window.rs and tests/mod.rs: a test that compares a picture fails if the folder holds a second PNG, so another renderer's name cannot pass having compared nothing; (5) gui.rs: a failing test first for the hang: `M::Row` for a stale row when the Down key cannot reach it, then no loop can spin forever, in S051's and S052's code; (6) gui_split.rs rejects `Button::new("x")` and `Element::from("x")`, with DEC-072 (4)'s claim corrected; (7) every existing GUI test still passes under the tighter checks, or the screen is fixed, never the test weakened; all screens S051 and S052 drew are read again at 640x480 and 900x650; (8) the row under the cursor has readable contrast (today dark text on mid grey on the cards screen), checked by reading a picture; README's GUI tests section stays true; suite and scripts/test_exfat.sh pass
-touches:    crates/photosync-gui tests/harness.rs, tests/mod.rs, tests/smoke_window.rs, tests/gui_split.rs, src/gui.rs, README, decisions
-excludes:   new screens
-closes:
-paused_by:
-author:
-done:
