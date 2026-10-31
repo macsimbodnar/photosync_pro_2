@@ -147,9 +147,17 @@ picks. It is simple to use.
     What is too tall for the terminal scrolls: on a refusal (the session's
     result after it included), the check, the copying screen and a field's
     help by `↑↓ PgUp PgDn`, on the card and drive lists the notes by
-    `PgUp PgDn`, and the keys row offers this only when there is more. Only
-    what is typed in the Library and Name fields stays on its one line, and
-    the title row on its own (DEC-062).
+    `PgUp PgDn`, and the keys row offers this only when there is more. Notes
+    never take the room of the empty list's sentence or of the row under the
+    cursor, which show whole. An empty list too low for its box has none: its
+    sentence comes first in what scrolls. Pressing cancel with the copying
+    screen scrolled down goes back to its top, where the Cancelling sentence is
+    (DEC-064). What can still be cut, on purpose: what is typed in the Library
+    and Name fields, on its one line; the title row, under about 50 columns; the
+    keys row and the hint on a terminal of about 6 rows; a sentence in a box
+    under 3 columns wide; a list row taller than the list, on a terminal too low
+    for it; and the notes under a list when the body has only the list's 3 rows
+    (DEC-062, DEC-064).
   - A closed stdout never stops a sync nor panics: the exit code stays
     within 0/1/2.
   - GUI: a native Rust GUI, later. Adding it must need no change to the core

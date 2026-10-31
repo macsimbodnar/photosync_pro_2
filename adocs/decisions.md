@@ -80,6 +80,7 @@ Why: one line.
 - DEC-061 2026-10-31 — the TUI's report wraps by itself and scrolls by rows; the result's box grows (S037)
 - DEC-062 2026-10-31 — the TUI's other screens wrap and scroll as the report does; the copying screen's gauge goes on top (S047)
 - DEC-063 2026-10-31 — the TUI keeps the report's wrapped rows in the view, keyed by the outcome's number and the body's area (S048)
+- DEC-064 2026-10-31 — notes leave the list what it must show: the row under the cursor, or the empty list's sentence, boxless when too low (S049)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1622,3 +1623,24 @@ resize, still wraps all: release 21 ms, debug 241 ms. A real terminal's own cost
 in release is small, about 20 ms a wrap before and 21 ms after with the first draw's cold memory in it; the refused
 screen, which has no cache, went from 448 µs to 293 µs a draw. The cache is what mattered.
 Why: S048: at one key per draw, 40 ms a draw puts every key of a large report behind the wrapping; a held key's queue was reasoned, not run.
+
+## DEC-064  2026-10-31  notes leave the list what it must show: the row under the cursor, or the empty list's sentence, boxless when too low (S049)
+Tags: tui
+Decision: the agent's choice in S049, not yet confirmed by the user. It narrows DEC-062 (3) and (6).
+(1) `list_areas` reserves the box and the rows of the row under the cursor, not of the tallest row. The list follows
+the cursor, so every row can be read whole, and the box may change height as the cursor moves. Rejected: the tallest
+row, for a box that holds still: it wraps every path twice more per draw, over the bound S048 pinned.
+(2) When the body cannot hold both, the notes keep one row, as they scroll and so are read to their end: a list row
+may be cut on a body of 4 rows with a row of 2, and so on (DEC-062 (6)). Rejected: the list taking every row, which
+leaves a warning that can never be read.
+(3) An empty list too low for its box and one row of notes has no box: its sentence comes first in what scrolls, then
+the notes, as a result too tall for its box does (DEC-061). So the empty-list exception of DEC-062 (6) is closed,
+and it does scroll now, unlike what that entry says.
+(4) One exception DEC-062 (6) did not name stays: with a body of exactly 3 rows (a terminal of about 6) and cards in
+the list, the notes get no row, and so cannot be read there; the list takes all three. Named in the specs. Rejected:
+dropping the list's box there, for a terminal this low.
+(5) `App::cancel` goes back to the top of what scrolls, as only the top shows the sentence. On a body so low that the
+progress line and the sentence do not fit, the start of the sentence shows and the rest scrolls.
+(6) The progress line scrolls with the scans; only the gauge stays in sight (DEC-062 (5)). So S047's test comment
+was wrong, not the code: it is corrected, and `scrolled_scans_leave_the_gauge_in_sight` holds what is true.
+Why: the prime rule: what the user must read is never cut, and a warning must not cost them the sentence that says what to do.

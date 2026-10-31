@@ -705,6 +705,8 @@ impl App {
         if let Some(run) = &mut self.running {
             run.cancel.cancel();
             run.cancelling = true;
+            // Its sentence is on top: one scrolled down would not see it.
+            self.scroll = 0;
         }
     }
 

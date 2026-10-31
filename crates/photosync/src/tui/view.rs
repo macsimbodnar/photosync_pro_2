@@ -1,14 +1,14 @@
 //! Draws an `App` with ratatui. Reads the model only: every rule is in
 //! `app`, every sentence about the sync in `text`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use photosync_core::Progress;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Gauge, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Gauge, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, Outcome, Screen};
 use crate::text;
@@ -46,8 +46,8 @@ pub fn render(app: &App, report: &mut ReportCache, frame: &mut Frame) {
         title,
     );
     match app.screen() {
-        Screen::Sources => sources(app, frame, body),
-        Screen::Drive => drives(app, frame, body),
+        Screen::Sources => list_screen(app, frame, body, "Camera cards"),
+        Screen::Drive => list_screen(app, frame, body, "Drives"),
         Screen::Library => field(frame, body, "Library folder", app.library()),
         Screen::Name => field(frame, body, "Name (optional)", app.name()),
         Screen::Confirm => frame.render_widget(Block::bordered(), body),
@@ -130,8 +130,15 @@ fn column(app: &App, body: Rect) -> Option<Column> {
     let boxed = Block::bordered().inner(body);
     let (rows, area) = match app.screen() {
         Screen::Sources | Screen::Drive => {
-            let [_, notes] = list_areas(app, body);
-            (note_rows(app, notes.width), notes)
+            let notes = note_rows(app, body.width);
+            let inner = list_inner_rows(app, body.width);
+            let [list, area] = list_areas(app, body, inner, notes.len());
+            let mut rows = Vec::new();
+            if list.height == 0 {
+                rows = styled_rows(app.empty_list_note(), body.width, Style::new());
+            }
+            rows.extend(notes);
+            (rows, area)
         }
         Screen::Library | Screen::Name => {
             let [_, help] = field_areas(body);
@@ -166,29 +173,66 @@ fn draw_column(app: &App, frame: &mut Frame, column: Column) {
     frame.render_widget(Paragraph::new(shown), column.area);
 }
 
-fn list_screen(app: &App, frame: &mut Frame, area: Rect, title: &str, rows: Vec<ListItem>) {
-    let [list_area, _] = list_areas(app, area);
+fn list_screen(app: &App, frame: &mut Frame, area: Rect, title: &str) {
     let block = Block::bordered().title(title.to_string());
-    if rows.is_empty() {
-        frame.render_widget(
-            Paragraph::new(app.empty_list_note())
-                .wrap(Wrap { trim: false })
-                .block(block),
-            list_area,
-        );
-    } else {
-        let list = List::new(rows)
+    let notes = note_rows(app, area.width).len();
+    let items: Vec<ListItem> = list_paths(app)
+        .iter()
+        .map(|path| list_item(app, path, area))
+        .collect();
+    if !items.is_empty() {
+        let selected = items.get(app.cursor()).map_or(1, ListItem::height);
+        let [list_area, _] = list_areas(app, area, selected, notes);
+        let list = List::new(items)
             .block(block)
             .highlight_style(Style::new().reversed())
             .highlight_symbol("> ");
         let mut state = ListState::default().with_selected(Some(app.cursor()));
         frame.render_stateful_widget(list, list_area, &mut state);
+    } else {
+        let sentence = empty_list_rows(app, area.width);
+        let [list_area, _] = list_areas(app, area, sentence.len(), notes);
+        frame.render_widget(Paragraph::new(sentence).block(block), list_area);
     }
 }
 
-fn list_areas(app: &App, area: Rect) -> [Rect; 2] {
-    let notes = note_rows(app, area.width).len();
-    let room = usize::from(area.height.saturating_sub(MIN_LIST_ROWS));
+fn list_paths(app: &App) -> &[PathBuf] {
+    match app.screen() {
+        Screen::Drive => app.drives(),
+        _ => app.sources(),
+    }
+}
+
+/// The empty list's sentence, as its box holds it.
+fn empty_list_rows(app: &App, width: u16) -> Vec<Line<'static>> {
+    styled_rows(app.empty_list_note(), width.saturating_sub(2), Style::new())
+}
+
+/// The rows the list must show whole inside its box. The row under the cursor
+/// only: the list follows the cursor, so that reaches every row.
+fn list_inner_rows(app: &App, width: u16) -> usize {
+    let paths = list_paths(app);
+    if paths.is_empty() {
+        return empty_list_rows(app, width).len();
+    }
+    paths
+        .get(app.cursor())
+        .map_or(1, |path| list_rows(app, path, width).len())
+}
+
+/// The list's box first, `inner` rows in it, and the rest to the notes, which
+/// scroll. The notes keep one row all the same, or they could never be read;
+/// only a body of `MIN_LIST_ROWS` has none to give. An empty list too low for
+/// its box and a row of notes has no box: its sentence goes first in the notes.
+fn list_areas(app: &App, area: Rect, inner: usize, notes: usize) -> [Rect; 2] {
+    let height = usize::from(area.height);
+    let boxed = inner + 2;
+    if list_paths(app).is_empty() && boxed + usize::from(notes > 0) > height {
+        return [Rect { height: 0, ..area }, area];
+    }
+    let room = height
+        .saturating_sub(boxed)
+        .max(usize::from(area.height > MIN_LIST_ROWS));
     Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(notes.min(room) as u16),
@@ -205,41 +249,22 @@ fn note_rows(app: &App, width: u16) -> Vec<Line<'static>> {
 
 /// A list's row, in as many rows as its path needs: two cards can differ only
 /// at the end. The list's borders and its cursor take four columns.
-fn list_item(mark: &str, path: &Path, area: Rect) -> ListItem<'static> {
-    let width = area.width.saturating_sub(4);
-    let rows: Vec<Line> = wrapped(&format!("{mark} {}", path.display()), width)
+fn list_rows(app: &App, path: &Path, width: u16) -> Vec<String> {
+    let mark = match app.screen() {
+        Screen::Drive if app.drive() == Some(path) => "(*)",
+        Screen::Drive => "( )",
+        _ if app.is_picked(path) => "[x]",
+        _ => "[ ]",
+    };
+    wrapped(&format!("{mark} {}", path.display()), width.saturating_sub(4))
+}
+
+fn list_item(app: &App, path: &Path, area: Rect) -> ListItem<'static> {
+    let rows: Vec<Line> = list_rows(app, path, area.width)
         .into_iter()
         .map(Line::from)
         .collect();
     ListItem::new(rows)
-}
-
-fn sources(app: &App, frame: &mut Frame, area: Rect) {
-    let rows = app
-        .sources()
-        .iter()
-        .map(|s| {
-            let mark = if app.is_picked(s) { "[x]" } else { "[ ]" };
-            list_item(mark, s, area)
-        })
-        .collect();
-    list_screen(app, frame, area, "Camera cards", rows);
-}
-
-fn drives(app: &App, frame: &mut Frame, area: Rect) {
-    let rows = app
-        .drives()
-        .iter()
-        .map(|d| {
-            let mark = if app.drive() == Some(d.as_path()) {
-                "(*)"
-            } else {
-                "( )"
-            };
-            list_item(mark, d, area)
-        })
-        .collect();
-    list_screen(app, frame, area, "Drives", rows);
 }
 
 fn field_areas(area: Rect) -> [Rect; 2] {

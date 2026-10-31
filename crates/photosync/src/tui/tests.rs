@@ -11,7 +11,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use photosync_core::{ScanError, Volumes, discover_volumes};
+use photosync_core::{
+    Counts, Event, EventKind, Phase, Progress, ScanError, Volumes, discover_volumes,
+};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
@@ -341,8 +343,9 @@ fn the_help_of_a_field_is_read_to_its_end() {
     assert_eq!(missing(&want, &seen), Vec::<String>::new());
 }
 
-/// S047: more scan lines than the screen has rows, and the progress must
-/// stay in sight on top of them.
+/// S047: more scan lines than the screen has rows are read to their end.
+/// The gauge stays in sight on top of them; the progress line scrolls with
+/// them (DEC-062 (5)): `scrolled_scans_leave_the_gauge_in_sight` holds both.
 #[test]
 fn scan_lines_taller_than_the_screen_are_read_to_their_end() {
     let mut app = App::new();
@@ -1038,4 +1041,215 @@ fn the_other_screens_wrap_no_more_than_before() {
     let mut app = App::with_outcome_for_test(Outcome::Refused { sentence: "x".into() });
     let wraps = draw(&mut app);
     assert!(wraps <= 5, "Refused: {wraps}");
+}
+
+/// The copying screen, `lines` scan lines of it, with a copy under way.
+fn copying_app(lines: &[String]) -> App {
+    let mut app = App::new();
+    app.update(Msg::Volumes(Volumes {
+        sources: vec![PathBuf::from("/V/A")],
+        destinations: vec![PathBuf::from("/V/SSD")],
+        failures: Vec::new(),
+    }));
+    for _ in 0..5 {
+        app.update(Msg::Key(Key::Enter));
+    }
+    assert_eq!(app.screen(), Screen::Running);
+    for line in lines {
+        app.update(Msg::Scanned(line.clone()));
+    }
+    let c = |files, bytes| Counts { files, bytes };
+    app.update(Msg::Progress(Event {
+        kind: EventKind::Bytes,
+        progress: Progress {
+            phase: Phase::Copying,
+            done: c(1, 25_000_000),
+            total: c(4, 100_000_000),
+            sources: Vec::new(),
+            elapsed: Duration::from_secs(10),
+            eta: Some(Duration::from_secs(30)),
+        },
+    }));
+    app
+}
+
+const CANCELLING: &str =
+    "Cancelling: the files being copied are finished or dropped, then the report shows.";
+
+fn as_words(sentence: &str) -> Vec<String> {
+    sentence.split_whitespace().map(String::from).collect()
+}
+
+/// S049: the user scrolled down the scans, then cancels: the sentence that says
+/// what happens now is above what they look at, so it must come into sight.
+#[test]
+fn cancelling_while_scrolled_down_shows_the_cancelling_sentence() {
+    let lines: Vec<String> = words(0, 200).chunks(20).map(|c| c.join(" ")).collect();
+    for (width, height) in [(80, 14), (80, 24), (40, 14)] {
+        for key in [Key::Char('c'), Key::Esc, Key::CtrlC] {
+            let mut app = copying_app(&lines);
+            let mut report = view::ReportCache::default();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            read_with(Key::Down, &mut app, &mut terminal, &mut report);
+            assert!(app.scroll() > 0, "did not scroll");
+            app.update(Msg::Key(key));
+            draw_frame(&mut terminal, &mut report, &mut app).unwrap();
+            let screen = rows(terminal.backend());
+            assert_eq!(
+                missing(&as_words(CANCELLING), &screen),
+                Vec::<String>::new(),
+                "{width}x{height} with {key:?}: {screen:#?}"
+            );
+        }
+    }
+}
+
+/// S049: what `scan_lines_taller_than_the_screen_are_read_to_their_end` says of
+/// the progress: at the end of the scans the gauge is there, the line is not,
+/// and it is back on top after scrolling up.
+#[test]
+fn scrolled_scans_leave_the_gauge_in_sight() {
+    let lines: Vec<String> = words(0, 200).chunks(20).map(|c| c.join(" ")).collect();
+    let mut app = copying_app(&lines);
+    let mut report = view::ReportCache::default();
+    let mut terminal = Terminal::new(TestBackend::new(40, 14)).unwrap();
+    read_with(Key::Down, &mut app, &mut terminal, &mut report);
+    assert!(app.scroll() > 0, "did not scroll");
+    let screen = rows(terminal.backend());
+    let gauge = screen.iter().position(|r| r.contains("25%"));
+    assert_eq!(gauge, Some(2), "{screen:#?}");
+    assert!(!screen.concat().contains("ETA"), "{screen:#?}");
+    let up = read_with(Key::PageUp, &mut app, &mut terminal, &mut report);
+    assert!(up.concat().contains("ETA"), "{up:#?}");
+}
+
+fn no_list_app(failures: &[String], drive_screen: bool) -> App {
+    let mut app = App::new();
+    app.update(Msg::Volumes(Volumes {
+        sources: if drive_screen { vec![PathBuf::from("/V/A")] } else { Vec::new() },
+        destinations: Vec::new(),
+        failures: failures
+            .iter()
+            .map(|f| ScanError {
+                path: PathBuf::from("/V"),
+                source: io::Error::other(f.clone()),
+            })
+            .collect(),
+    }));
+    if drive_screen {
+        app.update(Msg::Key(Key::Enter));
+        assert_eq!(app.screen(), Screen::Drive);
+    }
+    app
+}
+
+/// S049: notes that fill the body must not leave the sentence that says what is
+/// wrong, and what to do, one row of its box.
+#[test]
+fn an_empty_list_shows_its_whole_sentence_under_any_number_of_notes() {
+    let failures: Vec<String> = words(0, 400).chunks(20).map(|c| c.join(" ")).collect();
+    for drive_screen in [false, true] {
+        for (width, height) in [(80, 12), (80, 24), (40, 12), (40, 24)] {
+            let mut app = no_list_app(&failures, drive_screen);
+            let sentence = as_words(app.empty_list_note());
+            let mut report = view::ReportCache::default();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            draw_frame(&mut terminal, &mut report, &mut app).unwrap();
+            draw_frame(&mut terminal, &mut report, &mut app).unwrap();
+            let screen = rows(terminal.backend());
+            assert_eq!(
+                missing_in_box(&sentence, &screen),
+                Vec::<String>::new(),
+                "{width}x{height}: {screen:#?}"
+            );
+            let seen = read_with(Key::PageDown, &mut app, &mut terminal, &mut report);
+            let all = words(0, 400);
+            assert_eq!(missing_in_box(&all, &seen), Vec::<String>::new(), "{width}x{height}");
+        }
+    }
+}
+
+/// S049: too low for the sentence's box. The sentence then comes first in what
+/// scrolls, as a result too tall for its box does (DEC-061): none of it is lost.
+#[test]
+fn on_a_low_terminal_an_empty_lists_sentence_and_notes_are_read_to_their_end() {
+    let failures: Vec<String> = words(0, 60).chunks(20).map(|c| c.join(" ")).collect();
+    for drive_screen in [false, true] {
+        for notes in [&failures[..], &[]] {
+            for (width, height) in [(80, 6), (80, 5), (40, 7), (30, 8), (20, 9)] {
+                let mut app = no_list_app(notes, drive_screen);
+                let mut want = as_words(app.empty_list_note());
+                if !notes.is_empty() {
+                    want.extend(words(0, 60));
+                }
+                let mut report = view::ReportCache::default();
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                let seen = read_with(Key::PageDown, &mut app, &mut terminal, &mut report);
+                assert_eq!(
+                    missing_in_box(&want, &seen),
+                    Vec::<String>::new(),
+                    "{width}x{height}: {seen:#?}"
+                );
+            }
+        }
+    }
+}
+
+/// Three cards whose paths each wrap to 2 rows at `width`, and `failures`.
+fn tall_rows_app(width: u16, failures: &[String]) -> (App, Vec<Vec<String>>) {
+    let per_card = usize::from(width) / 4;
+    let cards: Vec<Vec<String>> = (0..3)
+        .map(|n| words(1000 + n * per_card, 1000 + (n + 1) * per_card))
+        .collect();
+    let mut app = App::new();
+    app.update(Msg::Volumes(Volumes {
+        sources: cards.iter().map(|c| PathBuf::from(c.join(" "))).collect(),
+        destinations: vec![PathBuf::from("/V/SSD")],
+        failures: failures
+            .iter()
+            .map(|f| ScanError {
+                path: PathBuf::from("/V"),
+                source: io::Error::other(f.clone()),
+            })
+            .collect(),
+    }));
+    (app, cards)
+}
+
+/// S049: notes must not leave the card under the cursor one row: two cards can
+/// differ only at the end. All three, as the list follows the cursor.
+#[test]
+fn a_selected_row_that_wraps_shows_whole_under_any_number_of_notes() {
+    let failures: Vec<String> = words(0, 400).chunks(20).map(|c| c.join(" ")).collect();
+    for (width, height) in [(80, 12), (80, 24), (40, 12), (40, 24)] {
+        let (mut app, cards) = tall_rows_app(width, &failures);
+        let mut report = view::ReportCache::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        for card in &cards {
+            draw_frame(&mut terminal, &mut report, &mut app).unwrap();
+            draw_frame(&mut terminal, &mut report, &mut app).unwrap();
+            let screen = rows(terminal.backend());
+            assert_eq!(
+                missing_in_box(card, &screen),
+                Vec::<String>::new(),
+                "{width}x{height}: {screen:#?}"
+            );
+            app.update(Msg::Key(Key::Down));
+        }
+    }
+}
+
+/// S049: the list comes first, and the notes keep a row where the list would
+/// take them all: a warning that can never be read is worse than a list row
+/// the terminal is too low for.
+#[test]
+fn notes_are_read_to_their_end_when_the_list_could_take_every_row() {
+    let failures: Vec<String> = words(0, 60).chunks(20).map(|c| c.join(" ")).collect();
+    for height in [7, 8, 9] {
+        let (mut app, _) = tall_rows_app(80, &failures);
+        let mut report = view::ReportCache::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
+        let seen = read_with(Key::PageDown, &mut app, &mut terminal, &mut report);
+        assert_eq!(missing_in_box(&words(0, 60), &seen), Vec::<String>::new(), "80x{height}");
+    }
 }
