@@ -4,12 +4,12 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-31, by Claude (S036 done)
+Updated: 2026-10-31, by Claude (S050 done)
 
-- Last done: S036  plan the GUI: iced 0.14.0 confirmed by a spike, its own crate, steps S050 to S061 (DEC-065 to DEC-070)
+- Last done: S050  shared layer gets a library target, no behaviour change (372 passed, 28 ignored, as before)
 - In progress: none
-- Next: S050  shared layer gets a library target, no behaviour change
-- Waiting for the user: a yes or no to iced_test as a dev-dependency (DEC-066 (1)): S051 and every GUI step after it wait for it, S050 does not. S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
+- Next: S051  GUI crate, window, test harness, cards list (waits for the user's yes to iced_test, DEC-066 (1))
+- Waiting for the user: a yes or no to iced_test as a dev-dependency (DEC-066 (1)): S051 and every GUI step after it wait for it. S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
   - Decisions the agents picked that the user has not confirmed yet:

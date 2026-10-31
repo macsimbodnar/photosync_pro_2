@@ -5,5 +5,5 @@ touches:    crates/photosync/Cargo.toml, crates/photosync/src/lib.rs, README
 excludes:   the GUI crate; iced; moving any file; changing main.rs or any test
 closes:     
 paused_by:
-author:
-done:
+author:     Claude
+done:       2026-10-31, Claude. `[lib] photosync_front` and `[[bin]] photosync` in crates/photosync/Cargo.toml; new src/lib.rs as accepts says: doc comment (DEC-067 (2) says "holds only" the allows and mods, accepts adds the comment; accepts followed). cargo test --workspace before 372 passed, 0 failed, 28 ignored; after 372 passed, 0 failed, 28 ignored; the listed test names are the same, by diff. scripts/test_exfat.sh exit 0 (374 passed, its own runs and filters, no before count taken); hdiutil info shows no image left. cargo build -p photosync --lib and cargo clippy -p photosync --lib: no warning. No iced in any Cargo file; Cargo.lock unchanged (shasum a0fc08a before and after). git diff of the paths accepts lists: empty, so no test, main.rs, shared file or tui changed; the TUI's drawn-screen tests, unchanged, are the screen check. README's layout paragraph names the library target. specs unchanged: no behaviour change. No new decision. Fast check not run by this agent.

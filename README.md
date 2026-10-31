@@ -173,7 +173,9 @@ Exit codes:
   running photosync stays), knows
   which photos earlier cards put on the drive, and keeps the worst
   outcome (`Session::verdict`). Front-ends drive it through `Watch`.
-- `crates/photosync`: the `photosync` binary. `app` is the interactive
+- `crates/photosync`: the `photosync` binary, and a library target
+  `photosync_front` (`src/lib.rs`) holding the same shared files, with no
+  tests of its own, for a GUI crate (DEC-067). `app` is the interactive
   model (screens, keys, what each message changes) and `worker` runs a sync
   on its own thread; no file outside `src/tui/` names ratatui or crossterm
   (`tests/ui_split.rs` checks every file), so a GUI can reuse them with

@@ -3,6 +3,16 @@ name = "photosync"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "photosync_front"
+path = "src/lib.rs"
+test = false
+doctest = false
+
+[[bin]]
+name = "photosync"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
 libc = "0.2.191"
