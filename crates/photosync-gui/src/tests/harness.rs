@@ -22,14 +22,15 @@ use iced_test::selector::{self, Candidate, Target};
 use iced_test::{Instruction, Simulator};
 use photosync_core::{ScanError, Volumes};
 
-use crate::gui::{self, BODY, Discover, Gui, LEAST, M, WINDOW, update, view};
+use crate::gui::{self, BODY, Discover, ForTest, Gui, LEAST, M, WINDOW, update, view};
 
 /// A test that waits longer than this has found a fault: never hang the gate.
 pub(crate) const LIMIT: Duration = Duration::from_secs(120);
 /// DEC-066 (5a) names it beside the least size.
 const COMMON: Size = Size::new(800.0, 600.0);
-/// Two list rows and the space between. A fixed child cut short keeps full-looking bounds,
-/// and the body gets only what the fixed part left, so room here proves none was cut.
+/// Two list rows and the space between. The body gets only what the fixed part left, so room
+/// here proves the column did not run out. It proves nothing of a height bound on one child,
+/// a fixed height on the body, or a body in a row: see `see_in_sight`.
 const BODY_KEEPS: f32 = 67.0;
 /// One line of words. A text a scrollable cuts shows at least this, or it is not in sight.
 const ONE_LINE: f32 = 20.0;
@@ -83,6 +84,20 @@ pub(crate) fn blocked_discovery() -> (Discover, Receiver<Sender<Volumes>>) {
 /// The next look a `blocked_discovery` started.
 pub(crate) fn next_look(started: &Receiver<Sender<Volumes>>) -> Sender<Volumes> {
     started.recv_timeout(LIMIT).expect("no look started")
+}
+
+/// Hears the worker until the sync's end has reached the model, as `M::Wake` and `M::Gone`
+/// would when the worker has sent it.
+pub(crate) fn run_out(gui: &mut Gui) {
+    let started = Instant::now();
+    loop {
+        let _ = update(gui, M::Gone);
+        if gui.app.running().is_none() {
+            return;
+        }
+        assert!(started.elapsed() < LIMIT, "the sync did not end");
+        sleep(Duration::from_millis(1));
+    }
 }
 
 /// Booted, with the first look answered. Its task is dropped: tests that use plain
@@ -324,8 +339,12 @@ pub(crate) fn see_fixed_box(
     Ok(())
 }
 
-/// `in_sight`, on any element. Only a scrollable can cut a text's visible bounds, and it
-/// must leave a line. A text with no room left has no height, so no visible bounds.
+/// `in_sight`, on any element. A scrollable cuts a text's visible bounds, and must leave a
+/// line. A text with no room left has no height, so no visible bounds. A height bound cuts
+/// too, and this cannot see it, nor can `fixed_in_sight` or `fixed_box_in_sight`: it shrinks
+/// the text's own bounds, so what is seen still equals them, and a text past the window's edge
+/// shows whole, as the walk's first viewport is infinite. `tests/gui_split.rs` holds that no
+/// screen has one (DEC-080), and `a_height_bound_passes_every_check_here` that this is so.
 pub(crate) fn see_in_sight(
     ui: &mut Simulator<'_, M>,
     size: Size,
@@ -451,6 +470,8 @@ pub(crate) enum Step {
     Fails(&'static str),
     /// The body to its end.
     ScrollEnd,
+    /// Reaches the state the Emulator holds, as to set what a later click will use.
+    Set(Arc<dyn Fn(&mut Gui) + Send + Sync>),
 }
 
 /// Runs the real program with no window, tasks and threads included, and each of `lines`
@@ -496,6 +517,11 @@ pub(crate) fn play_steps(discover: Discover, steps: Vec<Step>) -> Gui {
                 Some(Step::ScrollEnd) => {
                     scrolling = true;
                     emulator.update(&program, M::ScrollEndForTest);
+                }
+                Some(Step::Set(reach)) => {
+                    // Its task is none, so nothing will say it is done.
+                    emulator.update(&program, M::ForTest(ForTest(reach)));
+                    go_on = true;
                 }
             }
         }

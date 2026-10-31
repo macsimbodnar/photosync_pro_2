@@ -7,9 +7,10 @@ separate folders under one folder per sync, optionally named
 first, then Linux.
 
 Status: early development. The CLI and the TUI work. A GUI is being built: `photosync-gui`
-walks from the cards and the drives through the library, the name and the check, and says
-why it refuses, and it cannot copy yet: Start copying ends on a bare title. What
-it must do is in `adocs/specs.md`, and the plan is in `adocs/plan.md`.
+walks from the cards and the drives through the library, the name and the check, says why
+it refuses, and copies with progress and cancel. It is not ready to use: the report is a bare
+title, so it does not say what was copied (S055), and the process returns 0 whatever happened
+(S056). Use the CLI or the TUI for real cards. What it must do is in `adocs/specs.md`, and the plan is in `adocs/plan.md`.
 
 ## Usage
 
@@ -278,7 +279,7 @@ of the body; `fixed_in_sight` is the check for what may never scroll, a warning 
 sight and in no scrollable; `fixed_box_in_sight` holds a box's words, in that box, itself in the
 fixed part; `click` fails
 on a click that sends nothing, and `clicks` proves a button held; `play` runs the real program, tasks and
-threads included, and a script ends by asserting on its state, as a click there shows no messages; `play_steps` adds a click that must fail, on words that are on the screen and out of sight, and scrolling to the end. One test opens a real window, so it is ignored and never in the gate. By hand,
+threads included, and a script ends by asserting on its state, as a click there shows no messages; `play_steps` adds a click that must fail, on words that are on the screen and out of sight, scrolling to the end, and `Step::Set` to reach the state, as to hold the copy thread with `before_send` or put a `test_worker` in `worker::spawn`'s place; `run_out` hears a real worker to its end with no runtime. None of these sees a warning cut by a height bound, so `tests/gui_split.rs` holds that the screens have none outside `word_box` and `around_the_body`, the one place the body stands. One test opens a real window, so it is ignored and never in the gate. By hand,
 with the mouse off the window, as a hovered button changes the picture:
 
 ```sh

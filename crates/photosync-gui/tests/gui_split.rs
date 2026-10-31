@@ -66,6 +66,13 @@ const NO_LITERAL_IN: &[&str] = &[
 ];
 /// Macros whose result is a `&str` made at compile time: a literal under another name.
 const LITERAL_MACROS: &[&str] = &["concat!", "stringify!", "include_str!", "env!"];
+/// The one function that places the body.
+const THE_BODY: &str = "around_the_body";
+/// May bound a height: a box whose words scroll inside it, and the body (DEC-080).
+const MAY_BOUND_A_HEIGHT: &[&str] = &["word_box", THE_BODY];
+/// Bound a height, and so can cut a fixed warning with nothing wrong in its bounds, which no
+/// check of the harness can see (DEC-080). A container's `center` and `center_y` set one too.
+const HEIGHT_BOUNDS: &[&str] = &[".height", ".max_height", ".clip", ".center", ".center_y"];
 
 fn gui_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
@@ -311,6 +318,91 @@ fn draws_past_the_helper(source: &str) -> Vec<String> {
     found
 }
 
+/// Where the function `name` stands in `source`, from its `fn` to its closing brace.
+fn function_of<'a>(source: &'a str, name: &str) -> Option<(usize, &'a str)> {
+    let start = source.find(&format!("fn {name}"))?;
+    let opening = start + source[start..].find('{')?;
+    let inside = &source[opening + 1..];
+    let (mut at, mut depth) = (0, 0);
+    while at < inside.len() {
+        let rest = &inside[at..];
+        if let Some(len) = literal_len(rest) {
+            at += len;
+            continue;
+        }
+        let c = rest.chars().next().unwrap();
+        match c {
+            '{' => depth += 1,
+            '}' if depth == 0 => return Some((start, &source[start..opening + 1 + at + 1])),
+            '}' => depth -= 1,
+            _ => {}
+        }
+        at += c.len_utf8();
+    }
+    Some((start, &source[start..]))
+}
+
+/// Each bound on a height outside the named helpers.
+fn height_bounds(source: &str) -> Vec<String> {
+    let mut left = source.to_string();
+    for helper in MAY_BOUND_A_HEIGHT {
+        if let Some((start, text)) = function_of(&left, helper) {
+            left.replace_range(start..start + text.len(), "");
+        }
+    }
+    let mut found = Vec::new();
+    for form in HEIGHT_BOUNDS {
+        for at in places(&left, form) {
+            // A call, not the field of a size or a bound.
+            let after = left[at + form.len()..].trim_start();
+            if after.starts_with('(') || after.starts_with("::<") {
+                found.push((*form).to_string());
+            }
+        }
+    }
+    found
+}
+
+/// What keeps the body from hiding a cut: it is one, in one function, the middle of a column,
+/// with all the height that is left. A body in a `row!` leaves the warnings beside it to run
+/// past the window, and a body of fixed height pushes what is under it out.
+fn body_faults(source: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let ids = source.matches(".id(BODY)").count();
+    if ids != 1 {
+        found.push(format!("{ids} bodies"));
+    }
+    match function_of(source, THE_BODY) {
+        None => found.push(format!("no {THE_BODY}")),
+        Some((_, helper)) => {
+            if !helper.contains(".id(BODY)") {
+                found.push(format!("the body is not in {THE_BODY}"));
+            }
+            let after = helper.find(".id(BODY)").map_or("", |at| &helper[at..]);
+            if !after.contains(".height(Length::Fill)") {
+                found.push("the body's height is not Length::Fill".to_string());
+            }
+            if !helper.contains("column!") || names(helper, "row!") || names(helper, "row") {
+                found.push(format!("{THE_BODY} is not a column"));
+            }
+        }
+    }
+    for opening in ["row!", "row"] {
+        for at in places(source, opening) {
+            let after = source[at + opening.len()..].trim_start();
+            let Some(inside) = after.strip_prefix(['(', '[', '{']) else {
+                continue;
+            };
+            if items(inside).iter().any(|item| {
+                item.contains(THE_BODY) || item.contains(".id(BODY)") || item.contains("BODY)")
+            }) {
+                found.push(format!("the body in {opening}"));
+            }
+        }
+    }
+    found
+}
+
 /// Each `#[ignore` that does not give the images' reason.
 fn other_ignores(source: &str) -> Vec<String> {
     source
@@ -410,6 +502,19 @@ fn the_helper_is_the_one_call_of_text_and_it_wraps_by_glyph() {
 #[test]
 fn no_other_form_draws_words() {
     let found = found_in(&product_files(), draws_past_the_helper);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn no_screen_bounds_a_height_outside_the_named_helpers() {
+    let found = found_in(&product_files(), height_bounds);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn the_one_body_takes_all_the_height_left_in_a_column() {
+    let product: String = product_files().iter().map(|f| read_code(f)).collect();
+    let found = body_faults(&product);
     assert!(found.is_empty(), "{found:?}");
 }
 
@@ -552,6 +657,70 @@ fn the_form_matcher_catches_each_kind() {
         "x.to_string()",
     ] {
         assert_eq!(draws_past_the_helper(line), Vec::<String>::new(), "{line}");
+    }
+}
+
+#[test]
+fn the_height_matcher_catches_each_kind_outside_the_helpers() {
+    for line in [
+        "container(words(WARNING)).max_height(30)",
+        "words(WARNING).height(20)",
+        "row![a, b].height(30)",
+        "container(a).clip(true)",
+        "row![a, b].clip(true)",
+        "a\n    .height(30)",
+        "a.height (30)",
+        "a.max_height::<f32>(30.0)",
+        "container(a).center_y(30)",
+        "container(a).center(30)",
+        // A helper's name elsewhere is not the helper.
+        "fn my_word_box_too() { a.height(30) }",
+        "fn other() { word_box(a); b.clip(true) }",
+    ] {
+        assert!(!height_bounds(line).is_empty(), "{line}");
+    }
+    for line in [
+        "fn word_box() { container(a).max_height(most) }",
+        "fn around_the_body() { scrollable(a).height(Length::Fill) }",
+        "word_box(id, words, 104.0)",
+        "shot.size.height",
+        "a.height_of(x)",
+        "a.width(Length::Fill)",
+        "a.girth(10.0)",
+        "a.align_y(Alignment::Center)",
+    ] {
+        assert_eq!(height_bounds(line), Vec::<String>::new(), "{line}");
+    }
+}
+
+#[test]
+fn the_body_matcher_catches_each_kind() {
+    let good = "fn around_the_body() { let b = scrollable(a).id(BODY).spacing(8).height(Length::Fill); column![o, b, u].into() }";
+    assert_eq!(body_faults(good), Vec::<String>::new());
+    assert_eq!(
+        body_faults(&format!(
+            "{good} fn s() {{ column![around_the_body(a, b, c)] }}"
+        )),
+        Vec::<String>::new()
+    );
+    for bad in [
+        // No body, a second, or one outside the helper.
+        "fn around_the_body() { column![a] }".to_string(),
+        format!("{good} fn s() {{ scrollable(a).id(BODY) }}"),
+        "fn s() { scrollable(a).id(BODY).height(Length::Fill) }".to_string(),
+        // Not all the height left.
+        "fn around_the_body() { let b = scrollable(a).id(BODY).height(Length::Fixed(400.0)); column![o, b, u] }".to_string(),
+        "fn around_the_body() { let b = scrollable(a).id(BODY).height(400.0); column![o, b, u] }".to_string(),
+        "fn around_the_body() { let b = scrollable(a).id(BODY); column![o, b, u] }".to_string(),
+        // Height set on something before the id is not the body's.
+        "fn around_the_body() { let b = scrollable(a.height(Length::Fill)).id(BODY); column![o, b, u] }".to_string(),
+        // In a row, inside or outside the helper.
+        "fn around_the_body() { let b = scrollable(a).id(BODY).height(Length::Fill); row![o, b] }".to_string(),
+        format!("{good} fn s() {{ row![warnings, around_the_body(a, b, c)] }}"),
+        format!("{good} fn s() {{ row!(around_the_body(a, b, c), warnings) }}"),
+        format!("{good} fn s() {{ row(vec![around_the_body(a, b, c)]) }}"),
+    ] {
+        assert!(!body_faults(&bad).is_empty(), "{bad}");
     }
 }
 

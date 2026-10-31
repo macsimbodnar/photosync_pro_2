@@ -4,7 +4,8 @@
 
 use iced::widget::text::Wrapping;
 use iced::widget::{
-    Column, Text, button, checkbox, column, container, row, scrollable, text, text_input,
+    Column, Text, button, checkbox, column, container, progress_bar, row, scrollable, text,
+    text_input,
 };
 use iced::{Alignment, Element, Length, Padding, Theme, border};
 
@@ -73,6 +74,11 @@ pub fn red_banner<'a, M: 'a>(line: &'a str, reason: Option<Element<'a, M>>) -> E
         .width(Length::Fill)
         .padding(8)
         .into()
+}
+
+/// A bar, `share` of it full.
+pub fn bar<'a, M: 'a>(share: f32) -> Element<'a, M> {
+    progress_bar(0.0..=1.0, share).girth(10.0).into()
 }
 
 /// A button; with no message it is drawn held, and a click sends nothing.

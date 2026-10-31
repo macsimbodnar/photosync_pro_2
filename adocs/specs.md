@@ -163,9 +163,9 @@ picks. It is simple to use.
   - A closed stdout never stops a sync nor panics: the exit code stays
     within 0/1/2.
   - GUI: a native Rust GUI in iced (DEC-065), being built step by step: today its window
-    and the cards, drive, library, name, check and refused screens. Start copying only keeps the sync, unrun, and
-    the copying and report screens are a bare title until their steps (S054 on), so
-    it cannot copy yet. What follows is what it must become. It
+    and the cards, drive, library, name, check, copying and refused screens. Start copying runs the sync, but the
+    report screen is a bare title until S055 and the process returns 0 until S056, so it
+    does not yet say what was copied. What follows is what it must become. It
     must need no change to the core beyond new API, which keeps INV-8 true.
     It is its own binary, `photosync-gui`, over the same model, worker and
     sentences as the TUI (DEC-067, DEC-068), so it walks the same screens by the
@@ -185,8 +185,11 @@ picks. It is simple to use.
     the card until the report says so, as Cmd-Q and the Dock's Quit cannot be stopped,
     and end it like a kill (INV-7). They are the one exception to showing why first: on
     any screen they quit with nothing more said, so what warns is what was already on
-    screen (DEC-071). These warnings and the Cancelling sentence are never in what
-    scrolls. It refuses to run as root: the sentence goes to
+    screen (DEC-071). These warnings, the Cancelling sentence and the overall bar are never in what
+    scrolls; the progress words, each card's bar with two cards or more, and the scan lines do. No screen bounds a
+    height but a box of words that scroll inside it, and the body takes all the height left, as a bound cuts a warning
+    with nothing wrong in its bounds (DEC-080). Cancel is the copying screen's only button, drawn held once heard. A
+    worker gone with no end shows the crash sentence, never complete. It refuses to run as root: the sentence goes to
     stderr and to a window that offers only Quit. Nothing it says is cut: every word
     wraps, and what is too tall scrolls. A result too tall for its box, at most 240 high,
     scrolls in that box, with the report and buttons still in sight; a refusal too tall

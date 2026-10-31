@@ -7,27 +7,28 @@ mod one_picture;
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use iced::widget::{Space, button, column, row, scrollable, text_input};
+use iced::widget::{Space, button, column, container, row, scrollable, text_input};
 use iced::{Color, Element, Length, Size, Theme, window};
 use iced_test::Simulator;
 use iced_test::core::Settings;
 use iced_test::emulator::{Emulator, Event, Mode};
 use iced_test::futures::futures::channel::mpsc::{self as emulator_channel, TryRecvError};
 use iced_test::selector::{self, Target};
-use photosync_front::app::{Effect, Exit, Key, Msg, Outcome, Screen};
+use photosync_core::{Counts, Event as CoreEvent, EventKind, Phase, Progress, SourceProgress};
+use photosync_front::app::{Effect, Exit, Job, Key, Msg, Outcome, Screen};
 use photosync_front::{flow, text};
 
 use crate::args::{Options, parse};
 use crate::common::TempDir;
 use crate::gui::{
-    self, BANNER, BODY, CARDS_ONLY_READ, DRIVE_GONE, Discover, Gui, LEAST, LIBRARY_HELP, LOOKING,
-    M, NAME_HELP, NOT_SAFE, PICK_A_DRIVE, THE_DATE_TO_COME, TITLE, WINDOW, banner, update, view,
+    self, BANNER, BODY, CANCELLING, CARDS_ONLY_READ, CLOSE_AGAIN, DO_NOT_FORMAT, DRIVE_GONE,
+    Discover, Gui, LEAST, LIBRARY_HELP, LOOKING, M, NAME_HELP, NOT_SAFE, PICK_A_DRIVE, SCANNING,
+    THE_DATE_TO_COME, TITLE, WINDOW, WorkerSend, banner, card_line, share, update, view,
 };
 use crate::png;
 use crate::widgets::{row_under_cursor, words};
@@ -293,7 +294,7 @@ fn a_close_on_the_cards_quits() {
 }
 
 #[test]
-fn the_screens_to_come_are_a_bare_title() {
+fn nothing_goes_on_from_the_copying_screen() {
     let folders = Folders::new();
     fs::create_dir_all(&folders.library).unwrap();
     let mut gui = to_the_check(&folders);
@@ -302,7 +303,7 @@ fn the_screens_to_come_are_a_bare_title() {
     assert!(says(&gui, TITLE));
     assert!(
         !says(&gui, "Next"),
-        "nothing can go on to a screen not built"
+        "only the sync's end leaves this screen"
     );
 }
 
@@ -2441,7 +2442,7 @@ fn enter_in_a_field_is_next_and_typing_needs_no_click_first() {
     assert_eq!(gui.app.screen(), Screen::Confirm);
     assert_eq!(gui.app.library(), "/Volumes/DRIVE_A/Photos2");
     assert_eq!(gui.app.name(), "Tirana");
-    assert!(gui.kept_job.is_none(), "Enter here only moved to the check");
+    assert_eq!(gui.syncs_started, 0, "Enter here only moved to the check");
 }
 
 #[test]
@@ -2525,7 +2526,7 @@ fn the_check_lists_every_card_the_library_the_folder_and_its_buttons() {
 
     click(&mut gui, "Quit");
     assert!(gui.quit);
-    assert!(gui.kept_job.is_none());
+    assert_eq!(gui.syncs_started, 0);
 }
 
 #[test]
@@ -2580,7 +2581,7 @@ fn a_library_that_is_not_there_is_refused_at_start_and_can_be_fixed() {
     assert!(sentence.starts_with(&start), "{sentence}");
     assert_eq!(gui.app.screen(), Screen::Refused);
     assert!(!gui.app.in_session(), "no session made");
-    assert!(gui.kept_job.is_none());
+    assert_eq!(gui.syncs_started, 0);
     assert_eq!(
         folders.on_the_drive(),
         Vec::<PathBuf>::new(),
@@ -2629,14 +2630,23 @@ fn a_library_that_is_not_there_is_refused_at_start_and_can_be_fixed() {
 }
 
 #[test]
-fn start_copying_keeps_the_job_and_runs_nothing() {
+fn start_copying_gives_the_worker_the_job_it_asked_for_once() {
     let folders = Folders::new();
     fs::create_dir_all(&folders.library).unwrap();
     let mut gui = to_the_check(&folders);
+    let given = Arc::new(Mutex::new(Vec::new()));
+    gui.test_worker = Some(keeping_the_job(given.clone()));
+    assert_eq!(gui.syncs_started, 0);
     click(&mut gui, "Start copying");
     assert_eq!(gui.app.screen(), Screen::Running);
     assert!(gui.app.in_session());
-    let job = gui.kept_job.as_ref().expect("the job is kept");
+    assert_eq!(gui.syncs_started, 1);
+    let _ = update(&mut gui, M::Start);
+    assert_eq!(gui.syncs_started, 1, "a click left over starts no second");
+    let given = given.lock().unwrap();
+    let [(job, _)] = &given[..] else {
+        panic!("{} jobs", given.len());
+    };
     assert_eq!(job.sources, [PathBuf::from(&folders.card)]);
     assert_eq!(
         flow::lock(&job.session).library(),
@@ -2668,7 +2678,7 @@ fn a_bad_name_is_refused_the_same_with_no_card_read_and_can_be_fixed() {
         assert!(sentence.starts_with("The name "), "{sentence}");
         assert_eq!(gui.app.screen(), Screen::Refused);
         assert!(!gui.app.in_session(), "no session made");
-        assert!(gui.kept_job.is_none());
+        assert_eq!(gui.syncs_started, 0);
         assert!(!says(&gui, "Next card"));
         assert_eq!(fs::read_dir(&library).unwrap().count(), 0, "no folder made");
         let words = [
@@ -2726,7 +2736,7 @@ fn no_sync_starts_with_the_only_card_dropped_by_look_again() {
     click(&mut gui, "Start copying");
     assert_eq!(gui.app.screen(), Screen::Confirm);
     assert!(!gui.app.in_session());
-    assert!(gui.kept_job.is_none());
+    assert_eq!(gui.syncs_started, 0);
     fixed_in_sight(&gui, LEAST, &[NO_CARD_HINT]);
     fixed_in_sight(&gui, LEAST, &CHECK_BUTTONS);
     no_key_named(&gui, "the check's hint");
@@ -2842,7 +2852,7 @@ fn stale_clicks_start_nothing_on_the_check_or_the_refusal() {
     ] {
         let _ = update(&mut gui, message);
         assert_eq!(gui.app.screen(), Screen::Confirm);
-        assert!(gui.kept_job.is_none());
+        assert_eq!(gui.syncs_started, 0);
         assert!(!gui.app.in_session());
     }
     // Letters that mean something off a field: q quits, a space picks.
@@ -2932,6 +2942,8 @@ fn the_second_click_of_a_double_lands_on_nothing_that_starts_or_quits() {
 fn the_words_here_are_the_tuis_words() {
     let tui = include_str!("../../../photosync/src/tui/view.rs");
     for words in [
+        SCANNING,
+        CANCELLING,
         LIBRARY_HELP[0],
         LIBRARY_HELP[1],
         NAME_HELP,
@@ -3076,4 +3088,692 @@ fn a_refusals_sentence_can_be_read() {
     };
     let ratio = contrast(style.text_color.unwrap(), behind);
     assert!(ratio >= 4.5, "{ratio}");
+}
+
+// What the harness cannot see, which `tests/gui_split.rs` holds instead (S054, DEC-080).
+
+/// Three rows and more at the least size, so a bound of 30 or so cuts it.
+const LONG_WARNING: &str = "Do not format the card until the report says so. These words are here to make it wrap, over three rows or more at the least size of the window, whatever the font does with them, as a bound of one row must cut it to show what the harness sees then.";
+
+#[test]
+fn a_height_bound_passes_every_check_here() {
+    let whole = height_of(LONG_WARNING);
+    assert!(whole > 60.0, "the test's own words: {whole}");
+    let body = || {
+        scrollable(column![words(IN_THE_BODY)])
+            .id(BODY)
+            .height(Length::Fill)
+    };
+    let cut: Vec<(&str, Element<'_, M>)> = vec![
+        (
+            "max_height",
+            column![container(words(LONG_WARNING)).max_height(30), body()].into(),
+        ),
+        (
+            "height on the words",
+            column![words(LONG_WARNING).height(20), body()].into(),
+        ),
+        (
+            "height on a row",
+            column![row![words(LONG_WARNING)].height(30), body()].into(),
+        ),
+        (
+            "clip",
+            column![container(words(LONG_WARNING)).height(30).clip(true), body()].into(),
+        ),
+        (
+            "body of fixed height",
+            column![
+                scrollable(column![words(IN_THE_BODY)])
+                    .id(BODY)
+                    .height(Length::Fixed(LEAST.height - 10.0)),
+                words(LONG_WARNING),
+            ]
+            .into(),
+        ),
+    ];
+    for (form, view) in cut {
+        let mut ui = simulator(LEAST, view);
+        let found = ui.find(LONG_WARNING).unwrap();
+        assert!(found.bounds().height < whole, "{form} cuts it");
+        assert_eq!(Some(found.bounds()), found.visible_bounds(), "{form}");
+        see_fixed_in_sight(&mut ui, LEAST, &[LONG_WARNING]).unwrap();
+        see_in_sight(&mut ui, LEAST, &[LONG_WARNING]).unwrap();
+    }
+
+    // Beside the body, warnings too many for the window are cut, and the body keeps its room.
+    let view = row![
+        column![
+            words(LONG_WARNING),
+            Space::new().height(LEAST.height - whole - 10.0),
+            words(UNDER_THE_BODY),
+        ],
+        body(),
+    ];
+    let mut ui = simulator(LEAST, view);
+    let found = ui.find(UNDER_THE_BODY).unwrap();
+    assert!(found.bounds().height < height_of(UNDER_THE_BODY));
+    see_fixed_in_sight(&mut ui, LEAST, &[LONG_WARNING, UNDER_THE_BODY]).unwrap();
+}
+
+// The copying screen (S054).
+
+/// A test worker that keeps what it is given, so the sync stays running.
+fn keeping_the_job(given: Arc<Mutex<Vec<(Job, WorkerSend)>>>) -> gui::TestWorker {
+    Arc::new(move |job, send| given.lock().unwrap().push((job, send)))
+}
+
+/// On the copying screen by the model's own start, and no worker: the test gives each
+/// message by hand.
+fn on_the_copying_screen(folders: &Folders) -> Gui {
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(folders);
+    assert!(matches!(
+        key(&mut gui, Key::Enter),
+        Some(Effect::Start(_job))
+    ));
+    assert_eq!(gui.app.screen(), Screen::Running);
+    gui
+}
+
+fn counts(files: u64, bytes: u64) -> Counts {
+    Counts { files, bytes }
+}
+
+fn card(root: &str, done: Counts, total: Counts) -> SourceProgress {
+    SourceProgress {
+        root: PathBuf::from(root),
+        done,
+        total,
+    }
+}
+
+/// A snapshot whose cards add up to its totals.
+fn snapshot(phase: Phase, sources: Vec<SourceProgress>) -> Progress {
+    let add = |pick: fn(&SourceProgress) -> Counts| {
+        sources.iter().fold(Counts::default(), |sum, source| {
+            counts(
+                sum.files + pick(source).files,
+                sum.bytes + pick(source).bytes,
+            )
+        })
+    };
+    Progress {
+        phase,
+        done: add(|s| s.done),
+        total: add(|s| s.total),
+        elapsed: Duration::from_secs(20),
+        eta: Some(Duration::from_secs(100)),
+        sources,
+    }
+}
+
+fn as_message(progress: Progress) -> Msg {
+    Msg::Progress(CoreEvent {
+        kind: EventKind::Bytes,
+        progress,
+    })
+}
+
+fn hear(gui: &mut Gui, progress: &Progress) {
+    assert!(gui.app.update(as_message(progress.clone())).is_none());
+}
+
+fn scan_lines(count: usize) -> Vec<String> {
+    (1..=count)
+        .map(|at| format!("scanned /Volumes/CARD_{at}: 40 photos or videos (1.2 GB), 0 ignored, 0 unreadable, device {at}"))
+        .collect()
+}
+
+fn hear_scans(gui: &mut Gui, lines: &[String]) {
+    for line in lines {
+        assert!(gui.app.update(Msg::Scanned(line.clone())).is_none());
+    }
+}
+
+fn str_refs(lines: &[String]) -> Vec<&str> {
+    lines.iter().map(String::as_str).collect()
+}
+
+/// The steps from the first look to the sync's end, with `set` given first.
+fn clicks_to_the_end(folders: &Folders, set: Vec<Step>) -> Gui {
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut steps = set;
+    steps.extend([
+        Step::Line(r#"click "Next""#),
+        Step::Line(r#"click "Next""#),
+        Step::Line(r#"click "Next""#),
+        Step::Line(r#"click "Next""#),
+        Step::Line(r#"click "Start copying""#),
+    ]);
+    play_steps(literal(&[&folders.card], &[&folders.drive]), steps)
+}
+
+fn with_test_worker(worker: impl Fn(Job, WorkerSend) + Send + Sync + 'static) -> Step {
+    let worker: gui::TestWorker = Arc::new(worker);
+    Step::Set(Arc::new(move |gui: &mut Gui| {
+        gui.test_worker = Some(worker.clone());
+    }))
+}
+
+fn the_sentence(gui: &Gui) -> String {
+    match gui.app.outcome() {
+        Some(Outcome::Refused { sentence }) => sentence.clone(),
+        other => panic!("no refusal: {other:?}"),
+    }
+}
+
+/// A card a real scan reads, so the real worker sends a `Scanned`.
+fn with_a_photo(folders: &Folders) {
+    let photos = PathBuf::from(&folders.card).join("DCIM/100_FUJI");
+    fs::create_dir_all(&photos).unwrap();
+    fs::write(photos.join("DSCF0001.JPG"), b"a photo").unwrap();
+}
+
+#[test]
+fn a_send_with_no_reader_ends_from_4_threads_and_one_wake_gives_the_last_snapshot() {
+    const EACH: u64 = 50000;
+    let folders = Folders::new();
+    let mut gui = on_the_copying_screen(&folders);
+    let (send, mut woken) = gui.wire();
+    let (ended, all_ended) = mpsc::channel();
+    for thread in 0..4 {
+        let (send, ended) = (send.clone(), ended.clone());
+        thread::spawn(move || {
+            for at in 0..EACH {
+                let done = counts(at, thread);
+                send.send(as_message(snapshot(
+                    Phase::Copying,
+                    vec![card(CARD_A, done, counts(EACH, 4))],
+                )));
+            }
+            ended.send(()).unwrap();
+        });
+    }
+    for _ in 0..4 {
+        all_ended
+            .recv_timeout(LIMIT)
+            .expect("a send held with no reader");
+    }
+    let last = snapshot(
+        Phase::Copying,
+        vec![card(CARD_A, counts(4 * EACH, 4), counts(4 * EACH, 4))],
+    );
+    send.send(as_message(last.clone()));
+
+    let mut wakes = 0;
+    while woken.try_recv().is_ok() {
+        wakes += 1;
+    }
+    assert_eq!(wakes, 1, "of {} messages", 4 * EACH + 1);
+
+    let _ = update(&mut gui, M::Wake);
+    assert_eq!(gui.app.running().unwrap().progress, Some(last.clone()));
+    assert_eq!(gui.wakes, 1);
+
+    // Read, it wakes again, or the next message would wait for ever.
+    send.send(as_message(last));
+    assert!(woken.try_recv().is_ok());
+}
+
+#[test]
+fn through_the_real_runtime_the_wakes_are_far_below_the_messages() {
+    const EACH: u64 = 50000;
+    let folders = Folders::new();
+    let gui = clicks_to_the_end(
+        &folders,
+        vec![with_test_worker(|job, send| {
+            thread::spawn(move || {
+                let threads: Vec<_> = (0..4)
+                    .map(|_| {
+                        let send = send.clone();
+                        thread::spawn(move || {
+                            for at in 0..EACH {
+                                send.send(as_message(snapshot(
+                                    Phase::Copying,
+                                    vec![card(CARD_A, counts(at, 0), counts(EACH, 0))],
+                                )));
+                            }
+                        })
+                    })
+                    .collect();
+                for thread in threads {
+                    thread.join().unwrap();
+                }
+                drop(job);
+            });
+        })],
+    );
+    assert!(gui.wakes >= 1);
+    assert!(gui.wakes * 10 < 4 * EACH, "{} wakes", gui.wakes);
+}
+
+#[test]
+fn the_stream_ending_is_always_read_as_the_worker_gone() {
+    let folders = Folders::new();
+    for run in 0..100 {
+        let mut gui = on_the_copying_screen(&folders);
+        let (send, mut woken) = gui.wire();
+        let thread = thread::spawn(move || drop(send));
+        let started = Instant::now();
+        loop {
+            match woken.try_recv() {
+                Err(TryRecvError::Closed) => break,
+                _ => {
+                    assert!(started.elapsed() < LIMIT, "the stream did not end");
+                    thread::yield_now();
+                }
+            }
+        }
+        let _ = update(&mut gui, M::Gone);
+        assert_eq!(gui.app.screen(), Screen::Refused, "run {run}");
+        thread.join().unwrap();
+    }
+}
+
+#[test]
+fn a_worker_gone_with_no_finished_shows_the_crash_sentence_not_complete() {
+    let folders = Folders::new();
+    let gui = clicks_to_the_end(
+        &folders,
+        vec![with_test_worker(|_job, send| {
+            drop(send);
+        })],
+    );
+    assert_eq!(gui.app.screen(), Screen::Refused);
+    assert_eq!(
+        the_sentence(&gui),
+        text::crash("its thread ended without a result")
+    );
+    in_sight(&gui, LEAST, &[&the_sentence(&gui)]);
+    assert_eq!(gui.app.exit().code, 1, "not complete");
+    assert_eq!(gui.app.syncs(), 1);
+}
+
+#[test]
+fn a_crash_from_the_same_sender_shows_its_words_once() {
+    let folders = Folders::new();
+    let gui = clicks_to_the_end(
+        &folders,
+        vec![with_test_worker(|_job, send| {
+            send.send(Msg::Crashed("index out of bounds".to_string()));
+        })],
+    );
+    assert_eq!(the_sentence(&gui), text::crash("index out of bounds"));
+    assert_eq!(gui.app.exit().code, 1);
+    assert_eq!(gui.app.syncs(), 1, "the worker gone after it adds nothing");
+}
+
+#[test]
+fn a_real_panic_on_the_copy_thread_shows_its_words() {
+    let folders = Folders::new();
+    with_a_photo(&folders);
+    let gui = clicks_to_the_end(
+        &folders,
+        vec![Step::Set(Arc::new(|gui: &mut Gui| {
+            gui.before_send = Some(Arc::new(|msg| {
+                if matches!(msg, Msg::Scanned(_)) {
+                    panic!("boom on the copy thread");
+                }
+            }));
+        }))],
+    );
+    assert_eq!(the_sentence(&gui), text::crash("boom on the copy thread"));
+    assert_eq!(gui.app.exit().code, 1);
+    assert_eq!(gui.syncs_started, 1);
+}
+
+#[test]
+fn a_real_refused_sync_reaches_the_refused_screen_by_the_real_worker() {
+    let folders = Folders::new();
+    with_a_photo(&folders);
+    let heard = Arc::new(AtomicU32::new(0));
+    let counted = heard.clone();
+    let gui = clicks_to_the_end(
+        &folders,
+        vec![Step::Set(Arc::new(move |gui: &mut Gui| {
+            let counted = counted.clone();
+            gui.before_send = Some(Arc::new(move |msg| {
+                if matches!(msg, Msg::Scanned(_)) {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                }
+            }));
+        }))],
+    );
+    assert_eq!(heard.load(Ordering::SeqCst), 1, "the real worker scanned");
+    assert_eq!(gui.app.screen(), Screen::Refused);
+    let sentence = the_sentence(&gui);
+    assert!(
+        sentence.contains("same"),
+        "as they share a device: {sentence}"
+    );
+    assert!(!sentence.contains("internal error"), "{sentence}");
+    assert_eq!(gui.app.exit().code, 2);
+    assert_eq!(
+        gui.app.syncs(),
+        1,
+        "the worker gone after its end adds nothing"
+    );
+    in_sight(&gui, LEAST, &[&sentence]);
+    assert_eq!(fs::read_dir(&folders.library).unwrap().count(), 0);
+}
+
+#[test]
+fn the_window_never_waits_for_the_worker_that_holds_the_session() {
+    let folders = Folders::new();
+    with_a_photo(&folders);
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    let (reached_tx, reached) = mpsc::channel();
+    let (go_on, wait) = mpsc::channel::<()>();
+    let (reached_tx, wait) = (Mutex::new(reached_tx), Mutex::new(wait));
+    let waited_out = Arc::new(AtomicBool::new(false));
+    let told = waited_out.clone();
+    gui.before_send = Some(Arc::new(move |msg| {
+        if matches!(msg, Msg::Scanned(_)) {
+            reached_tx.lock().unwrap().send(()).unwrap();
+            if wait.lock().unwrap().recv_timeout(LIMIT).is_err() {
+                told.store(true, Ordering::SeqCst);
+            }
+        }
+    }));
+    click(&mut gui, "Start copying");
+    reached.recv_timeout(LIMIT).expect("the worker scanned");
+
+    // The sync holds the session's lock in its scan. A lock taken here waits out the limit.
+    let _ = update(&mut gui, M::Wake);
+    assert!(says(&gui, SCANNING));
+    click(&mut gui, "Cancel");
+    assert!(says(&gui, CANCELLING));
+    assert_eq!(gui.app.exit().code, 1);
+    let _ = update(&mut gui, M::Gone);
+    assert_eq!(gui.app.screen(), Screen::Running, "the worker is not gone");
+
+    go_on.send(()).unwrap();
+    run_out(&mut gui);
+    assert!(!waited_out.load(Ordering::SeqCst), "the window waited");
+    assert_ne!(gui.app.screen(), Screen::Running);
+}
+
+#[test]
+fn a_wake_or_gone_with_no_worker_does_nothing() {
+    let folders = Folders::new();
+    let mut gui = to_the_check(&folders);
+    let _ = update(&mut gui, M::Wake);
+    let _ = update(&mut gui, M::Gone);
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    assert_eq!(gui.app.syncs(), 0);
+    assert_eq!(gui.app.exit().code, 0);
+}
+
+#[test]
+fn the_screen_says_scanning_then_each_scan_line_with_no_way_out_but_cancel() {
+    let folders = Folders::new();
+    let mut gui = on_the_copying_screen(&folders);
+    assert!(says(&gui, SCANNING));
+    assert_eq!(clicks(&gui, "Cancel").len(), 1);
+    assert!(!says(&gui, "Quit"), "DEC-068 (2)");
+    assert!(!says(&gui, "Next"));
+    assert!(!says(&gui, "Back"));
+    assert!(!says(&gui, NOT_SAFE), "it says it itself: DEC-071 (2)");
+
+    let lines = scan_lines(2);
+    hear_scans(&mut gui, &lines);
+    let seen = all_words(&gui, WINDOW);
+    let at = |words: &str| seen.iter().position(|w| w == words).unwrap();
+    assert!(at(SCANNING) < at(&lines[0]) && at(&lines[0]) < at(&lines[1]));
+
+    let fixed = [TITLE, DO_NOT_FORMAT, "Cancel"];
+    fixed_in_sight(&gui, LEAST, &fixed);
+    screen_check_scrolling(
+        &gui,
+        "S054",
+        "scanning",
+        &fixed,
+        &[SCANNING, &lines[0], &lines[1]],
+    );
+}
+
+#[test]
+fn one_card_has_the_overall_words_with_eta_and_no_row_of_its_own() {
+    let folders = Folders::new();
+    let mut gui = on_the_copying_screen(&folders);
+    let lines = scan_lines(1);
+    hear_scans(&mut gui, &lines);
+    let this_card = card(CARD_A, counts(40, 400_000_000), counts(120, 1_200_000_000));
+    let progress = snapshot(Phase::Copying, vec![this_card.clone()]);
+    hear(&mut gui, &progress);
+
+    let line = text::progress_line(&progress);
+    assert!(line.contains("ETA 1m 40s"), "{line}");
+    assert!(says(&gui, &line));
+    assert!(!says(&gui, SCANNING), "the scan is over");
+    assert!(
+        !says(&gui, &card_line(&this_card)),
+        "the overall line says it"
+    );
+    let fixed = [TITLE, "Copying", DO_NOT_FORMAT, "Cancel"];
+    fixed_in_sight(&gui, LEAST, &fixed);
+    screen_check_scrolling(&gui, "S054", "one_card", &fixed, &[&line, &lines[0]]);
+}
+
+#[test]
+fn two_cards_moving_in_one_snapshot_draw_both() {
+    let folders = Folders::new();
+    let mut gui = on_the_copying_screen(&folders);
+    let lines = scan_lines(2);
+    hear_scans(&mut gui, &lines);
+    let a = card(CARD_A, counts(40, 400_000_000), counts(120, 1_200_000_000));
+    let b = card(CARD_B, counts(7, 90_000_000), counts(60, 600_000_000));
+    let progress = snapshot(Phase::Copying, vec![a.clone(), b.clone()]);
+    hear(&mut gui, &progress);
+
+    assert_eq!(card_line(&a), "CARD_A  40/120 files, 400.0 MB of 1.2 GB");
+    assert_eq!(card_line(&b), "CARD_B  7/60 files, 90.0 MB of 600.0 MB");
+    let line = text::progress_line(&progress);
+    let (first, second) = (card_line(&a), card_line(&b));
+    assert!(says(&gui, &line));
+    let fixed = [TITLE, DO_NOT_FORMAT, "Cancel"];
+    fixed_in_sight(&gui, LEAST, &fixed);
+    screen_check_scrolling(
+        &gui,
+        "S054",
+        "two_cards",
+        &fixed,
+        &[&line, &first, &second, &lines[0], &lines[1]],
+    );
+
+    // The next snapshot moves both, and neither stands still for the other.
+    let a = card(CARD_A, counts(41, 410_000_000), counts(120, 1_200_000_000));
+    let b = card(CARD_B, counts(8, 100_000_000), counts(60, 600_000_000));
+    hear(
+        &mut gui,
+        &snapshot(Phase::Copying, vec![a.clone(), b.clone()]),
+    );
+    assert!(says(&gui, &card_line(&a)) && says(&gui, &card_line(&b)));
+    assert!(!says(&gui, &first) && !says(&gui, &second));
+}
+
+#[test]
+fn a_bar_is_full_at_a_total_of_0() {
+    assert_eq!(share(0, 0), 1.0);
+    assert_eq!(share(0, 100), 0.0);
+    assert_eq!(share(50, 100), 0.5);
+    assert_eq!(share(100, 100), 1.0);
+    assert_eq!(share(200, 100), 1.0, "a bar never runs past its end");
+    assert!((share(u64::MAX / 2, u64::MAX) - 0.5).abs() < 0.001);
+
+    let folders = Folders::new();
+    let mut gui = on_the_copying_screen(&folders);
+    let progress = snapshot(
+        Phase::Copying,
+        vec![
+            card(CARD_A, counts(0, 0), counts(0, 0)),
+            card(CARD_B, counts(0, 0), counts(0, 0)),
+        ],
+    );
+    hear(&mut gui, &progress);
+    assert!(says(&gui, &text::progress_line(&progress)));
+    picture_at(&gui, LEAST, "S054", "nothing_to_copy");
+}
+
+#[test]
+fn planning_has_its_own_words_and_can_be_cancelled() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    let given = Arc::new(Mutex::new(Vec::new()));
+    gui.test_worker = Some(keeping_the_job(given.clone()));
+    click(&mut gui, "Start copying");
+    let lines = scan_lines(1);
+    hear_scans(&mut gui, &lines);
+    let progress = snapshot(
+        Phase::Planning,
+        vec![card(CARD_A, counts(3, 30_000_000), counts(12, 120_000_000))],
+    );
+    hear(&mut gui, &progress);
+
+    let line = text::progress_line(&progress);
+    assert!(line.starts_with("comparing with library"), "{line}");
+    let fixed = [TITLE, "Getting ready to copy", DO_NOT_FORMAT, "Cancel"];
+    fixed_in_sight(&gui, LEAST, &fixed);
+    assert!(!says(&gui, "Copying"), "nothing is copying yet");
+    screen_check_scrolling(&gui, "S054", "planning", &fixed, &[&line, &lines[0]]);
+
+    click(&mut gui, "Cancel");
+    assert!(given.lock().unwrap()[0].0.cancel.is_cancelled());
+    fixed_in_sight(&gui, LEAST, &[CANCELLING, CLOSE_AGAIN]);
+}
+
+#[test]
+fn cancel_says_so_on_the_screen_and_is_held_after_it() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    let given = Arc::new(Mutex::new(Vec::new()));
+    gui.test_worker = Some(keeping_the_job(given.clone()));
+    click(&mut gui, "Start copying");
+    assert!(!says(&gui, CANCELLING));
+    assert!(!says(&gui, CLOSE_AGAIN));
+    let progress = snapshot(
+        Phase::Copying,
+        vec![card(
+            CARD_A,
+            counts(40, 400_000_000),
+            counts(120, 1_200_000_000),
+        )],
+    );
+    hear(&mut gui, &progress);
+    assert!(!given.lock().unwrap()[0].0.cancel.is_cancelled());
+
+    click(&mut gui, "Cancel");
+    assert!(given.lock().unwrap()[0].0.cancel.is_cancelled());
+    assert_eq!(gui.app.screen(), Screen::Running, "until the report");
+    assert!(clicks(&gui, "Cancel").is_empty(), "heard: it is held");
+    let fixed = [TITLE, DO_NOT_FORMAT, CANCELLING, CLOSE_AGAIN, "Cancel"];
+    fixed_in_sight(&gui, LEAST, &fixed);
+    let line = text::progress_line(&progress);
+    screen_check_scrolling(&gui, "S054", "cancelling", &fixed, &[&line]);
+}
+
+#[test]
+fn a_close_while_copying_cancels_and_stays() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    let given = Arc::new(Mutex::new(Vec::new()));
+    gui.test_worker = Some(keeping_the_job(given.clone()));
+    click(&mut gui, "Start copying");
+    let _ = update(&mut gui, M::CloseRequested);
+    assert!(given.lock().unwrap()[0].0.cancel.is_cancelled());
+    assert!(!gui.quit);
+    fixed_in_sight(&gui, LEAST, &[CANCELLING, CLOSE_AGAIN]);
+}
+
+#[test]
+fn a_cancel_left_over_reaches_no_other_screen() {
+    let folders = Folders::new();
+    let mut gui = on_the_library_screen(&folders);
+    let library = gui.app.library().to_string();
+    let _ = update(&mut gui, M::Cancel);
+    assert_eq!(gui.app.library(), library, "its key would type");
+    click(&mut gui, "Next");
+    let _ = update(&mut gui, M::Cancel);
+    assert_eq!(gui.app.name(), "", "its key would type");
+    click(&mut gui, "Next");
+    let _ = update(&mut gui, M::Cancel);
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+}
+
+#[test]
+fn ten_cards_and_twenty_scan_lines_keep_the_fixed_part_and_the_wheel_reaches_the_last_line() {
+    let folders = Folders::new();
+    let mut gui = on_the_copying_screen(&folders);
+    let lines = scan_lines(20);
+    hear_scans(&mut gui, &lines);
+    let cards: Vec<SourceProgress> = (1..=10u64)
+        .map(|at| {
+            card(
+                &format!("/Volumes/CARD_{at}"),
+                counts(at, at * 10_000_000),
+                counts(100, 1_000_000_000),
+            )
+        })
+        .collect();
+    let rows: Vec<String> = cards.iter().map(card_line).collect();
+    let progress = snapshot(Phase::Copying, cards);
+    hear(&mut gui, &progress);
+    assert!(key(&mut gui, Key::Char('c')).is_none());
+
+    let fixed = [
+        TITLE,
+        "Copying",
+        DO_NOT_FORMAT,
+        CANCELLING,
+        CLOSE_AGAIN,
+        "Cancel",
+    ];
+    fixed_in_sight(&gui, LEAST, &fixed);
+    let line = text::progress_line(&progress);
+    let mut body = vec![line.as_str()];
+    body.extend(str_refs(&rows));
+    body.extend(str_refs(&lines));
+    screen_check_scrolling(&gui, "S054", "small_ten_cards", &fixed, &body);
+
+    let last = lines.last().unwrap().as_str();
+    let mut ui = screen(&gui, LEAST);
+    let found = ui.find(last).unwrap();
+    assert!(found.visible_bounds().is_none(), "below the fold at first");
+    let inside = ui
+        .find(selector::id(BODY))
+        .unwrap()
+        .visible_bounds()
+        .unwrap()
+        .center();
+    ui.point_at(inside);
+    let wheel = iced_test::core::Event::Mouse(iced_test::core::mouse::Event::WheelScrolled {
+        delta: iced_test::core::mouse::ScrollDelta::Lines {
+            x: 0.0,
+            y: -100000.0,
+        },
+    });
+    let _ = ui.simulate([wheel]);
+    see_in_sight(&mut ui, LEAST, &[last]).unwrap();
+    see_fixed_in_sight(&mut ui, LEAST, &fixed).unwrap();
+    let error = see_in_sight(&mut ui, LEAST, &[rows[0].as_str()]).unwrap_err();
+    assert!(error.contains("out of sight"), "{error}");
+}
+
+#[test]
+fn cancel_stands_apart_from_start_copying() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    for size in [WINDOW, LEAST] {
+        let mut gui = to_the_check(&folders);
+        let start = across(&gui, size, "Start copying");
+        gui.test_worker = Some(keeping_the_job(Arc::new(Mutex::new(Vec::new()))));
+        click(&mut gui, "Start copying");
+        let cancel = across(&gui, size, "Cancel");
+        assert!(apart(start, cancel), "Start {start:?}, Cancel {cancel:?}");
+    }
 }

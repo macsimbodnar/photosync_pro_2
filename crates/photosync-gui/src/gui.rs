@@ -4,19 +4,24 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 
+use iced::futures::channel::mpsc::{self as wake_channel, UnboundedReceiver, UnboundedSender};
 use iced::futures::channel::oneshot;
 use iced::widget::scrollable::RelativeOffset;
 use iced::widget::{Column, Space, column, operation, row, scrollable};
 use iced::{Element, Font, Length, Size, Subscription, Task, Theme, window};
-use photosync_core::Volumes;
+use photosync_core::{Phase, SourceProgress, Volumes};
 use photosync_front::app::{App, Effect, Exit, Job, Key, Msg, Outcome, Screen};
 use photosync_front::system::say;
+use photosync_front::{text, worker};
 
 use crate::png;
-use crate::widgets::{action, field, hint, list_row, red_banner, red_box, under, word_box, words};
+use crate::widgets::{
+    action, bar, field, hint, list_row, red_banner, red_box, under, word_box, words,
+};
 
 /// The name the user sees (DEC-069 (1)).
 pub const TITLE: &str = "phoosync pro 2";
@@ -42,6 +47,14 @@ pub const CARDS_ONLY_READ: &str =
     "The cards are only read. Photos already in the library are skipped.";
 pub const THE_DATE_TO_COME: &str = "(the date of the earliest new photo)";
 pub const THE_SESSIONS_FOLDER: &str = "(this session's folder)";
+
+/// The copying screen's fixed sentences (DEC-069 (4), (5), DEC-071 (1)).
+pub const DO_NOT_FORMAT: &str = "Do not format the card until the report says so.";
+pub const CANCELLING: &str =
+    "Cancelling: the files being copied are finished or dropped, then the report shows.";
+pub const CLOSE_AGAIN: &str = "Close the window again to quit at once: not every file will be known to be on the drive. Do not format the card.";
+/// What the copying screen's body says until the first progress.
+pub const SCANNING: &str = "scanning the cards...";
 
 /// The banner's line (DEC-071 (2)).
 pub const NOT_SAFE: &str = "Not every photo is known to be on the drive: do not format the card.";
@@ -74,9 +87,91 @@ pub enum M {
     /// A frame was drawn, while `--smoke-png` waits for one.
     SmokeFrame,
     SmokeShot(window::Screenshot),
+    Cancel,
+    /// The worker has sent something: go and read it (DEC-068 (4)).
+    Wake,
+    /// The worker's sender is gone: what is left, then its end if none came.
+    Gone,
     /// A wheel to the body's end: the Emulator has no wheel (DEC-073 (1)).
     #[cfg(test)]
     ScrollEndForTest,
+    /// Reaches the state the Emulator holds.
+    #[cfg(test)]
+    ForTest(ForTest),
+}
+
+/// Called on the copy thread before each real send, so a test can hold it (DEC-072 (6)).
+#[cfg(test)]
+pub(crate) type BeforeSend = Arc<dyn Fn(&Msg) + Send + Sync>;
+/// Runs in place of `worker::spawn`, for an end no real sync gives.
+#[cfg(test)]
+pub(crate) type TestWorker = Arc<dyn Fn(Job, WorkerSend) + Send + Sync>;
+
+#[cfg(test)]
+#[derive(Clone)]
+pub struct ForTest(pub(crate) Arc<dyn Fn(&mut Gui) + Send + Sync>);
+
+#[cfg(test)]
+impl std::fmt::Debug for ForTest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ForTest")
+    }
+}
+
+/// What the worker's thread sends with, on a copy thread, under the core's progress lock
+/// (DEC-040 (3)), so nothing here may block. Clones are for a test's threads.
+#[derive(Clone)]
+pub(crate) struct WorkerSend {
+    // Before `wake`, as fields drop in order: once the wake's stream has ended the channel
+    // reads as gone, so `M::Gone` can tell the worker's end from a stale `M::Gone`.
+    tx: Sender<Msg>,
+    wake: UnboundedSender<()>,
+    pending: Arc<AtomicBool>,
+    #[cfg(test)]
+    before_send: Option<BeforeSend>,
+}
+
+impl WorkerSend {
+    pub(crate) fn send(&self, msg: Msg) {
+        #[cfg(test)]
+        if let Some(before) = &self.before_send {
+            before(&msg);
+        }
+        let _ = self.tx.send(msg);
+        // A wake is out already: its drain reads this too, so no flood of redraws.
+        if !self.pending.swap(true, Ordering::AcqRel) {
+            let _ = self.wake.unbounded_send(());
+        }
+    }
+}
+
+/// The window's end of a `WorkerSend`.
+struct Hearing {
+    messages: Receiver<Msg>,
+    pending: Arc<AtomicBool>,
+}
+
+/// How much of a bar is full: all of it with nothing to do, as the words say 100%.
+pub(crate) fn share(done: u64, total: u64) -> f32 {
+    if total == 0 {
+        return 1.0;
+    }
+    (done as f64 / total as f64).min(1.0) as f32
+}
+
+/// A card's row under its bar: the TUI's, as its words are.
+pub(crate) fn card_line(card: &SourceProgress) -> String {
+    let name = card.root.file_name().map_or_else(
+        || card.root.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    format!(
+        "{name}  {}/{} files, {} of {}",
+        card.done.files,
+        card.total.files,
+        text::size(card.done.bytes),
+        text::size(card.total.bytes)
+    )
 }
 
 /// What `--smoke-png` still has to do.
@@ -104,8 +199,18 @@ pub struct Gui {
     picked_drive: Option<PathBuf>,
     /// A picked drive a look did not find, until the next click. Nothing stands in for it.
     lost_drive: Option<PathBuf>,
-    /// The sync Start copying asked for. S054 runs it; until then nothing does.
-    pub kept_job: Option<Job>,
+    /// The running sync's messages, or the last one's until its sender has gone.
+    hearing: Option<Hearing>,
+    #[cfg(test)]
+    pub(crate) before_send: Option<BeforeSend>,
+    #[cfg(test)]
+    pub(crate) test_worker: Option<TestWorker>,
+    /// How many `M::Wake`s came, to count against the messages.
+    #[cfg(test)]
+    pub(crate) wakes: u64,
+    /// How many syncs began: a test sees that a click started none.
+    #[cfg(test)]
+    pub(crate) syncs_started: u64,
 }
 
 impl Gui {
@@ -126,7 +231,15 @@ impl Gui {
             smoke: smoke_png.map(|path| Smoke { path, frames: 2 }),
             picked_drive: None,
             lost_drive: None,
-            kept_job: None,
+            hearing: None,
+            #[cfg(test)]
+            before_send: None,
+            #[cfg(test)]
+            test_worker: None,
+            #[cfg(test)]
+            wakes: 0,
+            #[cfg(test)]
+            syncs_started: 0,
         };
         let task = gui.look();
         (gui, task)
@@ -201,6 +314,67 @@ impl Gui {
         }
     }
 
+    /// A new channel for a sync, with the wake's stream for `Task::run` (DEC-068 (4)).
+    pub(crate) fn wire(&mut self) -> (WorkerSend, UnboundedReceiver<()>) {
+        let (tx, messages) = mpsc::channel();
+        let (wake, woken) = wake_channel::unbounded();
+        let pending = Arc::new(AtomicBool::new(false));
+        self.hearing = Some(Hearing {
+            messages,
+            pending: pending.clone(),
+        });
+        let send = WorkerSend {
+            tx,
+            wake,
+            pending,
+            #[cfg(test)]
+            before_send: self.before_send.clone(),
+        };
+        (send, woken)
+    }
+
+    /// The sync, on the worker's thread. When that ends the sender drops, so the stream ends
+    /// and `M::Gone` says so, panic or not.
+    fn run(&mut self, job: Job) -> Task<M> {
+        let (send, woken) = self.wire();
+        #[cfg(test)]
+        {
+            self.syncs_started += 1;
+        }
+        #[cfg(test)]
+        if let Some(test_worker) = &self.test_worker {
+            test_worker(job, send);
+            return Task::run(woken, |()| M::Wake).chain(Task::done(M::Gone));
+        }
+        worker::spawn(job, move |msg| send.send(msg));
+        Task::run(woken, |()| M::Wake).chain(Task::done(M::Gone))
+    }
+
+    /// All the worker has sent. A snapshot is whole, so only the last one drained shows.
+    /// `Msg::Finished` takes the session's lock, which the worker let go before sending it.
+    /// The channel gone is `Msg::WorkerGone`, which does nothing after an end. A late `M::Gone`
+    /// reads the next sync's channel, which is not gone, so it cannot end that sync.
+    fn hear(&mut self) {
+        let Some(hearing) = &self.hearing else {
+            return;
+        };
+        // First: a message sent after the last read must wake again.
+        hearing.pending.store(false, Ordering::Release);
+        loop {
+            match hearing.messages.try_recv() {
+                Ok(msg) => {
+                    self.app.update(msg);
+                }
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    self.app.update(Msg::WorkerGone);
+                    self.hearing = None;
+                    return;
+                }
+            }
+        }
+    }
+
     fn key(&mut self, key: Key) -> Task<M> {
         match self.app.update(Msg::Key(key)) {
             None => Task::none(),
@@ -209,11 +383,7 @@ impl Gui {
                 self.quit = true;
                 iced::exit()
             }
-            // S054 runs it. Dropped, the screen would stand for a sync nobody holds.
-            Some(Effect::Start(job)) => {
-                self.kept_job = Some(job);
-                Task::none()
-            }
+            Some(Effect::Start(job)) => self.run(job),
         }
     }
 
@@ -360,6 +530,8 @@ fn step(gui: &mut Gui, message: M) -> Task<M> {
         M::Back if matches!(screen, Screen::Sources | Screen::Running | Screen::Report) => {
             Task::none()
         }
+        // Its key would type in a field.
+        M::Cancel if screen != Screen::Running => Task::none(),
         M::Row(_) | M::Next if held => Task::none(),
         M::Row(path) => gui.pick(&path),
         M::Field(value) => {
@@ -378,8 +550,26 @@ fn step(gui: &mut Gui, message: M) -> Task<M> {
         M::SmokeFrame => gui.smoke_frame(),
         M::SmokeShot(shot) => gui.smoke_shot(&shot),
         M::Back => gui.key(Key::Esc),
+        M::Cancel => gui.key(Key::Char('c')),
+        M::Wake => {
+            #[cfg(test)]
+            {
+                gui.wakes += 1;
+            }
+            gui.hear();
+            Task::none()
+        }
+        M::Gone => {
+            gui.hear();
+            Task::none()
+        }
         #[cfg(test)]
         M::ScrollEndForTest => operation::snap_to_end(BODY),
+        #[cfg(test)]
+        M::ForTest(reach) => {
+            (reach.0)(gui);
+            Task::none()
+        }
     }
 }
 
@@ -391,7 +581,8 @@ pub fn view(gui: &Gui) -> Element<'_, M> {
         Screen::Name => name(gui),
         Screen::Confirm => check(gui),
         Screen::Refused => refused(gui),
-        // Each comes with its own step, S054 on.
+        Screen::Running => copying(gui),
+        // The report is S055's.
         _ => column![words(TITLE).size(24)].padding(16).into(),
     }
 }
@@ -549,6 +740,46 @@ fn refused(gui: &Gui) -> Element<'_, M> {
     )
 }
 
+/// The warnings, the overall bar and Cancel are fixed; the words, the cards' bars and the scan
+/// lines scroll, as ten cards' bars cannot fit (DEC-071 (1)). No banner, as this says it itself,
+/// and no Quit (DEC-068 (2)). Cancel stands left, where the check's Start copying is not, so the
+/// second click of a double does not cancel what it started (DEC-079 (2)).
+fn copying(gui: &Gui) -> Element<'_, M> {
+    let run = gui.app.running();
+    let progress = run.and_then(|run| run.progress.as_ref());
+    let cancelling = run.is_some_and(|run| run.cancelling);
+    let copying_now = progress.is_some_and(|p| p.phase == Phase::Copying);
+    let heading = if copying_now {
+        "Copying"
+    } else {
+        "Getting ready to copy"
+    };
+    let mut over = column![words(TITLE).size(24), words(heading), hint(DO_NOT_FORMAT)].spacing(12);
+    if cancelling {
+        over = over.push(hint(CANCELLING)).push(hint(CLOSE_AGAIN));
+    }
+    let mut body = column![].spacing(6);
+    match progress {
+        None => body = body.push(words(SCANNING)),
+        Some(p) => {
+            over = over.push(bar(share(p.done.bytes, p.total.bytes)));
+            body = body.push(words(text::progress_line(p)));
+            if p.sources.len() > 1 {
+                for card in &p.sources {
+                    body = body.push(words(card_line(card)));
+                    body = body.push(bar(share(card.done.bytes, card.total.bytes)));
+                }
+            }
+        }
+    }
+    for line in run.iter().flat_map(|run| &run.scanned) {
+        body = body.push(words(line.as_str()));
+    }
+    let cancel = (!cancelling).then_some(M::Cancel);
+    let under = column![row![action("Cancel", cancel)]];
+    around_the_body(over, body, under)
+}
+
 /// Rows and notes scroll; all else is fixed, so the banner, the hint and the buttons
 /// never leave (DEC-068 (7)). Rows come first, so notes never take their room.
 fn list_screen<'a>(
@@ -583,28 +814,36 @@ fn fixed_around<'a>(
     body: Column<'a, M>,
     buttons: iced::widget::Row<'a, M>,
 ) -> Element<'a, M> {
-    let mut screen = column![words(TITLE).size(24), words(heading)]
-        .spacing(12)
-        .padding(16);
+    let mut over = column![words(TITLE).size(24), words(heading)].spacing(12);
     // The refused screen says it itself (DEC-071 (2)).
     let warns = gui.app.screen() != Screen::Refused;
     if let Some(reason) = banner(&gui.app.exit(), gui.app.outcome()).filter(|_| warns) {
         let reason = (!reason.is_empty()).then(|| word_box(BANNER, reason, BANNER_MOST));
-        screen = screen.push(red_banner(NOT_SAFE, reason));
+        over = over.push(red_banner(NOT_SAFE, reason));
     }
-    screen = screen.push(
-        scrollable(body.width(Length::Fill))
-            .id(BODY)
-            .spacing(8)
-            .height(Length::Fill),
-    );
+    let mut under = column![].spacing(12);
     if let Some(why) = gui.next_held_because() {
-        screen = screen.push(hint(why));
+        under = under.push(hint(why));
     }
     if let Some(words) = gui.app.hint() {
-        screen = screen.push(hint(hint_words(words)));
+        under = under.push(hint(hint_words(words)));
     }
-    screen.push(buttons.spacing(10)).into()
+    around_the_body(over, body, under.push(buttons.spacing(10)))
+}
+
+/// The one body, with what stays in sight over and under it. Taking all the height left in a
+/// column is what lets `fixed_in_sight` trust what it sees, so no screen places it another way,
+/// and none bounds a height elsewhere (`tests/gui_split.rs`, DEC-080).
+fn around_the_body<'a>(
+    over: Column<'a, M>,
+    body: Column<'a, M>,
+    under: Column<'a, M>,
+) -> Element<'a, M> {
+    let body = scrollable(body.width(Length::Fill))
+        .id(BODY)
+        .spacing(8)
+        .height(Length::Fill);
+    column![over, body, under].spacing(12).padding(16).into()
 }
 
 /// The model's hints name the TUI's keys; here a key is a button (DEC-068 (3)). A test
