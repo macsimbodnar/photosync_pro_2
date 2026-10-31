@@ -38,10 +38,13 @@ count. To change the library or the name, quit and start again. Without a termin
 | library folder, name | type to edit, `Backspace`, `Enter` next, `Esc` back |
 | check | `Enter` start copying, `Esc` back, `q` quit |
 | copying | `c` or `Esc` cancel; `Ctrl-C` cancels, a second `Ctrl-C` quits at once |
-| refused | `Enter` back to fix it, `n` next card (only once the session has started), `q` quit |
+| refused | `↑` `↓` `PgUp` `PgDn` scroll, `Enter` back to fix it, `n` next card (only once the session has started), `q` quit |
 | report | `↑` `↓` `PgUp` `PgDn` scroll, `n` next card, `q` quit |
 
-On the report, a line too long for the terminal wraps: none is cut.
+On the report, a line too long for the terminal wraps: none is cut. The other
+screens wrap too, and what is too tall for the terminal scrolls: `↑` `↓` `PgUp`
+`PgDn`, or `PgUp` `PgDn` on the warnings under the cards and drives. The keys row
+says so when there is more to read.
 
 `Ctrl-C` quits from any screen but the copy. Quitting during a copy is safe
 (no partial file is left under a photo's name), but exits 1: run the same

@@ -142,7 +142,14 @@ picks. It is simple to use.
     and the name stay. The TUI never makes the folder (DEC-050). A sync with no source picked does not
     start. A panic in the sync's thread leaves the screen as it is, and
     the sync is recorded in the session as not complete (DEC-031,
-    DEC-034).
+    DEC-034). No screen cuts what it says: at 80 columns a long note, card
+    or drive path, scan line, progress line or hint wraps and shows whole.
+    What is too tall for the terminal scrolls: on a refusal (the session's
+    result after it included), the check, the copying screen and a field's
+    help by `↑↓ PgUp PgDn`, on the card and drive lists the notes by
+    `PgUp PgDn`, and the keys row offers this only when there is more. Only
+    what is typed in the Library and Name fields stays on its one line, and
+    the title row on its own (DEC-062).
   - A closed stdout never stops a sync nor panics: the exit code stays
     within 0/1/2.
   - GUI: a native Rust GUI, later. Adding it must need no change to the core

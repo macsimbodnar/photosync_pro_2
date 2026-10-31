@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use photosync_core::{Volumes, discover_volumes};
+use photosync_core::{ScanError, Volumes, discover_volumes};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
@@ -167,6 +167,185 @@ fn the_end_of_a_report_over_65535_rows_is_reached() {
     draw_frame(&mut terminal, &mut app).unwrap();
     let screen = rows(terminal.backend());
     assert!(screen.iter().any(|r| r.contains("line 69999")), "{screen:#?}");
+}
+
+/// `missing`, on a screen whose text stands in a box: the border touches it.
+fn missing_in_box(words: &[String], seen: &[String]) -> Vec<String> {
+    let seen: Vec<String> = seen.iter().map(|r| r.replace('│', " ")).collect();
+    missing(words, &seen)
+}
+
+fn words(from: usize, to: usize) -> Vec<String> {
+    (from..to).map(|n| format!("w{n}.")).collect()
+}
+
+/// S047: the refusal comes first and the session's result last, and that
+/// result says what is safe: a small terminal must reach it, by row and by page.
+#[test]
+fn a_refusal_and_the_result_after_it_are_read_to_their_end() {
+    let (first, result) = (words(0, 150), words(150, 300));
+    let sentence = format!("{}\n\n{}", first.join(" "), result.join(" "));
+    let all = words(0, 300);
+    for (width, height) in [(30, 10), (80, 8), (40, 7)] {
+        for key in [Key::Down, Key::PageDown] {
+            let mut app = App::with_outcome_for_test(Outcome::Refused {
+                sentence: sentence.clone(),
+            });
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let seen = read_with(key, &mut app, &mut terminal);
+            assert_eq!(
+                missing_in_box(&all, &seen),
+                Vec::<String>::new(),
+                "{width}x{height} with {key:?}"
+            );
+            let end = rows(terminal.backend());
+            let up = read_with(Key::PageUp, &mut app, &mut terminal);
+            assert!(up.iter().any(|r| r.contains("w0. ")), "{end:#?}");
+        }
+    }
+}
+
+/// S047: the keys say the sentence goes on, only when it does.
+#[test]
+fn the_refused_screen_offers_scrolling_only_when_it_is_needed() {
+    let keys_on = |height| {
+        let mut app = App::with_outcome_for_test(Outcome::Refused {
+            sentence: words(0, 100).join(" "),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
+        draw_frame(&mut terminal, &mut app).unwrap();
+        draw_frame(&mut terminal, &mut app).unwrap();
+        rows(terminal.backend()).concat()
+    };
+    assert!(keys_on(8).contains("PgDn"));
+    assert!(!keys_on(40).contains("PgDn"));
+}
+
+/// S047: what was scrolled to was of the screen left. Coming back shows the top.
+#[test]
+fn a_scrolled_check_screen_starts_at_its_top_when_come_back_to() {
+    let mut app = App::new();
+    app.update(Msg::Volumes(Volumes {
+        sources: (0..30).map(|n| PathBuf::from(format!("/V/C{n}"))).collect(),
+        destinations: vec![PathBuf::from("/V/SSD")],
+        failures: Vec::new(),
+    }));
+    for _ in 0..30 {
+        app.update(Msg::Key(Key::Char(' ')));
+        app.update(Msg::Key(Key::Down));
+    }
+    for _ in 0..4 {
+        app.update(Msg::Key(Key::Enter));
+    }
+    assert_eq!(app.screen(), Screen::Confirm);
+    let mut terminal = Terminal::new(TestBackend::new(30, 8)).unwrap();
+    draw_frame(&mut terminal, &mut app).unwrap();
+    app.update(Msg::Key(Key::PageDown));
+    assert!(app.scroll() > 0, "did not scroll");
+    app.update(Msg::Key(Key::Esc));
+    app.update(Msg::Key(Key::Enter));
+    assert_eq!(app.screen(), Screen::Confirm);
+    draw_frame(&mut terminal, &mut app).unwrap();
+    let screen = rows(terminal.backend());
+    assert!(screen.iter().any(|r| r.contains("Copy from:")), "{screen:#?}");
+}
+
+/// S047: more warnings than the screen has rows. The arrows still move the
+/// cursor, so the pages read them; the list stays on the screen.
+#[test]
+fn notes_taller_than_the_screen_are_read_to_their_end() {
+    let all = words(0, 200);
+    for (first_key, press) in [(Key::PageDown, vec![]), (Key::PageDown, vec![Key::Enter])] {
+        let mut app = App::new();
+        app.update(Msg::Volumes(Volumes {
+            sources: vec![PathBuf::from("/V/A"), PathBuf::from("/V/B")],
+            destinations: vec![PathBuf::from("/V/SSD"), PathBuf::from("/V/T")],
+            failures: all
+                .chunks(20)
+                .map(|c| ScanError {
+                    path: PathBuf::from("/V"),
+                    source: io::Error::other(c.join(" ")),
+                })
+                .collect(),
+        }));
+        for k in press {
+            app.update(Msg::Key(k));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(40, 14)).unwrap();
+        let seen = read_with(first_key, &mut app, &mut terminal);
+        assert_eq!(missing(&all, &seen), Vec::<String>::new());
+        let screen = rows(terminal.backend());
+        assert!(screen.iter().any(|r| r.contains("/V/")), "{screen:#?}");
+        assert_eq!(app.cursor(), 0, "a page key moved the cursor");
+    }
+}
+
+/// S047: the check before a copy names every card: all of them must be read.
+#[test]
+fn a_check_screen_taller_than_the_terminal_is_read_to_its_end() {
+    let cards: Vec<PathBuf> = (0..30).map(|n| PathBuf::from(format!("/V/C{n}"))).collect();
+    let mut app = App::new();
+    app.update(Msg::Volumes(Volumes {
+        sources: cards.clone(),
+        destinations: vec![PathBuf::from("/V/SSD")],
+        failures: Vec::new(),
+    }));
+    for _ in &cards {
+        app.update(Msg::Key(Key::Char(' ')));
+        app.update(Msg::Key(Key::Down));
+    }
+    for _ in 0..3 {
+        app.update(Msg::Key(Key::Enter));
+    }
+    app.update(Msg::Key(Key::Enter));
+    assert_eq!(app.screen(), Screen::Confirm);
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    let seen = read_with(Key::Down, &mut app, &mut terminal);
+    let mut want: Vec<String> = cards.iter().map(|c| c.display().to_string()).collect();
+    want.push("skipped.".to_string());
+    assert_eq!(missing_in_box(&want, &seen), Vec::<String>::new());
+}
+
+/// S047: a long library path makes the help taller than a small terminal.
+#[test]
+fn the_help_of_a_field_is_read_to_its_end() {
+    let mut app = App::new();
+    app.update(Msg::Volumes(Volumes {
+        sources: vec![PathBuf::from("/V/A")],
+        destinations: vec![PathBuf::from("/V/SSD")],
+        failures: Vec::new(),
+    }));
+    app.update(Msg::Key(Key::Enter));
+    app.update(Msg::Key(Key::Enter));
+    assert_eq!(app.screen(), Screen::Library);
+    let mut terminal = Terminal::new(TestBackend::new(30, 9)).unwrap();
+    let seen = read_with(Key::Down, &mut app, &mut terminal);
+    let want = ["must", "exist:", "Photos", "skipped."].map(String::from);
+    assert_eq!(missing(&want, &seen), Vec::<String>::new());
+}
+
+/// S047: more scan lines than the screen has rows, and the progress must
+/// stay in sight on top of them.
+#[test]
+fn scan_lines_taller_than_the_screen_are_read_to_their_end() {
+    let mut app = App::new();
+    app.update(Msg::Volumes(Volumes {
+        sources: vec![PathBuf::from("/V/A")],
+        destinations: vec![PathBuf::from("/V/SSD")],
+        failures: Vec::new(),
+    }));
+    for _ in 0..4 {
+        app.update(Msg::Key(Key::Enter));
+    }
+    app.update(Msg::Key(Key::Enter));
+    assert_eq!(app.screen(), Screen::Running);
+    let all = words(0, 200);
+    for chunk in all.chunks(20) {
+        app.update(Msg::Scanned(chunk.join(" ")));
+    }
+    let mut terminal = Terminal::new(TestBackend::new(40, 14)).unwrap();
+    let seen = read_with(Key::Down, &mut app, &mut terminal);
+    assert_eq!(missing(&all, &seen), Vec::<String>::new());
 }
 
 /// A key script: each step waits for its screen, then sends its keys.

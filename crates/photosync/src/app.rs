@@ -147,7 +147,7 @@ pub struct Exit {
 const NO_CARD: &str =
     "No camera card found. Insert a card, or connect the X-T5 in \"USB card reader\" mode.";
 const NO_DRIVE: &str = "No drive to sync to found. Plug in your external drive.";
-/// Rows a page key scrolls the report, on a screen that shows as many.
+/// Rows a page key scrolls, on a screen that shows as many.
 const PAGE: usize = 10;
 
 #[derive(Debug)]
@@ -164,9 +164,10 @@ pub struct App {
     name: String,
     /// The list row under the cursor, on the list screens.
     cursor: usize,
-    /// The report's first row shown, as the last drawing wrapped it.
+    /// The first row shown of what scrolls on this screen (the report, a
+    /// refusal, the notes...), as the last drawing wrapped it.
     scroll: usize,
-    /// The report's rows and how many show at once, as of the last drawing.
+    /// Its rows and how many show at once, as of the last drawing.
     report_rows: usize,
     report_visible: usize,
     /// One line about the last key, e.g. why Enter did nothing.
@@ -290,12 +291,16 @@ impl App {
         self.scroll
     }
 
-    /// What a drawing found: the report wrapped to `rows`, `visible` of them
+    /// What a drawing found: what scrolls wrapped to `rows`, `visible` of them
     /// on the screen. A resize can leave the scroll past the end.
     pub fn report_drawn(&mut self, rows: usize, visible: usize) {
         self.report_rows = rows;
         self.report_visible = visible;
         self.scroll = self.scroll.min(rows.saturating_sub(visible));
+    }
+    /// Whether some of what scrolls is off the screen, as of the last drawing.
+    pub fn can_scroll(&self) -> bool {
+        self.report_rows > self.report_visible
     }
     pub fn hint(&self) -> Option<&str> {
         self.hint.as_deref()
@@ -350,7 +355,13 @@ impl App {
         match msg {
             Msg::Key(key) => {
                 self.hint = None;
-                self.key(key)
+                let before = self.screen;
+                let effect = self.key(key);
+                // The scroll was of the screen left.
+                if self.screen != before {
+                    self.scroll = 0;
+                }
+                effect
             }
             Msg::Volumes(volumes) => {
                 self.volumes(volumes);
@@ -456,6 +467,9 @@ impl App {
     fn key(&mut self, key: Key) -> Option<Effect> {
         if key == Key::CtrlC {
             return self.interrupt();
+        }
+        if self.scroll_key(key) {
+            return None;
         }
         match self.screen {
             Screen::Sources => self.sources_key(key),
@@ -595,15 +609,24 @@ impl App {
         None
     }
 
-    fn report_key(&mut self, key: Key) -> Option<Effect> {
+    /// Whether `key` scrolls here. On a list the arrows move the cursor.
+    fn scroll_key(&mut self, key: Key) -> bool {
         let last = self.report_rows.saturating_sub(self.report_visible);
         // A page never jumps over rows the screen did not show.
         let page = PAGE.min(self.report_visible).max(1);
+        let list = matches!(self.screen, Screen::Sources | Screen::Drive);
         match key {
-            Key::Up => self.scroll = self.scroll.saturating_sub(1),
-            Key::Down => self.scroll = (self.scroll + 1).min(last),
+            Key::Up if !list => self.scroll = self.scroll.saturating_sub(1),
+            Key::Down if !list => self.scroll = (self.scroll + 1).min(last),
             Key::PageUp => self.scroll = self.scroll.saturating_sub(page),
             Key::PageDown => self.scroll = (self.scroll + page).min(last),
+            _ => return false,
+        }
+        true
+    }
+
+    fn report_key(&mut self, key: Key) -> Option<Effect> {
+        match key {
             Key::Char('n') => return self.next_card(),
             Key::Enter | Key::Esc | Key::Char('q') => return Some(Effect::Quit),
             _ => {}

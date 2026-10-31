@@ -17,18 +17,26 @@ use crate::text;
 /// could be read at a time, so the result scrolls with it instead.
 const MIN_REPORT_ROWS: usize = 3;
 
-fn screen_areas(area: Rect) -> [Rect; 4] {
+/// Rows of a gauge in its box; with too little room, the words come first.
+const GAUGE_ROWS: u16 = 3;
+const MIN_ROWS_UNDER_GAUGE: u16 = 2;
+/// A list's borders and one row of it.
+const MIN_LIST_ROWS: u16 = 3;
+
+fn screen_areas(app: &App, area: Rect) -> [Rect; 4] {
+    let hint = app.hint().map_or(1, |h| wrapped(h, area.width).len());
+    let keys = wrapped(&keys_help(app), area.width).len();
     Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(3),
-        Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(hint as u16),
+        Constraint::Length(keys as u16),
     ])
     .areas(area)
 }
 
 pub fn render(app: &App, frame: &mut Frame) {
-    let [title, body, hint, keys] = screen_areas(frame.area());
+    let [title, body, hint, keys] = screen_areas(app, frame.area());
 
     frame.render_widget(
         Line::from(vec![
@@ -40,38 +48,21 @@ pub fn render(app: &App, frame: &mut Frame) {
     match app.screen() {
         Screen::Sources => sources(app, frame, body),
         Screen::Drive => drives(app, frame, body),
-        Screen::Library => field(
-            frame,
-            body,
-            "Library folder",
-            app.library(),
-            &[
-                "The folder on the drive that holds your photos. It must exist:".into(),
-                "phoosync pro 2 never creates it. Photos already anywhere in it are skipped.".into(),
-            ],
-        ),
-        Screen::Name => field(
-            frame,
-            body,
-            "Name (optional)",
-            app.name(),
-            &[
-                format!(
-                    "New photos go to {}/{}/RAW, JPEG, ...",
-                    app.library().trim(),
-                    app.folder_preview()
-                ),
-                "A folder with this name from an earlier sync is reused. Empty: no name.".into(),
-            ],
-        ),
-        Screen::Confirm => confirm(app, frame, body),
+        Screen::Library => field(frame, body, "Library folder", app.library()),
+        Screen::Name => field(frame, body, "Name (optional)", app.name()),
+        Screen::Confirm => frame.render_widget(Block::bordered(), body),
         Screen::Running => running(app, frame, body),
         Screen::Refused | Screen::Report => outcome(app, frame, body),
     }
-    if let Some(h) = app.hint() {
-        frame.render_widget(Line::from(h.to_string()).yellow(), hint);
+    if let Some(column) = column(app, body) {
+        draw_column(app, frame, column);
     }
-    frame.render_widget(Line::from(keys_help(app)).dim(), keys);
+    if let Some(h) = app.hint() {
+        let rows = styled_rows(h, hint.width, Style::new().yellow());
+        frame.render_widget(Paragraph::new(rows), hint);
+    }
+    let rows = styled_rows(&keys_help(app), keys.width, Style::new().dim());
+    frame.render_widget(Paragraph::new(rows), keys);
 }
 
 fn heading(app: &App) -> String {
@@ -97,8 +88,8 @@ fn heading(app: &App) -> String {
 }
 
 /// Must match what `App::update` does on each screen.
-pub fn keys_help(app: &App) -> &'static str {
-    match app.screen() {
+pub fn keys_help(app: &App) -> String {
+    let keys = match app.screen() {
         Screen::Sources => " ↑↓ move   Space pick   Enter next   r look again   q quit",
         Screen::Drive => " ↑↓ move   Enter pick   Esc back   r look again   q quit",
         Screen::Library | Screen::Name => " type to edit   Enter next   Esc back   Ctrl-C quit",
@@ -108,15 +99,75 @@ pub fn keys_help(app: &App) -> &'static str {
         Screen::Refused if app.in_session() => " Enter back, to fix it   n next card   q quit",
         Screen::Refused => " Enter back, to fix it   q quit",
         Screen::Report => " ↑↓ PgUp PgDn scroll   n next card   q quit",
+    };
+    // Only when there is more: most screens fit, and these keys then do nothing.
+    match app.screen() {
+        Screen::Report => keys.to_string(),
+        _ if !app.can_scroll() => keys.to_string(),
+        // Here the arrows move the cursor.
+        Screen::Sources | Screen::Drive => format!(" PgUp PgDn scroll  {keys}"),
+        _ => format!(" ↑↓ PgUp PgDn scroll  {keys}"),
     }
 }
 
+/// `text` wrapped to `width`, in `style`.
+fn styled_rows(text: &str, width: u16, style: Style) -> Vec<Line<'static>> {
+    wrapped(text, width)
+        .into_iter()
+        .map(|row| Line::from(row).style(style))
+        .collect()
+}
+
+/// The words of a screen, and where they go. They scroll when they do not fit,
+/// so none is cut, however small the terminal.
+struct Column {
+    rows: Vec<Line<'static>>,
+    area: Rect,
+}
+
+/// The report has its own: it can be too long to make `Line`s of all its rows.
+fn column(app: &App, body: Rect) -> Option<Column> {
+    let boxed = Block::bordered().inner(body);
+    let (rows, area) = match app.screen() {
+        Screen::Sources | Screen::Drive => {
+            let [_, notes] = list_areas(app, body);
+            (note_rows(app, notes.width), notes)
+        }
+        Screen::Library | Screen::Name => {
+            let [_, help] = field_areas(body);
+            let rows = field_help(app)
+                .iter()
+                .flat_map(|h| styled_rows(h, help.width, Style::new()))
+                .collect();
+            (rows, help)
+        }
+        Screen::Confirm => (confirm_rows(app, boxed.width), boxed),
+        Screen::Running => {
+            let [_, words] = running_areas(body);
+            (running_rows(app, words.width), words)
+        }
+        Screen::Refused => match app.outcome() {
+            Some(Outcome::Refused { sentence }) => (
+                styled_rows(sentence, boxed.width, Style::new().red()),
+                boxed,
+            ),
+            _ => return None,
+        },
+        Screen::Report => return None,
+    };
+    Some(Column { rows, area })
+}
+
+fn draw_column(app: &App, frame: &mut Frame, column: Column) {
+    let height = usize::from(column.area.height);
+    // A drawing can come before the model hears of a resize.
+    let first = app.scroll().min(column.rows.len().saturating_sub(height));
+    let shown: Vec<Line> = column.rows.into_iter().skip(first).take(height).collect();
+    frame.render_widget(Paragraph::new(shown), column.area);
+}
+
 fn list_screen(app: &App, frame: &mut Frame, area: Rect, title: &str, rows: Vec<ListItem>) {
-    let [list_area, notes_area] = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(app.notes().len() as u16),
-    ])
-    .areas(area);
+    let [list_area, _] = list_areas(app, area);
     let block = Block::bordered().title(title.to_string());
     if rows.is_empty() {
         frame.render_widget(
@@ -133,12 +184,34 @@ fn list_screen(app: &App, frame: &mut Frame, area: Rect, title: &str, rows: Vec<
         let mut state = ListState::default().with_selected(Some(app.cursor()));
         frame.render_stateful_widget(list, list_area, &mut state);
     }
-    let notes: Vec<Line> = app
-        .notes()
+}
+
+fn list_areas(app: &App, area: Rect) -> [Rect; 2] {
+    let notes = note_rows(app, area.width).len();
+    let room = usize::from(area.height.saturating_sub(MIN_LIST_ROWS));
+    Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(notes.min(room) as u16),
+    ])
+    .areas(area)
+}
+
+fn note_rows(app: &App, width: u16) -> Vec<Line<'static>> {
+    app.notes()
         .iter()
-        .map(|n| Line::from(n.as_str()).yellow())
+        .flat_map(|n| styled_rows(n, width, Style::new().yellow()))
+        .collect()
+}
+
+/// A list's row, in as many rows as its path needs: two cards can differ only
+/// at the end. The list's borders and its cursor take four columns.
+fn list_item(mark: &str, path: &Path, area: Rect) -> ListItem<'static> {
+    let width = area.width.saturating_sub(4);
+    let rows: Vec<Line> = wrapped(&format!("{mark} {}", path.display()), width)
+        .into_iter()
+        .map(Line::from)
         .collect();
-    frame.render_widget(Paragraph::new(notes), notes_area);
+    ListItem::new(rows)
 }
 
 fn sources(app: &App, frame: &mut Frame, area: Rect) {
@@ -147,7 +220,7 @@ fn sources(app: &App, frame: &mut Frame, area: Rect) {
         .iter()
         .map(|s| {
             let mark = if app.is_picked(s) { "[x]" } else { "[ ]" };
-            ListItem::new(format!("{mark} {}", s.display()))
+            list_item(mark, s, area)
         })
         .collect();
     list_screen(app, frame, area, "Camera cards", rows);
@@ -163,14 +236,35 @@ fn drives(app: &App, frame: &mut Frame, area: Rect) {
             } else {
                 "( )"
             };
-            ListItem::new(format!("{mark} {}", d.display()))
+            list_item(mark, d, area)
         })
         .collect();
     list_screen(app, frame, area, "Drives", rows);
 }
 
-fn field(frame: &mut Frame, area: Rect, title: &str, value: &str, help: &[String]) {
-    let [input, rest] = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(area);
+fn field_areas(area: Rect) -> [Rect; 2] {
+    Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(area)
+}
+
+fn field_help(app: &App) -> Vec<String> {
+    if app.screen() == Screen::Library {
+        return vec![
+            "The folder on the drive that holds your photos. It must exist:".into(),
+            "phoosync pro 2 never creates it. Photos already anywhere in it are skipped.".into(),
+        ];
+    }
+    vec![
+        format!(
+            "New photos go to {}/{}/RAW, JPEG, ...",
+            app.library().trim(),
+            app.folder_preview()
+        ),
+        "A folder with this name from an earlier sync is reused. Empty: no name.".into(),
+    ]
+}
+
+fn field(frame: &mut Frame, area: Rect, title: &str, value: &str) {
+    let [input, _] = field_areas(area);
     frame.render_widget(
         Paragraph::new(value.to_string()).block(Block::bordered().title(title.to_string())),
         input,
@@ -180,103 +274,111 @@ fn field(frame: &mut Frame, area: Rect, title: &str, value: &str, help: &[String
         (input.x + 1 + width).min(input.right().saturating_sub(2)),
         input.y + 1,
     ));
-    let help: Vec<Line> = help.iter().map(|h| Line::from(h.as_str())).collect();
-    frame.render_widget(Paragraph::new(help).wrap(Wrap { trim: false }), rest);
 }
 
-fn confirm(app: &App, frame: &mut Frame, area: Rect) {
-    let mut lines = vec![Line::from("Copy from:".bold())];
-    lines.extend(
-        app.picked()
-            .iter()
-            .map(|s| Line::from(format!("  {}", s.display()))),
-    );
-    lines.push(Line::from(""));
-    lines.push(Line::from("Into the library:".bold()));
-    lines.push(Line::from(format!("  {}", app.library().trim())));
-    lines.push(Line::from(""));
-    lines.push(Line::from("New photos go to the folder:".bold()));
+fn confirm_rows(app: &App, width: u16) -> Vec<Line<'static>> {
+    let bold = Style::new().bold();
+    let plain = Style::new();
+    let mut rows = styled_rows("Copy from:", width, bold);
+    for s in app.picked() {
+        rows.extend(styled_rows(&format!("  {}", s.display()), width, plain));
+    }
+    rows.push(Line::from(""));
+    rows.extend(styled_rows("Into the library:", width, bold));
+    let library = format!("  {}", app.library().trim());
+    rows.extend(styled_rows(&library, width, plain));
+    rows.push(Line::from(""));
+    rows.extend(styled_rows("New photos go to the folder:", width, bold));
     let fixed = if app.session_folder().is_some() {
         "(this session's folder)"
     } else {
         "(the date of the earliest new photo)"
     };
-    lines.push(Line::from(format!("  {}   {fixed}", app.folder_preview())));
+    let folder = format!("  {}   {fixed}", app.folder_preview());
+    rows.extend(styled_rows(&folder, width, plain));
     if app.in_session() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(format!(
+        rows.push(Line::from(""));
+        let stays = format!(
             "Sync {} of this session: the library and name stay as they are. Quit (q) to change them.",
             app.syncs() + 1
-        )));
+        );
+        rows.extend(styled_rows(&stays, width, plain));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(
+    rows.push(Line::from(""));
+    rows.extend(styled_rows(
         "The cards are only read. Photos already in the library are skipped.",
+        width,
+        plain,
     ));
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered()),
-        area,
-    );
+    rows
+}
+
+/// The gauge stays on top, so the progress is in sight whatever scrolls under it.
+fn running_areas(area: Rect) -> [Rect; 2] {
+    let gauge = if area.height >= GAUGE_ROWS + MIN_ROWS_UNDER_GAUGE {
+        GAUGE_ROWS
+    } else {
+        0
+    };
+    Layout::vertical([Constraint::Length(gauge), Constraint::Min(0)]).areas(area)
 }
 
 fn running(app: &App, frame: &mut Frame, area: Rect) {
-    let Some(run) = app.running() else {
-        return;
-    };
-    let sources = run.progress.as_ref().map_or(0, |p| p.sources.len()) as u16;
-    let [scans, gauge, line, each, state] = Layout::vertical([
-        Constraint::Length(run.scanned.len() as u16),
-        Constraint::Length(3),
-        Constraint::Length(1),
-        Constraint::Length(if sources > 1 { sources } else { 0 }),
-        Constraint::Min(0),
-    ])
-    .areas(area);
-    let scanned: Vec<Line> = run.scanned.iter().map(|s| Line::from(s.as_str())).collect();
-    frame.render_widget(Paragraph::new(scanned), scans);
-    match &run.progress {
-        Some(p) => {
-            frame.render_widget(
-                Gauge::default()
-                    .block(Block::bordered())
-                    .gauge_style(Style::new().fg(Color::Green))
-                    .ratio(ratio(p.done.bytes, p.total.bytes)),
-                gauge,
-            );
-            frame.render_widget(Line::from(text::progress_line(p)), line);
-            frame.render_widget(Paragraph::new(per_source(p)), each);
-        }
-        None => frame.render_widget(Line::from("scanning the cards..."), line),
-    }
-    if run.cancelling {
+    let [gauge, _] = running_areas(area);
+    if let Some(p) = app.running().and_then(|run| run.progress.as_ref()) {
         frame.render_widget(
-            Paragraph::new(
-                "Cancelling: the files being copied are finished or dropped, then the report shows.",
-            )
-            .wrap(Wrap { trim: false })
-            .yellow(),
-            state,
+            Gauge::default()
+                .block(Block::bordered())
+                .gauge_style(Style::new().fg(Color::Green))
+                .ratio(ratio(p.done.bytes, p.total.bytes)),
+            gauge,
         );
     }
 }
 
-fn per_source(p: &Progress) -> Vec<Line<'static>> {
+/// The progress first, as it is what changes; the scans of the cards after.
+fn running_rows(app: &App, width: u16) -> Vec<Line<'static>> {
+    let Some(run) = app.running() else {
+        return Vec::new();
+    };
+    let plain = Style::new();
+    let mut rows = match &run.progress {
+        Some(p) => styled_rows(&text::progress_line(p), width, plain),
+        None => styled_rows("scanning the cards...", width, plain),
+    };
+    if run.cancelling {
+        rows.extend(styled_rows(
+            "Cancelling: the files being copied are finished or dropped, then the report shows.",
+            width,
+            Style::new().yellow(),
+        ));
+    }
+    if let Some(p) = &run.progress {
+        for line in per_source(p) {
+            rows.extend(styled_rows(&line, width, plain));
+        }
+    }
+    for line in &run.scanned {
+        rows.extend(styled_rows(line, width, plain));
+    }
+    rows
+}
+
+fn per_source(p: &Progress) -> Vec<String> {
     if p.sources.len() < 2 {
         return Vec::new();
     }
     p.sources
         .iter()
         .map(|s| {
-            Line::from(format!(
+            format!(
                 "  {}  {}/{} files, {} of {}",
                 name_of(&s.root),
                 s.done.files,
                 s.total.files,
                 text::size(s.done.bytes),
                 text::size(s.total.bytes)
-            ))
+            )
         })
         .collect()
 }
@@ -298,13 +400,8 @@ fn ratio(done: u64, total: u64) -> f64 {
 
 fn outcome(app: &App, frame: &mut Frame, area: Rect) {
     match app.outcome() {
-        Some(Outcome::Refused { sentence, .. }) => frame.render_widget(
-            Paragraph::new(sentence.as_str())
-                .wrap(Wrap { trim: false })
-                .red()
-                .block(Block::bordered()),
-            area,
-        ),
+        // Its sentence is a `column`.
+        Some(Outcome::Refused { .. }) => frame.render_widget(Block::bordered(), area),
         Some(Outcome::Report {
             lines,
             result,
@@ -349,15 +446,17 @@ fn outcome(app: &App, frame: &mut Frame, area: Rect) {
     }
 }
 
-/// How many rows the report takes and how many show, in a screen of `area`.
+/// How many rows what scrolls takes and how many show, in a screen of `area`.
 /// The model's scroll keys stop by these.
 pub fn report_rows(app: &App, area: Rect) -> (usize, usize) {
     match app.outcome() {
         Some(Outcome::Report { lines, result, .. }) if app.screen() == Screen::Report => {
-            let view = report_view(result, lines, screen_areas(area)[1]);
+            let view = report_view(result, lines, screen_areas(app, area)[1]);
             (view.rows.len(), usize::from(view.rest.height))
         }
-        _ => (0, 0),
+        _ => column(app, screen_areas(app, area)[1]).map_or((0, 0), |column| {
+            (column.rows.len(), usize::from(column.area.height))
+        }),
     }
 }
 
@@ -450,7 +549,7 @@ mod tests {
     use std::time::Duration;
 
     use photosync_core::{
-        Counts, Event, EventKind, FailReason, FileOutcome, FileReport, MediaType, Phase,
+        Counts, Event, EventKind, FailReason, FileOutcome, FileReport, MediaType, Phase, ScanError,
         SourceFile, SourceProgress, SourceReport, Volumes,
     };
     use ratatui::Terminal;
@@ -888,6 +987,143 @@ mod tests {
         assert_eq!(app.screen(), Screen::Refused);
         press(&mut app, &[Key::Enter]);
         assert_eq!(app.screen(), Screen::Confirm);
+    }
+
+    /// S047: a warning names a path and an error, so its end is what a cut took.
+    #[test]
+    fn a_long_note_shows_whole_on_the_card_and_drive_lists_at_80_columns() {
+        let mut app = App::new();
+        app.update(Msg::Volumes(Volumes {
+            sources: vec![PathBuf::from("/Volumes/X-T5")],
+            destinations: vec![PathBuf::from("/Volumes/SSD")],
+            failures: vec![ScanError {
+                path: PathBuf::from("/run/media/max/My Passport With A Long Name/DCIM/100_FUJI"),
+                source: std::io::Error::from_raw_os_error(libc::EIO),
+            }],
+        }));
+        let note = app.notes()[0].clone();
+        assert!(note.chars().count() > 80, "not a long note: {note}");
+        let note = note.as_str();
+        let screen = draw(&app, 80, 24);
+        assert!(unwrapped(&screen).contains(&no_spaces(note)), "{screen:#?}");
+        press(&mut app, &[Key::Enter]);
+        assert_eq!(app.screen(), Screen::Drive);
+        let screen = draw(&app, 80, 24);
+        assert!(unwrapped(&screen).contains(&no_spaces(note)), "{screen:#?}");
+    }
+
+    /// S047: the marks and the cursor take columns too, and two cards can
+    /// differ only at the end of the path.
+    #[test]
+    fn a_long_path_in_a_list_shows_whole_at_80_columns() {
+        let long = format!("/run/media/max/{}", "Very Long Card Name ".repeat(5));
+        let mut app = App::new();
+        app.update(Msg::Volumes(Volumes {
+            sources: vec![PathBuf::from(&long), PathBuf::from("/Volumes/CARD2")],
+            destinations: vec![PathBuf::from(&long), PathBuf::from("/Volumes/SSD")],
+            failures: Vec::new(),
+        }));
+        for screen_now in [Screen::Sources, Screen::Drive] {
+            assert_eq!(app.screen(), screen_now);
+            let screen = draw(&app, 80, 24);
+            assert!(unwrapped(&screen).contains(&no_spaces(&long)), "{screen:#?}");
+            assert!(has(&screen, "/Volumes/"), "{screen:#?}");
+            press(&mut app, &[Key::Enter]);
+        }
+    }
+
+    fn running_app() -> App {
+        let mut app = app();
+        press(
+            &mut app,
+            &[
+                Key::Char(' '),
+                Key::Down,
+                Key::Char(' '),
+                Key::Enter,
+                Key::Enter,
+                Key::Enter,
+                Key::Enter,
+                Key::Enter,
+            ],
+        );
+        assert_eq!(app.screen(), Screen::Running);
+        app
+    }
+
+    /// S047: the end of a scan line says how much could not be read.
+    #[test]
+    fn a_long_scan_line_shows_whole_on_the_copying_screen_at_80_columns() {
+        let line = "scanned /run/media/max/My Long Card Name: 1234 photos (45.6 GB), 12 ignored, 3 unreadable, device 16777234";
+        let mut app = running_app();
+        app.update(Msg::Scanned(line.into()));
+        let screen = draw(&app, 80, 24);
+        assert!(unwrapped(&screen).contains(&no_spaces(line)), "{screen:#?}");
+    }
+
+    /// S047: with several cards the progress line names each, and past the
+    /// edge a card's count, or the ETA of a line per card, was cut.
+    #[test]
+    fn the_progress_lines_of_long_card_names_show_whole_at_80_columns() {
+        let c = |files, bytes| Counts { files, bytes };
+        let root = |name: &str| PathBuf::from(format!("/run/media/max/{name}"));
+        let long = "A Card With A Name Long Enough To Pass The Edge Of The Terminal For Sure";
+        let progress = Progress {
+            phase: Phase::Copying,
+            done: c(1, 25_000_000),
+            total: c(4, 100_000_000),
+            sources: vec![
+                SourceProgress {
+                    root: root(long),
+                    done: c(1, 25_000_000),
+                    total: c(3, 90_000_000),
+                },
+                SourceProgress {
+                    root: root("CARD2"),
+                    done: c(0, 0),
+                    total: c(1, 10_000_000),
+                },
+            ],
+            elapsed: Duration::from_secs(10),
+            eta: Some(Duration::from_secs(30)),
+        };
+        let line = text::progress_line(&progress);
+        let each = per_source(&progress)[0].clone();
+        assert!(line.chars().count() > 80, "not a long line: {line}");
+        assert!(each.chars().count() > 80, "not a long line: {each}");
+        let mut app = running_app();
+        app.update(Msg::Progress(Event {
+            kind: EventKind::Bytes,
+            progress,
+        }));
+        let screen = draw(&app, 80, 24);
+        let shown = unwrapped(&screen);
+        assert!(shown.contains(&no_spaces(&line)), "{screen:#?}");
+        assert!(shown.contains(&no_spaces(&each)), "{screen:#?}");
+    }
+
+    /// S047: the hint is the one line that says why a key did nothing.
+    #[test]
+    fn a_long_hint_shows_whole_at_80_columns() {
+        let mut app = App::new();
+        app.update(Msg::Volumes(Volumes::default()));
+        press(&mut app, &[Key::Enter]);
+        let hint = app.hint().unwrap().to_string();
+        assert!(hint.chars().count() > 80, "not a long hint: {hint}");
+        let screen = draw(&app, 80, 24);
+        let shown = unwrapped(&screen[1..]);
+        assert!(shown.contains(&no_spaces(&hint)), "{screen:#?}");
+    }
+
+    /// S047: on a narrow terminal the keys are how to get to the rest.
+    #[test]
+    fn the_keys_show_whole_on_a_narrow_terminal() {
+        let app = App::with_outcome_for_test(Outcome::Refused {
+            sentence: "No.".into(),
+        });
+        let screen = draw(&app, 20, 12);
+        let shown = unwrapped(&screen);
+        assert!(shown.contains(&no_spaces(&keys_help(&app))), "{screen:#?}");
     }
 
     /// A narrow terminal must not panic the view.

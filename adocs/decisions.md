@@ -78,6 +78,7 @@ Why: one line.
 - DEC-059 2026-10-30 — the harness stops a process before it kills its tree, and kills it last (S045)
 - DEC-060 2026-10-31 — the closed-stdout test proves its pipe has no reader; the binary was not at fault (S046)
 - DEC-061 2026-10-31 — the TUI's report wraps by itself and scrolls by rows; the result's box grows (S037)
+- DEC-062 2026-10-31 — the TUI's other screens wrap and scroll as the report does; the copying screen's gauge goes on top (S047)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1577,3 +1578,24 @@ the report more room. This ends the limit DEC-056's sentence was kept short for;
 (6) A result that would leave under three rows of report has no box: it comes first in what scrolls, in its
 colour, then a blank row. Rejected: a capped box, which cuts it; the box alone, which shows no report.
 Why: the prime rule: what the user must read is never cut, even on a small terminal.
+
+## DEC-062  2026-10-31  the TUI's other screens wrap and scroll as the report does; the copying screen's gauge goes on top (S047)
+Tags: tui
+Decision: the agent's choice in S047, not yet confirmed by the user.
+(1) Beyond what the step named, every sentence on these screens goes through `view::wrapped`: list paths, the
+progress and per-card lines, the hint and the keys row. The goal is that nothing is cut, and each could be.
+(2) What is too tall scrolls, on every screen, not only a refusal: the step's accepts ask a small terminal only
+of a refusal, but the check names every card and the rest say what went wrong. One `App::scroll` serves them all,
+and it goes back to 0 when the screen changes. `report_drawn` keeps its name, now for whatever scrolls.
+(3) On the two lists the arrows move the cursor, so only `PgUp PgDn` scroll, and only the notes: the list keeps
+the three rows it needs, and `ratatui`'s `List` follows the cursor by itself.
+(4) The keys row offers scrolling only when something is off the screen (`App::can_scroll`), so `keys_help`
+returns a `String`. Rejected: always offering it, for keys that would do nothing on most screens.
+(5) The copying screen changes order: gauge on top, then the progress line, the cancelling sentence, each card,
+then the scan lines, all under it in one column. Before, the scans came first. Rejected: keeping that order, as
+scans that scroll would push the gauge and the progress off a small screen. Under 5 rows of body there is no gauge.
+(6) What still can be cut, on purpose: the title row, on a terminal under about 50 columns (it names the step, and
+the screen says the rest); the keys row and hint on a terminal so low that the body's 3 rows leave them no room
+(about 6 rows); a sentence inside a box under 3 columns wide; the empty list's sentence, in a box with one row
+on such a low terminal; a list row taller than the list itself. Hint and empty-list sentence do not scroll.
+Why: the prime rule: what the user must read is never cut, and the step's goal covers all these screens.
