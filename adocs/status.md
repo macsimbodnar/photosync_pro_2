@@ -77,6 +77,9 @@ Updated: 2026-10-31, by Claude (S058 done)
     watchdog hears its parent die by EOF on stdin, so a child holding that write end would delay
     it; `system.rs`'s test `pipe()` sets no close-on-exec at all, so its read can wait on a child.
     Only delays seen in the reading, no wrong result. Harness only.
+  - DEC-087 (2) flips the check screen on library length alone: a library over
+    200 bytes with about 20 picked cards also opens below the fold with Start
+    live (S067 fast check, inferred, not run). Take with DEC-087 (2).
   - Test watchdog: a process stuck in the kernel (state U) ignores SIGKILL, so
     `wait` in tests/common/images.rs and scripts/test_exfat.sh would block with
     nothing logged (S041 fast check, read only, not reproduced). Harness only.
