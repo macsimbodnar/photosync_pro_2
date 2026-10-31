@@ -4,12 +4,12 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-31, by Claude (S068 done)
+Updated: 2026-10-31, by Claude (audit 2026-10-31 triaged; work stopped on the user's word; see handover_2026-10-31.md)
 
 - Last done: S068  GUI: `-psn_` ignored, others still refused; the package launched with no arguments of its own, 0 pixels off; README and specs say what a Finder launch cannot see (635 passed, 43 ignored; exFAT script 649; package script passed)
 - In progress: none
-- Next: the audit re-run, which the coordinator runs. S060, S061, S025 and S017 wait for the user
-- Waiting for the user: S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
+- Next: S069  ignored files on a complete card; it asks the user first. No step is running
+- Waiting for the user: S069 and S073 (a question each), S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
   - Decisions the agents picked that the user has not confirmed yet:
@@ -36,7 +36,7 @@ Updated: 2026-10-31, by Claude (S068 done)
   - The Linux check leaves out blake3's NEON C on aarch64, as there is no Linux C compiler here, and links nothing (DEC-089 (2), (4)). S061 and S025 build for real on Linux. For the user to take or leave.
   - That macOS passes `-psn_` from Finder is an agent's memory, not measured: `open` passes none here, and a real double click is S060's. The README's words on Finder's stdout and stderr rest on `open`'s `/dev/null` (DEC-090 (1), (3)). A Finder launch whose window closes with no report says nothing more than the screen said; a log file or a dialog would be a new step (DEC-090 (5)). For the user to take or leave.
   - The GUI no longer waits for S025 (user, 2026-10-30: do all that needs no
-    input or hardware). The audit re-runs after the GUI.
+    input or hardware). The audit re-ran after the GUI on 2026-10-31: one medium, so the loop has not stopped.
   - Planned GUI: Cmd-Q and the Dock's Quit cannot be stopped without `objc2` as a new direct dependency,
     so they end a copy like a kill, with no sentence at the time, and no "Before you quit" on any screen: a fixed warning stands before them (DEC-069 (6), DEC-071 (5)). Left out, each for the user to ask for:
     a folder picker (`rfd`), Copy report, more shortcuts, watching for mounts (DEC-068 (8)); Developer ID signing

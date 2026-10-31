@@ -19,7 +19,7 @@ copies nothing and overwrites nothing.
 
 ## 2026-10-30_adversarial-F01  Medium  A file that reads shorter than scanned is reported as copied, and the sync as complete
 
-Status: planned
+Status: closed
 
 **Evidence**: `crates/photosync-core/src/copy.rs:899-917`: `fill_and_verify` stops
 at the first `Ok(0)` and never compares the bytes read with `file.size`. The only
@@ -51,7 +51,7 @@ failure (`SourceChanged`, or a new reason) before the rename. Add the test above
 
 ## 2026-10-30_adversarial-F02  Medium  A non-ASCII sync name is not reused on HFS+ or exFAT, so one trip splits across folders
 
-Status: planned
+Status: closed
 
 **Evidence**: `copy.rs:119-122`: `existing_named` matches the folder name to `--name`
 byte for byte. macOS returns these names decomposed on HFS+ and exFAT. Two syncs,
@@ -82,7 +82,7 @@ exFAT image.
 
 ## 2026-10-30_adversarial-F03  Medium  The report never says "duplicate in session" and never names the card a duplicate was copied from
 
-Status: planned
+Status: closed
 
 **Evidence**: `crates/photosync/src/text.rs:597-600`: `problem_line` returns `None` for
 `DuplicateInSession` and `AlreadySynced`, and no other line renders them. Both the CLI
@@ -112,7 +112,7 @@ the card, or reword the specs if counts are enough (a decision).
 
 ## 2026-10-30_adversarial-F04  Medium  The TESTS gate never runs a successful sync through the binary; nine tests pass with nothing checked
 
-Status: planned
+Status: closed
 
 **Evidence**: `cargo test --workspace -- --nocapture`, each reported `ok`:
 
@@ -145,7 +145,7 @@ explicit opt-out; and name the script in TESTS. Give S025 a Linux equivalent of 
 
 ## 2026-10-30_adversarial-F05  Medium  Behaviours the specs name survive their removal: one-card serial read, session re-check, root refusal, flushes
 
-Status: planned
+Status: closed
 
 **Evidence**: Hand mutants, `cargo test --workspace`:
 
@@ -183,7 +183,7 @@ or factor `main`'s guard so a test can reach it.
 
 ## 2026-10-30_adversarial-F06  Low  A sync name too long for a folder is not refused: every file fails, and in the TUI the name is then stuck
 
-Status: planned
+Status: closed
 
 **Evidence**: `copy.rs:104-109`: `check_name` rejects only blank, `/` and NUL. A 300-byte
 `--name` on APFS:
@@ -211,7 +211,7 @@ which characters other filesystems refuse. Then a test.
 
 ## 2026-10-30_adversarial-F07  Low  Fixing a refused sync and retrying in one session ends in exit 2 and "NOT COMPLETE: do not format" with every photo on the drive
 
-Status: planned
+Status: closed
 
 **Evidence**: `sync --one-by-one` on a pty; the library is created at the prompt and the
 same card is given again:
@@ -244,7 +244,7 @@ session.
 
 ## 2026-10-30_adversarial-F08  Low  After a name collision, the result advises a re-run that cannot succeed
 
-Status: planned
+Status: closed
 
 **Evidence**: Card with two different `DSCF0001.RAF` (counter wrap), same sync twice, second
 output, exit 1 both times:
@@ -266,7 +266,7 @@ again under another name.
 
 ## 2026-10-30_adversarial-F09  Low  A second photosync process deletes the first one's live temp file as "left by an interrupted sync"
 
-Status: planned
+Status: closed
 
 **Evidence**: `copy.rs:656-684`: every `.photosync-tmp-*` under the library goes, with no check
 that its pid is gone. Two processes on one exFAT library, the second started 0.12 s after the
@@ -290,7 +290,7 @@ takes one process at a time.
 
 ## 2026-10-30_adversarial-F10  Low  CLI progress shows no bytes per source
 
-Status: planned
+Status: closed
 
 **Evidence**: `text.rs:85`, the per-source part is files only:
 `copying 0/3 files, 0 B of 15 B (0%), ETA -- [AUDCARD 0/3, AUDCARD2 0/0]`. Specs Progress:

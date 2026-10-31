@@ -17,13 +17,24 @@ not change the order.
 
 ## Open
 
-1. S060  GUI: hand checks on Mac (waits for the user and real hardware)
-2. S061  GUI: run on Linux, AppImage (waits for the user and a Linux machine)
-3. S025  first run on Linux: build, tests, hand checks (waits for the user)
-4. S017  hardware hand checks on Mac (waits for the user)
+Work stopped here on the user's word, 2026-10-31. See `handover_2026-10-31.md`.
 
-Later, not yet steps: re-run the adversarial audit after the GUI, covering
-it too; the audit loop stops when a run reports no high and no medium.
+1. S069  ignored files on a complete card (F01, Medium; asks the user first)
+2. S074  a DCIM symlink cannot pass INV-10 (F06)
+3. S071  accented file names are not copied twice (F03)
+4. S070  session duplicates across Unicode forms (F02)
+5. S072  GUI picture seam and flags (F04)
+6. S073  keep the camera's modification time (F05; asks the user first)
+7. S075  result counts and long temp names (F07)
+8. S076  tests kill N38 and N34 (F08)
+9. S060  GUI: hand checks on Mac (waits for the user and real hardware)
+10. S061  GUI: run on Linux, AppImage (waits for the user and a Linux machine)
+11. S025  first run on Linux: build, tests, hand checks (waits for the user)
+12. S017  hardware hand checks on Mac (waits for the user)
+
+Later, not yet steps: re-run the adversarial audit after S069 to S076. The
+loop stops when a run reports no high and no medium; 2026-10-31 still has
+one medium (F01).
 
 ## Done recently
 
