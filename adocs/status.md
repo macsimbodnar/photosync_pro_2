@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-31, by Claude (S045 done)
+Updated: 2026-10-31, by Claude (S046 done)
 
-- Last done: S045  a killed hdiutil never counts as ended well (found in S035)
+- Last done: S046  closed-stdout test fails now and then (found in S045): the test's fault, the binary was right (DEC-060)
 - In progress: none
-- Next: S046, the closed-stdout test that fails now and then: a flaky gate hurts every later step; then the rest of plan.md's Open list
+- Next: S037, TUI report cuts long lines; then the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
@@ -17,7 +17,7 @@ Updated: 2026-10-31, by Claude (S045 done)
     DEC-030 to DEC-032, DEC-034, DEC-035 (1)-(3), DEC-036 to DEC-040,
     DEC-042, DEC-043, DEC-044, DEC-045, DEC-046, DEC-047, DEC-048, DEC-049,
     DEC-050, DEC-051, DEC-052, DEC-053, DEC-054, DEC-055, DEC-056, DEC-057,
-    DEC-058, DEC-059.
+    DEC-058, DEC-059, DEC-060.
     Each says "not yet confirmed by the user" in decisions.md.
   - The GUI no longer waits for S025 (user, 2026-10-30: do all that needs no
     input or hardware). The audit re-runs after the GUI.
@@ -52,6 +52,13 @@ Updated: 2026-10-31, by Claude (S045 done)
   - CLI progress measures width in chars, not columns: a wide-character card
     label (`写真カード`) wraps the line and `\r` leaves rows behind (S035 fast
     check, read only). A fix needs a width table or unicode-width (DEPS: ask).
+  - `photosync sources >&-` (stdout closed outright, not a closed pipe) exits 0 with its list
+    lost and nothing said; `sync` loses its report the same way, with the right code (S046, by
+    hand). It looks like `>/dev/null`, so nothing changed (DEC-060 (7)). For the user to take or leave.
+  - S046's window applies to every pipe a test makes on macOS, read only, not run: the images'
+    watchdog hears its parent die by EOF on stdin, so a child holding that write end would delay
+    it; `system.rs`'s test `pipe()` sets no close-on-exec at all, so its read can wait on a child.
+    Only delays seen in the reading, no wrong result. Harness only.
   - Test watchdog: a process stuck in the kernel (state U) ignores SIGKILL, so
     `wait` in tests/common/images.rs and scripts/test_exfat.sh would block with
     nothing logged (S041 fast check, read only, not reproduced). Harness only.

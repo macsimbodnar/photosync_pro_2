@@ -11,6 +11,7 @@
 mod common;
 
 use std::fs;
+use std::io::Write as _;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -296,13 +297,31 @@ fn sync_from_a_mounted_card_to_a_drive_end_to_end() {
     assert_eq!(fs::read_dir(&on_card).unwrap().count(), 0);
 }
 
+/// The write end of a pipe no process can read, proved by a write that fails.
+/// Dropping the reader is not enough: on macOS a pipe is made and marked
+/// close-on-exec in two calls, and a child another test thread spawns between
+/// them keeps the read end for its whole life (DEC-060). Once a write fails no
+/// process holds that end and none can get it, so a run on this pipe that
+/// reports no failed write is the binary's fault, never this race.
+fn closed_pipe() -> std::io::PipeWriter {
+    for _ in 0..1000 {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        drop(reader);
+        match writer.write(b"x") {
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return writer,
+            Ok(_) => continue,
+            Err(e) => panic!("Unexpected error on a pipe with no reader: {e}"),
+        }
+    }
+    panic!("1000 pipes in a row kept a reader: this is not the race of DEC-060");
+}
+
 /// Runs the binary with stdout, and stderr too if `close_stderr`, on a
 /// pipe whose reader is already gone, as `photosync ... | head` ends up.
 /// Rust ignores SIGPIPE, so each write fails with EPIPE; `print!` would
 /// panic on that and exit 101.
 fn closed_run(args: &[&std::ffi::OsStr], close_stderr: bool) -> (i32, String) {
-    let (reader, writer) = std::io::pipe().unwrap();
-    drop(reader);
+    let writer = closed_pipe();
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_photosync"));
     cmd.args(args).stdout(writer.try_clone().unwrap());
     if close_stderr {

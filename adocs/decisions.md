@@ -76,6 +76,7 @@ Why: one line.
 - DEC-057 2026-10-30 — a cancel ends the wait for the folder's lock; one timeout fails the folder for the run (S044)
 - DEC-058 2026-10-30 — the CLI's line: each source's bytes in its bracket, dropped whole by the cut; the TUI's line stays (S035)
 - DEC-059 2026-10-30 — the harness stops a process before it kills its tree, and kills it last (S045)
+- DEC-060 2026-10-31 — the closed-stdout test proves its pipe has no reader; the binary was not at fault (S046)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1518,3 +1519,40 @@ which is right, and a process stuck in the kernel (state U) ignores SIGKILL (Par
 Why: S045: the first detach counted as a success, and `-force` was skipped, in 2 of 6 gate runs,
 then 1 of 4, then 1 of 6 with a trace in. The trace showed the fake's `wait` returning 0 between
 the two kills, and `limited` seeing status 0.
+
+## DEC-060  2026-10-31  the closed-stdout test proves its pipe has no reader; the binary was not at fault (S046)
+Tags: tests, gate
+Decision: the agent's choice in S046, not yet confirmed by the user.
+(1) `closed_run` in `exfat_e2e.rs` takes its pipe from `closed_pipe`: drop the reader, write one byte,
+and use the pipe only if that write gets EPIPE; a pipe whose write succeeds is thrown away for a new
+one, at most 1000 times, then the test panics. Once a write fails, no process holds the read end and
+none can get it, so a run on that pipe that reports no failed write is the binary's fault.
+The assertions did not change.
+(2) The defect was in the test. Its pipe could keep a reader: the binary imports `pipe`, no `pipe2`
+(`nm`), and `lsof` showed a spawned child holding both ends of a pipe the parent had dropped the
+reader of. std's source was not read (rust-src is not installed), so "made and marked in two calls"
+is inferred from those two.
+(3) Measured with the real binary's `sources` on a mounted image, 4 threads each making a pipe, dropping
+the reader, writing one byte first, then running the binary (scratch program, not kept):
+no spawners, 63084 runs; 64 threads spawning `sleep 0.1`, 244025 runs. A read end gone before the
+spawn: 0 runs of 306045 missed it, all said "Cannot write the list". A read end alive before the spawn:
+117 and 947 runs, of which 45 and 403 gave code 0 and an empty stderr, the rest had the holder end first.
+With the pipes of (1), 64 spawners: 236390 runs, all noticed, 953 pipes thrown away.
+`sync` by hand: a live reader that never reads gives code 0 and a stderr that stops after
+`copying 1/1 files`, the failure seen in the gate; a reader gone gives the sentence.
+On real mounts, the old helper under load, `sync`: 7512 runs, 0 missed.
+(4) The binary is right: a write to a pipe with a live reader succeeds, and it cannot know that
+reader will never read. No change to `main.rs`.
+(5) Rejected: `pre_exec` making the pipe in the child, which also cannot leak, but takes `unsafe` and
+moves this one run off the path the others spawn on, and proves nothing when it fails; a lock around
+every spawn in the tests, which one forgotten spawn undoes.
+(6) Not reproduced: the gate's own failure did not come back. The old helper with the probe of (3) added
+ran 50 gates of `exfat_e2e`, then 30 with 20 CPU hogs, 240 pipes: none had a reader, none missed.
+So 1 in 18 was the one event seen and its rate is not explained; the cause rests on the matching
+signature and on (3), which leaves the race the only way to it found.
+(7) `>&-`, stdout closed outright, is another case, measured by hand: `sources` exits 0 with its list lost and
+nothing said, `sync` loses its report with nothing said, and copies, with the right code. Rust's start-up
+giving such a fd `/dev/null` would explain it, from an agent's recollection, not read. Whoever closes
+stdout that way asked for no output, and it would look like `>/dev/null`, so nothing changed (Parked).
+Why: S046: 1 failure in 18 gate runs; a flaky gate hurts every later step, and a retry could have hidden a
+real miss by the binary.

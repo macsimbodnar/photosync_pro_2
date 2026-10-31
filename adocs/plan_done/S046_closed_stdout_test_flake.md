@@ -5,8 +5,8 @@ touches:    crates/photosync/tests/exfat_e2e.rs (closed_run); main.rs only if th
 excludes:   the images' watchdog (S045); the time limits
 closes:
 paused_by:
-author:
-done:
+author:     Claude (subagent)
+done:       2026-10-31, the test's fault, the binary was right (DEC-060). Reproduced with the real binary: 1064 of 307109 runs had a read end alive before the spawn, 448 of them gave code 0 and no sentence; 0 of 306045 with the read end gone missed it. closed_pipe proves no reader by a failed write; 236390 runs all noticed. Assertions unchanged. 12 of 12 `cargo test --workspace` (335 passed each last run), scripts/test_exfat.sh passes, hdiutil info shows no images. The gate's own failure did not come back in 80 gates before the fix: its rate stays unexplained. README checked: no change. Fixed nothing in main.rs.
 
 Found in S045. Failed in 1 of 18 `cargo test --workspace` runs (2026-10-31, run 8 of 14), inside
 `ignored_image_tests_pass_on_real_mounts` of exfat_e2e. Not seen before in the 10 runs on the old
