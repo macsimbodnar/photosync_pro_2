@@ -81,6 +81,12 @@ Why: one line.
 - DEC-062 2026-10-31 — the TUI's other screens wrap and scroll as the report does; the copying screen's gauge goes on top (S047)
 - DEC-063 2026-10-31 — the TUI keeps the report's wrapped rows in the view, keyed by the outcome's number and the body's area (S048)
 - DEC-064 2026-10-31 — notes leave the list what it must show: the row under the cursor, or the empty list's sentence, boxless when too low (S049)
+- DEC-065 2026-10-31 — the GUI is iced 0.14.0, software drawing only, its own font, one theme (S036)
+- DEC-066 2026-10-31 — how a GUI screen is checked with no window and nobody looking; iced_test is asked of the user (S036)
+- DEC-067 2026-10-31 — the GUI is its own crate; the shared layer gets a library target and moves nowhere (S036)
+- DEC-068 2026-10-31 — the GUI drives the model by its keys, and hears the worker by waking and draining (S036)
+- DEC-069 2026-10-31 — what stands in for exit codes; closing, quitting and root in the GUI; its name (S036)
+- DEC-070 2026-10-31 — packaging: an ad hoc signed .app and an AppImage, each its own step (S036)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -174,6 +180,7 @@ Tags: gui, dependencies
 Decision: iced is approved as a dependency (DEC-006) and is the tentative
 GUI framework. It is confirmed when the GUI is planned, so the specs, plan
 and decisions now say the same. Accepts audit 2026-10-28_adversarial-F12.
+Confirmed as the agent's choice by DEC-065.
 Why: the docs disagreed; no GUI work is due yet.
 
 ## DEC-012  2026-10-28  copy verification may read from the OS cache
@@ -584,7 +591,7 @@ keys and discovery injected) and `tui/view` (ratatui only). `app`,
 (`tests/ui_split.rs`, a source-text check like `no_test_seam.rs`). The GUI
 reuses them by moving them into a shared crate, or by living in this
 binary. Rejected: a shared crate now (one user, and S009 touches only
-`crates/photosync`).
+`crates/photosync`). DEC-067 says how the GUI reaches them.
 (2) The model takes keys, not commands: every printable key is
 `Key::Char`, and its meaning depends on the screen, so a text field takes
 `q`. A GUI adds its own messages beside `Key`.
@@ -1644,3 +1651,143 @@ progress line and the sentence do not fit, the start of the sentence shows and t
 (6) The progress line scrolls with the scans; only the gauge stays in sight (DEC-062 (5)). So S047's test comment
 was wrong, not the code: it is corrected, and `scrolled_scans_leave_the_gauge_in_sight` holds what is true.
 Why: the prime rule: what the user must read is never cut, and a warning must not cost them the sentence that says what to do.
+
+## DEC-065  2026-10-31  the GUI is iced 0.14.0, software drawing only, its own font, one theme (S036)
+Tags: gui, dependencies
+Decision: the agent's choice under the user's standing instruction, not yet confirmed by the user. Confirms DEC-011.
+(1) iced 0.14.0, the newest on crates.io today, pinned `=0.14.0`, as the test crate of DEC-066 must match it. It needs Rust
+1.88; this Mac has 1.99.1. Approved in DEC-006. egui, the other candidate of DEC-002, was not tried: nothing here showed
+iced unfit. Tauri, Electron and web views stay rejected by the user.
+(2) `default-features = false`, features `tiny-skia`, `crisp`, `web-colors`, `thread-pool`, `lazy`, `fira-sans`; on Linux also
+`x11`, `wayland`, without which iced stops the build. Rejected: the default wgpu renderer: twice the size, more crates and
+a compile warning, for a window of words and bars. The renderer the tests draw with is then the one that ships.
+(3) Measured on this Mac (arm64, macOS 27.0.1, rustc 1.99.1), clean release builds of a small counter app, each with its own
+target folder:
+    default features: 28.9 s, 10922752 bytes, 383 crates in its lock, warning that `block v0.1.6` will be rejected by a future Rust.
+    tiny-skia, thread-pool: 16.1 s, 5045168 bytes, 252 in its lock, no warning.
+    tiny-skia, smol: 18.7 s, 5313584 bytes, 270 in its lock. No gain: only `iced::time::every` needs smol or tokio, and DEC-068 needs no timer.
+A real GUI crate over this repo's shared layer, features as in (2): clean release of all of it 19.3 s, binary 6371136 bytes
+(5365368 stripped). A clean debug build of the whole workspace's tests 14.1 s, target folder 1.3 GB. Repo's `Cargo.lock` 111 to 325 entries, all
+platforms counted; on this Mac the crates a build of it uses, by `cargo tree`, 76 to 180. The binary links only system frameworks (`otool -L`).
+(4) The font is the Fira Sans iced carries (`fira-sans`, `.default_font(Font::with_name("Fira Sans"))`), as the test harness
+draws with it. With it the real window and the headless picture were the same: 0 of 1920000 pixels differ, 800x600 at
+scale 2. With the system font they differ, and text wraps elsewhere. Fira has no Japanese: a test label `写真カード` drew from a system font, on this Mac.
+(5) One fixed theme, `Theme::Dark`, so that a checked picture is what ships. The system's theme can come later: low stakes.
+Why: the smallest iced that draws these screens, and what is tested is what ships.
+
+## DEC-066  2026-10-31  how a GUI screen is checked with no window and nobody looking; iced_test is asked of the user (S036)
+Tags: gui, tests, dependencies
+Decision: the agent's choice under the user's standing instruction, not yet confirmed by the user. One part is the user's to
+answer: (1).
+(1) QUESTION FOR THE USER: may `iced_test = "=0.14.0"` be a dev-dependency of `photosync-gui`? It is the iced project's own test
+crate, not part of what DEC-006 approved. It buys: clicking, typing and finding words on a screen with no window, a picture of
+it, and the real iced runtime with no window. It costs: 19 more lock entries, 18 more crates compiled, in test builds only, none in the
+shipped binary (`png`, `sha2`, `nom`, `iced_selector`, ...). By hand: not possible through `iced` alone, which does not expose
+the runtime's `UserInterface`; `iced_runtime` as a direct dependency would need the same asking and leave the harness to us.
+Recommended: yes. S051 and every GUI step after it wait for this answer; S050 does not. If no: the view makes a plain-data
+description of each screen that tests read, and pictures come only from real windows (6), which show on the user's screen,
+and no test can click. Weaker, and those steps get rewritten.
+(2) What works with no window, all run here. `iced_test::Simulator` over `view(&state)`: `find("exact words")`, `click`, `typewrite`,
+`into_messages()`, then the test feeds those to `update`. A checkbox by its label, a button by its label, a text field by its
+placeholder or value. `find` matches a text's whole content, not a part. `Bounded::visible_bounds()` is `None` for text scrolled
+out of a `scrollable` or off the window. `snapshot(&theme)` then `matches_image(path)` writes `<path>-tiny-skia.png` if none is there, and
+compares if one is: 5.9 ms a picture. An agent reads the PNG with its Read tool.
+(3) `iced_test::Emulator` runs the real program, tasks and subscriptions, real threads included, with no window. Measured: 200000
+worker events through `Task::run` in 27 ms; and on this repo's shared layer, a real sync on two disk images, every screen by
+its clicks, from the cards to the report, exit 0, photos on the image, source manifest unchanged, in 7.8 s with the mounting. The loop:
+    let program = iced::application(boot, update, view).subscription(subscription);
+    let (tx, mut rx) = mpsc::channel(1); // iced_test::futures::futures::channel::mpsc
+    let mut emu = Emulator::new(tx, &program, Mode::Zen, Size::new(800.0, 600.0));
+    loop { match block_on(rx.next()).unwrap() {
+        Event::Action(a) => emu.perform(&program, a),
+        Event::Failed(i) => panic!("{i}"),
+        Event::Ready => match lines.next() {
+            Some(line) => emu.run(&program, Instruction::parse(&line).unwrap()),
+            None => break } } }
+Lines read `click "Next"`, `type "Tirana"`, `type enter`, `expect "Report"`. `emu.into_state()` then gives the state to check. In `Mode::Zen` the
+next line waits for all tasks, so `click "Start copying"` returns when the sync has ended. A cancel in mid-sync calls
+`emu.update(&program, msg)` between events instead.
+(4) What it cannot do. The Emulator never fires `window::close_requests`, and ignores exit, clipboard and system actions. So closing is tested from the
+message on, and `exit_on_close_request(false)` and the subscription by the source check of (7); the real close button needs the user (S060). A
+wrapped word: `text` with the default `Wrapping::Word` cuts a word longer than a row, and `bounds` and `visible_bounds` report nothing wrong
+(a 309-byte path in a 400-wide window: width 400, height 41.6, its end gone in the picture). So no bounds check can prove a line is whole; (7) makes every
+text wrap by `WordOrGlyph`, which showed it whole. Nothing runs on Linux from here.
+(5) A SCREEN CHECK, as every GUI step's `accepts` names it: (a) a test through the Simulator, at 800x600 and at the window's least
+size, 640x480, finds each sentence the screen must say by its whole words, with `visible_bounds` not `None`, or for text in a
+`scrollable` found and no wider than the window, and clicks each button the step adds; (b) the source check of (7) passes;
+(c) the test writes `target/gui_screens/<step>_<screen>.png`, removing an old one first, as `matches_image` compares otherwise. The agent
+opens every such picture with its Read tool, and the `done:` stamp names each and says what it saw. No picture is kept in the repo: a
+stored picture would break on any change of look, and the words are what must hold. So no step can claim a screen unseen.
+(6) A real window works from an agent's shell on this Mac, and from an `.app` by `open -n --stderr <file> --env K=V <app>`: `window::screenshot(id)`
+gave real pixels, with no permission asked. It shows on the user's screen, so it is never in the gate: an `#[ignore]`d test, run by hand or by a
+step. `osascript` to `System Events` to press the close button hung past 8 s here, with no accessibility permission: no agent can press it.
+(7) `crates/photosync-gui/tests/gui_split.rs`, a source check as `ui_split.rs` is: no file under `crates/photosync/src` names iced;
+no file of the GUI names ratatui, crossterm, `copy_plan`, `plan_sync`, `set_device_for_test` or `test-support`; `checking_library` is named in non-test code and `App::new` is not (DEC-050 (7));
+`exit_on_close_request(false)` and `close_requests` are named; and iced's `text` is called only by one helper that sets `Wrapping::WordOrGlyph`. It says what it found, and is not vacuous: it also finds the known files.
+Why: the prime rule covers what the GUI says, and this is how to look at it without a person.
+
+## DEC-067  2026-10-31  the GUI is its own crate; the shared layer gets a library target and moves nowhere (S036)
+Tags: gui, architecture, tests
+Decision: the agent's choice under the user's standing instruction, not yet confirmed by the user. Amends DEC-030 (1).
+(1) New crate `crates/photosync-gui`, binary `photosync-gui`, the only package that depends on iced. CLI and TUI stay out of it.
+(2) `crates/photosync` gains a library target beside its binary: `[lib] name = "photosync_front"`, `path = "src/lib.rs"`, `test = false`, `doctest = false`,
+and `[[bin]] name = "photosync"`, `path = "src/main.rs"`. `src/lib.rs` holds only `#![allow(dead_code)]`, `#![allow(clippy::new_without_default)]` and
+`pub mod app; pub mod args; pub mod flow; pub mod system; pub mod text; pub mod worker;`. `main.rs` keeps its own `mod` lines, so each of those files
+compiles twice: in the binary, with its tests, as today; and in the library, with none. No file moves and no file but `Cargo.toml` changes.
+(3) Proved on a scratch copy, with a GUI crate in it: `cargo test --workspace` gave all of today's tests, 372 passed, plus the scratch GUI's one;
+`scripts/test_exfat.sh` exit 0; `diff` of `crates/photosync/tests`, `src` and the script: only `lib.rs` is new.
+`tests/ui_split.rs` walks `lib.rs` too, and passes. Only clippy on the library has one more thing to say: `StderrWatch` has no `Default`, as it is public there. Hence the allow.
+(4) Rejected: moving the files to a shared crate. `ui_split.rs` looks for `src/app.rs` and fails; the `app`, `text` and `tui` tests must run in one
+test binary, as `ignored_image_tests_pass_on_real_mounts` lists them; `#[cfg(test)]` helpers such as `App::with_outcome_for_test` stop being
+seen across crates. The suite could not stay unchanged, and it is the proof. Rejected: `main.rs` using the library in place of its `mod` lines,
+for the same two reasons. Rejected: the GUI in the `photosync` binary, which DEC-030 (1) allowed: every CLI build carries iced, and a `.app`
+has no way to pick it over the no-terminal usage error. Rejected: `#[path]` from the GUI crate into `crates/photosync/src`: what `ui_split.rs` forbids in spirit.
+(5) What it costs. The shared files compile twice. The library hides what `#[cfg(test)]` adds, so GUI tests reach states by real messages, and a report with
+every kind of failure is tested on a pure function of the view (S055). A later tidy could make `main.rs` use the library; the suite would have to change, so it is the user's call.
+(6) The GUI's own tests are unit tests of its binary, as the TUI's are, with `#[cfg(test)] #[path = "../../photosync/tests/common/mod.rs"] mod common;`. That compiled and ran here, with `libc` as a dev-dependency (approved, DEC-008).
+Why: the least change that lets the existing suite stay byte for byte the proof.
+
+## DEC-068  2026-10-31  the GUI drives the model by its keys, and hears the worker by waking and draining (S036)
+Tags: gui, architecture, session, concurrency
+Decision: the agent's choice under the user's standing instruction, not yet confirmed by the user.
+(1) One `App::checking_library()` per run, so the library check stays (DEC-050 (7)), so one session (the Parked note on two sessions in one process), and a `Session` through `worker::spawn` (DEC-040 (9)), never `copy_plan`.
+(2) No rule in the GUI. Each widget sends what the TUI's key does, and `app.rs` needs no new message:
+    cards: tick a row = cursor to it, then `Key::Char(' ')`. Next = `Enter`. Look again = `Char('r')`. Quit = `Char('q')`. As in the TUI, Next with none ticked takes the row under the cursor, so that row is drawn highlighted.
+    drives: click a row = cursor to it. Next = `Enter`. Back = `Esc`. Look again, Quit as above.
+    library, name: `text_input` `on_input` = `Backspace` for each old char, then `Char` for each new one, so `edit` keeps deciding; `on_submit` and Next = `Enter`. Back = `Esc`.
+    check: Start copying = `Enter`. Back = `Esc`. Quit = `Char('q')`.
+    copying: Cancel = `Char('c')`. No Quit button.
+    refused: Back, to fix it = `Enter`. Next card = `Char('n')`, shown only `in_session()`. Quit = `Char('q')`.
+    report: Next card = `Char('n')`. Quit = `Char('q')`. Back on the cards is not shown in a session; it is shown nowhere on the cards before one, as the TUI's Esc there quits.
+    Scrolling is iced's `scrollable`: `App`'s scroll and `report_drawn` are not used, and the arrow and page keys are not sent.
+(3) A hint in `App` names TUI keys: "(Esc)", "press r", "press q". Rather than change `app.rs`, the GUI's helper swaps those words for its buttons' names. A test makes each hint reachable by clicks and asserts no key name is left, so a changed hint fails.
+(4) `Msg` is not `Clone`, and `button::on_press` needs it (the compiler says so), so the GUI has its own `Clone` message `M`, and worker messages never go in it:
+    worker::spawn(job, move |msg| { let _ = tx.send(msg); if !pending.swap(true, AcqRel) { let _ = wake.unbounded_send(()); } });
+    Task::run(woken, |()| M::Wake).chain(Task::done(M::Gone))
+`tx` is `std::sync::mpsc`, `wake` is `iced::futures::channel::mpsc::unbounded`, `pending` an `Arc<AtomicBool>`. `M::Wake` clears `pending` first, then drains `try_recv` into `App::update`. The send never blocks, which it must not: it runs under the core's progress lock, on a copy thread (DEC-040 (3)). When the worker's thread ends the wake's sender drops and the stream ends, so `M::Gone` drains and sends `Msg::WorkerGone` on `Disconnected`, as the TUI's loop does, panic or not. Measured with 4 threads and 200000 events in a real window: 25 ms and 18 redraws. One `M` per event instead: 13.9 s and 3112 redraws. `Progress` events are whole snapshots, so keeping only what was last drained loses nothing, and the view draws `Progress::sources` and assumes no one file in flight (DEC-040 (9)).
+(5) Discovery runs off the UI thread, as a stuck mount must not freeze the window: its own `std::thread`, its `Volumes` through a channel like the worker's (`Volumes` is not `Clone`). The discover function is injected, as `tui::run_loop`'s is, so tests give literal folders. A hidden `--search-root` as the CLI's reaches it from the binary.
+(6) The report: `lazy(app.outcome_id(), ..)` around a `scrollable` of one `text` per line, in `Font::MONOSPACE`, or the report's tables do not line up, as the picture showed. One `text` per line, kept by `lazy`, measured on a kept interface: 50000 lines, scroll and draw 8.4 ms; made again only when the report changes, 516 ms. One `text` holding the whole report: 10000 lines 208 ms, 50000 lines 1.03 s, a scroll, and with no `lazy` that layout comes again on every redraw (one `M` per event, no `lazy`, a 10000-line report in the window: a flood did not end in 60 s).
+(7) One window, one screen at a time: the title and the buttons stay in sight, all else is in a `scrollable`. Default 900x650, least 640x480 (`window::Settings::min_size`). Words come from `text` and the model; words the TUI's view holds (`confirm_rows`, `field_help`, `keys_help`) are the GUI view's to say, with no key named.
+(8) Left out, each a new dependency or more than the TUI does, for the user to ask for: a native folder picker (`rfd`), a Copy report button, keyboard shortcuts beyond Enter in a field, watching for mounts instead of Look again.
+Why: every rule stays in one tested model, so the GUI cannot drift from what the TUI does.
+
+## DEC-069  2026-10-31  what stands in for exit codes; closing, quitting and root in the GUI; its name (S036)
+Tags: gui, exit-codes, session, safety, naming
+Decision: the agent's choice under the user's standing instruction, not yet confirmed by the user.
+(1) Name: the window's title and the GUI's text name the app "phoosync pro 2", as DEC-041, the user's call for the TUI's text, does there. Treated the same: the name the user sees, and the `.app`'s name in Finder and the Dock, are "phoosync pro 2"; the binary, crate and docs stay `photosync`, `photosync-gui`. Sentences from `text` that say "photosync" stay, as in the TUI.
+(2) A GUI user sees no exit code. What stands in is the screen: the report's result (`text::session_result`) stands above the report in a box, green only when `complete`, else red; a refusal or crash shows its sentence and, after several syncs, the session's result, as the TUI's. The words are the same strings, so "do not format the card" is word for word as strong. `App::exit()` still decides, and the process prints its report to stdout, its message to stderr, and returns its code, as the TUI's does, for a terminal and for tests. It is no promise to the user. If no `Exit` was recorded by the time `run()` returns, the code is 1 and the message says the window closed with no report.
+(3) No way out hides a session not complete. A quit (button or close) with `App::exit().code != 0` from any screen but the report and the refused screen, which already say it, goes first to a "Before you quit" screen: the message of `App::exit()`, with Quit anyway and Back. With code 0, or from those two screens, it quits at once. A close on "Before you quit" is Quit anyway. This is the GUI's only screen outside the model.
+(4) Close during a sync: `exit_on_close_request(false)`, and `window::close_requests()` sends `Key::CtrlC`. The first close cancels: the window stays, the Cancelling sentence shows, and the report follows. Once cancelling, the sentence says: "Close the window again to quit at once: not every file will be known to be on the drive. Do not format the card." A second close then quits at once, as the CLI's second Ctrl-C (INV-7); the warning was on screen before it. The message of `App::exit()` still goes to stderr.
+(5) The copying screen always says "Do not format the card until the report says so." Why: (6).
+(6) Cmd-Q and Quit in the Dock cannot be stopped. Measured, on an idle spike app: an Apple event `quit` to the bundle ended the process, with no close request. winit's Quit menu item is `terminate:`, with no hook. To stop it needs an AppKit delegate, so `objc2` as a direct dependency: not added. So those end like a kill: INV-7 keeps the drive safe, no report, nothing said to be safe. For the user to take or leave.
+(7) Root: before any window or discovery, `main` asks `system::refuses_user(system::effective_uid())`, through a function taking the euid, as a test reaches it (DEC-047). The CLI's sentence moves to a `pub const` in `system.rs`, with no change in what it says. It goes to stderr first, then a window shows only that sentence and Quit; exit code 2, also if no window can open. `default_search_roots` failing is the same with its own sentence. A window that cannot open says so on stderr: "Nothing was copied."
+(8) A panic of the UI thread ends the process like a kill: same as (6). A panic of the worker is caught by `worker::spawn` and shown as the crash sentence, not complete, as in the TUI.
+Why: each errs toward "not safe to format", and none says more than the TUI does.
+
+## DEC-070  2026-10-31  packaging: an ad hoc signed .app and an AppImage, each its own step (S036)
+Tags: gui, packaging
+Decision: the agent's choice under the user's standing instruction, not yet confirmed by the user.
+(1) Mac: a script makes `target/package/phoosync pro 2.app` and a `.zip` of it by `ditto -c -k --keepParent`, with only tools this Mac has: `plutil`, `codesign --sign -`, `ditto`. No new crate. Measured with a spike bundle: it runs from `open`, ad hoc signed by the linker, and draws. Such an app runs on this Mac. On another Mac, downloaded, Gatekeeper stops it until it is signed with a Developer ID and notarized: this Mac has 0 signing identities, so that waits for the user's Apple account and is left out.
+(2) No icon: there is no art, and a generated one would be worth little. The user can give one.
+(3) Linux: `cargo check` from this Mac on `aarch64-unknown-linux-gnu`, with a toolchain in a throwaway `RUSTUP_HOME`, so the user's stays as it is, passed for iced with these features in 14.5 s. So S059 can prove the GUI compiles for Linux here. Running it and the AppImage need a Linux machine (S061): `appimagetool` is a build tool there, not a crate.
+Why: the app is usable on the user's own Mac now, and nothing needs an account or a machine before it must.

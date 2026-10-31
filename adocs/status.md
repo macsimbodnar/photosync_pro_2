@@ -4,12 +4,12 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-31, by Claude (S049 done)
+Updated: 2026-10-31, by Claude (S036 done)
 
-- Last done: S049  notes leave the list its sentence and the row under the cursor; cancel shows the Cancelling sentence (DEC-064)
+- Last done: S036  plan the GUI: iced 0.14.0 confirmed by a spike, its own crate, steps S050 to S061 (DEC-065 to DEC-070)
 - In progress: none
-- Next: S036  plan the GUI: confirm iced, layout, steps
-- Waiting for the user: S025 (Linux), S017 (Mac hardware)
+- Next: S050  shared layer gets a library target, no behaviour change
+- Waiting for the user: a yes or no to iced_test as a dev-dependency (DEC-066 (1)): S051 and every GUI step after it wait for it, S050 does not. S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
   - Decisions the agents picked that the user has not confirmed yet:
@@ -17,10 +17,15 @@ Updated: 2026-10-31, by Claude (S049 done)
     DEC-030 to DEC-032, DEC-034, DEC-035 (1)-(3), DEC-036 to DEC-040,
     DEC-042, DEC-043, DEC-044, DEC-045, DEC-046, DEC-047, DEC-048, DEC-049,
     DEC-050, DEC-051, DEC-052, DEC-053, DEC-054, DEC-055, DEC-056, DEC-057,
-    DEC-058, DEC-059, DEC-060, DEC-061, DEC-062, DEC-063, DEC-064.
+    DEC-058, DEC-059, DEC-060, DEC-061, DEC-062, DEC-063, DEC-064, DEC-065,
+    DEC-066, DEC-067, DEC-068, DEC-069, DEC-070.
     Each says "not yet confirmed by the user" in decisions.md.
   - The GUI no longer waits for S025 (user, 2026-10-30: do all that needs no
     input or hardware). The audit re-runs after the GUI.
+  - Planned GUI: Cmd-Q and the Dock's Quit cannot be stopped without `objc2` as a new direct dependency,
+    so they end a copy like a kill, with no sentence (DEC-069 (6)). Left out, each for the user to ask for:
+    a folder picker (`rfd`), Copy report, more shortcuts, watching for mounts (DEC-068 (8)); Developer ID signing
+    and an icon (DEC-070). Spike's scratch not kept: its numbers are in those entries.
   - The camera's PTP mode (USB without card-reader mode) is unsupported
     (DEC-004). Revisit if card-reader mode proves unreliable.
   - The permission-based tests assume a non-root user: run as root (e.g.

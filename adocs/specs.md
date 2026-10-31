@@ -160,8 +160,26 @@ picks. It is simple to use.
     (DEC-062, DEC-064).
   - A closed stdout never stops a sync nor panics: the exit code stays
     within 0/1/2.
-  - GUI: a native Rust GUI, later. Adding it must need no change to the core
-    beyond new API, which keeps INV-8 true.
+  - GUI: a native Rust GUI in iced (DEC-065), not built yet (steps S051 on). It
+    must need no change to the core beyond new API, which keeps INV-8 true.
+    It is its own binary, `photosync-gui`, over the same model, worker and
+    sentences as the TUI (DEC-067, DEC-068), so it walks the same screens by the
+    same rules: the cards (several may be picked), the drive, the library folder,
+    the name, the check, then progress and the report, the next card in one
+    session, and the same refusals before and during it. It calls itself
+    "phoosync pro 2" (DEC-069). A GUI has no exit code to read: the report's result
+    in its box, green only if the session is complete, or the refusal's sentence,
+    says what the exit code says, in the same words, "do not format the card" included. The
+    process still returns the code, as the TUI does. A quit that would hide a
+    session not complete first shows why, from any screen that does not already
+    say it. Closing the window during a copy cancels it, and the window stays for
+    the report; closing it again then quits at once, which the screen says first,
+    with "do not format the card". The copying screen always says not to format
+    the card until the report says so, as Cmd-Q and the Dock's Quit cannot be stopped,
+    and end it like a kill (INV-7). It refuses to run as root: the sentence goes to
+    stderr and to a window that offers only Quit. Nothing it says is cut: every word
+    wraps, and what is too tall scrolls. Each screen is checked with no window, on
+    its words and on a picture read after it is drawn (DEC-066).
 
 ### Sources
 
@@ -382,5 +400,4 @@ picks. It is simple to use.
 - Naming a selection of photos, instead of the whole sync, is a possible
   future feature.
 - Capture date from EXIF instead of the file timestamp: maybe later.
-- Native GUI framework: iced is approved as a dependency and is the
-  tentative choice, to be confirmed when the GUI is planned (DEC-011).
+- `iced_test` as a dev-dependency of the GUI is asked of the user (DEC-066 (1)).
