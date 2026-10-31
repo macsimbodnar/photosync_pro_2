@@ -8,7 +8,7 @@ Updated: 2026-10-31, by Claude (S052 done)
 
 - Last done: S052  GUI: cards and drive screens (439 passed, 29 ignored; script 374)
 - In progress: none
-- Next: S053  GUI: library, name, check, refusals before a session
+- Next: S062  GUI harness checks fail when a thing is not seen; then the rest of plan.md's Open list
 - Waiting for the user: S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
