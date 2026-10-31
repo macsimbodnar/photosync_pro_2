@@ -17,18 +17,17 @@ not change the order.
 
 ## Open
 
-1. S064  harness tells fixed from scrolling (S062 fast check)
-2. S053  GUI: library, name, check, refusals before a session
-3. S054  GUI: copying: worker, progress per card and overall, ETA, cancel
-4. S055  GUI: report, refused, scrolling, next card in one session
-5. S056  GUI: closing, quitting, root, what the process returns
-6. S057  GUI: real syncs by its clicks on disk images, in the gate
-7. S058  GUI: Mac .app package (signing for other Macs needs the user, left out)
-8. S059  GUI: compile check for Linux from this Mac
-9. S060  GUI: hand checks on Mac (waits for the user and real hardware)
-10. S061  GUI: run on Linux, AppImage (waits for the user and a Linux machine)
-11. S025  first run on Linux: build, tests, hand checks (waits for the user)
-12. S017  hardware hand checks on Mac (waits for the user)
+1. S053  GUI: library, name, check, refusals before a session
+2. S054  GUI: copying: worker, progress per card and overall, ETA, cancel
+3. S055  GUI: report, refused, scrolling, next card in one session
+4. S056  GUI: closing, quitting, root, what the process returns
+5. S057  GUI: real syncs by its clicks on disk images, in the gate
+6. S058  GUI: Mac .app package (signing for other Macs needs the user, left out)
+7. S059  GUI: compile check for Linux from this Mac
+8. S060  GUI: hand checks on Mac (waits for the user and real hardware)
+9. S061  GUI: run on Linux, AppImage (waits for the user and a Linux machine)
+10. S025  first run on Linux: build, tests, hand checks (waits for the user)
+11. S017  hardware hand checks on Mac (waits for the user)
 
 Later, not yet steps: re-run the adversarial audit after the GUI, covering
 it too; the audit loop stops when a run reports no high and no medium.
@@ -37,8 +36,8 @@ it too; the audit loop stops when a run reports no high and no medium.
 
 Last five; the full record is `plan_done/`.
 
+- S064  harness tells fixed from scrolling
 - S063  drive screen marks what Next will take
 - S062  GUI harness checks fail when a thing is not seen
 - S052  GUI: cards and drive screens
 - S051  GUI crate, window, test harness, cards list
-- S050  shared layer gets a library target, no behaviour change

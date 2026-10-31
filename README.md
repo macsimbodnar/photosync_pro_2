@@ -272,9 +272,12 @@ then repeat the sync. Write down each command's output and exit code.
 screen's test uses: `screen_check` finds its words in sight at 800x600 and 640x480, checks
 that the body keeps room for two rows, and writes `target/gui_screens/<step>_<screen>.png`
 and `<step>_<screen>_least.png` to read; `screen_check_scrolling` adds texts that must be in
-the body, in sight or not; `in_sight` is that check for what may never scroll; `click` fails
+the body, in sight or not; `in_sight` is that check when the screen opens, and passes a text
+of the body; `fixed_in_sight` is the check for what may never scroll, a warning or a button: in
+sight and in no scrollable; `fixed_box_in_sight` holds a box's words, in that box, itself in the
+fixed part; `click` fails
 on a click that sends nothing, and `clicks` proves a button held; `play` runs the real program, tasks and
-threads included, and a script ends by asserting on its state, as a click there shows no messages; `play_steps` adds a line that must fail and scrolling to the end. One test opens a real window, so it is ignored and never in the gate. By hand,
+threads included, and a script ends by asserting on its state, as a click there shows no messages; `play_steps` adds a click that must fail, on words that are on the screen and out of sight, and scrolling to the end. One test opens a real window, so it is ignored and never in the gate. By hand,
 with the mouse off the window, as a hovered button changes the picture:
 
 ```sh

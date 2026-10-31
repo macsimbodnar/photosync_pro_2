@@ -4,11 +4,11 @@ Convenience view, rewritten by hand at the end of any turn that changed plan
 state. The filesystem beats this file: on disagreement, `plan_current/` wins
 and this file is rewritten to match it.
 
-Updated: 2026-10-31, by Claude (S063 done)
+Updated: 2026-10-31, by Claude (S064 done)
 
-- Last done: S063  drive screen marks what Next will take (476 passed, 29 ignored; script 379)
+- Last done: S064  harness tells fixed from scrolling (495 passed, 29 ignored; script 379)
 - In progress: none
-- Next: S064  harness tells fixed from scrolling; then the rest of plan.md's Open list
+- Next: S053  GUI: library, name, check, refusals before a session; then the rest of plan.md's Open list
 - Waiting for the user: S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
@@ -19,7 +19,7 @@ Updated: 2026-10-31, by Claude (S063 done)
     DEC-050, DEC-051, DEC-052, DEC-053, DEC-054, DEC-055, DEC-056, DEC-057,
     DEC-058, DEC-059, DEC-060, DEC-061, DEC-062, DEC-063, DEC-064, DEC-065,
     DEC-066 (all but (1), the user's yes to iced_test), DEC-067, DEC-068, DEC-069, DEC-070,
-    DEC-071, DEC-072, DEC-073, DEC-074, DEC-075, DEC-076, DEC-077.
+    DEC-071, DEC-072, DEC-073, DEC-074, DEC-075, DEC-076, DEC-077, DEC-078.
     Each says "not yet confirmed by the user" in decisions.md.
   - The banner on the GUI's cards and drive screens gives the shared refusal's CLI words, "`photosync drives` lists them", "run the sync again" (S062, read in the picture). For S053, or for the user to take or leave.
   - The GUI no longer waits for S025 (user, 2026-10-30: do all that needs no

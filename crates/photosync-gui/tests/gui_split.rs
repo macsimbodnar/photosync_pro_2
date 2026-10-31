@@ -26,21 +26,46 @@ const OWN_WORDS: &[&str] = &[
     "tooltip",
     "markdown",
 ];
-/// What a string literal may not be the first thing in.
+/// Macros and calls that turn a `&str` into an element, by `From<&str> for Element`: what a
+/// string literal may not be an item of. A macro has a `!`. Every macro and function of
+/// iced_widget's `helpers.rs` that takes an element, and the `new` of the widgets with one.
 const NO_LITERAL_IN: &[&str] = &[
-    "button(",
-    "container(",
-    "center(",
-    "scrollable(",
-    "mouse_area(",
-    "column![",
-    "row![",
-    ".push(",
-    "Button::new(",
-    "Container::new(",
-    "Scrollable::new(",
-    "Element::from(",
+    "column!",
+    "row!",
+    "stack!",
+    "grid!",
+    "keyed_column!",
+    "button",
+    "container",
+    "center",
+    "center_x",
+    "center_y",
+    "right",
+    "right_center",
+    "bottom",
+    "bottom_center",
+    "bottom_right",
+    "pin",
+    "opaque",
+    "hover",
+    "sensor",
+    "themer",
+    "float",
+    "scrollable",
+    "mouse_area",
+    ".push",
+    "Button::new",
+    "Container::new",
+    "Scrollable::new",
+    "MouseArea::new",
+    "Pin::new",
+    "Float::new",
+    "Sensor::new",
+    "Themer::new",
+    "Element::from",
 ];
+/// Macros whose result is a `&str` made at compile time: a literal under another name.
+const LITERAL_MACROS: &[&str] = &["concat!", "stringify!", "include_str!", "env!"];
 
 fn gui_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
@@ -92,7 +117,8 @@ fn all_gui_files() -> Vec<PathBuf> {
 }
 
 /// `source` with its `//` comments gone: the files' docs name what they must not use.
-/// A `//` inside a string cuts too early, which can only hide code after it on that line.
+/// A `//` inside a string cuts too early, which can hide the rest of that line, and with
+/// the string left open, the rest of a macro from `literal_items`. None is in the GUI yet.
 fn code(source: &str) -> String {
     source
         .lines()
@@ -161,6 +187,104 @@ fn reaches_word_widgets(source: &str) -> Vec<String> {
     found
 }
 
+/// How long the string or char literal at the start of `rest` is, if one starts there.
+fn literal_len(rest: &str) -> Option<usize> {
+    if let Some(after) = rest.strip_prefix('"') {
+        let mut escaped = false;
+        for (at, c) in after.char_indices() {
+            match c {
+                '"' if !escaped => return Some(1 + at + 1),
+                '\\' => escaped = !escaped,
+                _ => escaped = false,
+            }
+        }
+        return Some(rest.len());
+    }
+    if let Some(after) = rest.strip_prefix('r') {
+        let hashes = after.len() - after.trim_start_matches('#').len();
+        if after[hashes..].starts_with('"') {
+            let close = format!("\"{}", "#".repeat(hashes));
+            let inside = hashes + 1;
+            return Some(match after[inside..].find(&close) {
+                Some(at) => 1 + inside + at + close.len(),
+                None => rest.len(),
+            });
+        }
+        return None;
+    }
+    let after = rest.strip_prefix('\'')?;
+    // A lifetime has no closing quote just after its one letter.
+    let inside = after.chars().next()?;
+    if inside == '\\' {
+        // Past the escaped one, which can be a quote.
+        return after.get(2..)?.find('\'').map(|at| 1 + 2 + at + 1);
+    }
+    let width = inside.len_utf8();
+    after[width..].starts_with('\'').then_some(1 + width + 1)
+}
+
+/// The items of a macro or call, with `source` starting just past its opening bracket: cut
+/// at its own commas, not those in a literal or a nested bracket.
+fn items(source: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let (mut at, mut start, mut depth) = (0, 0, 0);
+    while at < source.len() {
+        let rest = &source[at..];
+        if let Some(len) = literal_len(rest) {
+            at += len;
+            continue;
+        }
+        let c = rest.chars().next().unwrap();
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' if depth == 0 => break,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                found.push(&source[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+        at += c.len_utf8();
+    }
+    found.push(&source[start..at]);
+    found
+}
+
+/// An item that is a string literal, in brackets or a tuple or not.
+fn is_literal(item: &str) -> bool {
+    let item = item.trim_start();
+    if let Some(inside) = item.strip_prefix('(') {
+        return items(inside).iter().any(|inner| is_literal(inner));
+    }
+    let raw = item
+        .strip_prefix('r')
+        .is_some_and(|after| after.trim_start_matches('#').starts_with('"'));
+    raw || item.starts_with('"') || LITERAL_MACROS.iter().any(|name| item.starts_with(name))
+}
+
+/// Each macro or call of `NO_LITERAL_IN` with a literal for an item.
+fn literal_items(source: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for opening in NO_LITERAL_IN {
+        let brackets: &[char] = if opening.ends_with('!') {
+            &['(', '[', '{']
+        } else {
+            &['(']
+        };
+        for at in places(source, opening) {
+            let after = source[at + opening.len()..].trim_start();
+            let Some(inside) = after.strip_prefix(brackets) else {
+                continue;
+            };
+            if items(inside).iter().any(|item| is_literal(item)) {
+                found.push(format!("{opening} with a literal"));
+            }
+        }
+    }
+    found
+}
+
 /// The forms that draw words past the helper (DEC-072 (4)).
 fn draws_past_the_helper(source: &str) -> Vec<String> {
     let mut found = Vec::new();
@@ -183,13 +307,7 @@ fn draws_past_the_helper(source: &str) -> Vec<String> {
             found.push((*widget).to_string());
         }
     }
-    for opening in NO_LITERAL_IN {
-        for at in places(source, opening) {
-            if source[at + opening.len()..].trim_start().starts_with('"') {
-                found.push(format!("{opening}\""));
-            }
-        }
-    }
+    found.extend(literal_items(source));
     found
 }
 
@@ -363,12 +481,71 @@ fn the_form_matcher_catches_each_kind() {
         "Element::from(\n    \"x\",\n)",
         "Container::new(\"x\")",
         "Scrollable::new(\"x\")",
+        // Any item of a macro, in any of its brackets, over any lines (S064).
+        "column![a, \"x\"]",
+        "column![a, b, \"x\",]",
+        "row![a, \"x\"]",
+        "row![\n    a,\n    \"x\",\n]",
+        "column!(\"x\")",
+        "column!{\"x\"}",
+        "row!(a, \"x\")",
+        "column![words(\"a, b\"), \"x\"]",
+        "column![words(\"a]\"), \"x\"]",
+        "column![words(x.replace('\"', \"\")), \"x\"]",
+        "column![r\"x\"]",
+        "column![a, r#\"x\"#]",
+        "column![a, (\"x\")]",
+        "column![a, concat!(\"x\", \"y\")]",
+        "column![a, stringify!(x)]",
+        "column![a, include_str!(\"x\")]",
+        "stack![\"x\"]",
+        "stack![a, \"x\"]",
+        "grid![\"x\"]",
+        "grid![a, \"x\"]",
+        "keyed_column![(0, a), (1, \"x\")]",
+        // The widgets of iced's helpers that take an element.
+        "center_x(\"x\")",
+        "center_y(\"x\")",
+        "right(\"x\")",
+        "right_center(\"x\")",
+        "bottom(\"x\")",
+        "bottom_center(\"x\")",
+        "bottom_right(\"x\")",
+        "pin(\"x\")",
+        "opaque(\"x\")",
+        "hover(\"x\", a)",
+        "hover(a, \"x\")",
+        "sensor(\"x\")",
+        "themer(None, \"x\")",
+        "float(\"x\")",
+        "iced::widget::pin(\"x\")",
+        "container (\"x\")",
+        "a.push(1, \"x\")",
+        "column![x.replace('\\'', \"\"), \"x\"]",
+        "column![x.replace('\\\"', \"\"), \"x\"]",
+        "column![Foo::<'a>::new(), \"x\"]",
+        "MouseArea::new(\"x\")",
+        "Pin::new(\"x\")",
+        "Float::new(\"x\")",
+        "Sensor::new(\"x\")",
+        "Themer::new(None, \"x\")",
     ] {
         assert!(!draws_past_the_helper(line).is_empty(), "{line}");
     }
     for line in [
         "column![words(x)]",
         "a.push(words(\"x\"))",
+        "column![words(x), words(\"a, b\")]",
+        "row![action(\"a, \\\"b\\\"\", None), x]",
+        "column![x.replace('\"', \"\"), y]",
+        "stack![a, b]",
+        "grid![a, words(\"x\")]",
+        "right(words(\"x\"))",
+        "hover(a, words(\"x\"))",
+        "a.right(5)",
+        "a.center_x(Length::Fill)",
+        "bottom_line(\"x\")",
+        "my_column![\"x\"]",
         "action(\"Next\", None)",
         "text_input(\"Name\", &n)",
         "my_value(x)",

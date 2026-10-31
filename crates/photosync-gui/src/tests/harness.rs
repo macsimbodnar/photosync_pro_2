@@ -1,7 +1,9 @@
 //! How a GUI test sees a screen with no window (DEC-066). Later steps use these:
-//! `screen_check` for a screen's words and pictures, `in_sight` for what may never scroll,
-//! `click` for a button that must answer and `clicks` to prove one held, `play` for the
-//! real program, tasks and threads included, and `blocked_discovery` to hold a look.
+//! `screen_check` for a screen's words and pictures, `fixed_in_sight` for what may never
+//! scroll, `fixed_box_in_sight` for a box of words that stands with it, `in_sight` for what
+//! shows when the screen opens, `click` for a button that must answer and `clicks` to prove
+//! one held, `play` for the real program, tasks and threads included, and
+//! `blocked_discovery` to hold a look.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,6 +17,7 @@ use iced_test::core::Settings;
 use iced_test::core::widget::Id;
 use iced_test::emulator::{Emulator, Event, Mode};
 use iced_test::futures::futures::channel::mpsc::{self as emulator_channel, TryRecvError};
+use iced_test::instruction::{Expectation, Interaction, Mouse, Target as ClickAt};
 use iced_test::selector::{self, Candidate, Target};
 use iced_test::{Instruction, Simulator};
 use photosync_core::{ScanError, Volumes};
@@ -132,8 +135,9 @@ pub(crate) fn says(gui: &Gui, sentence: &str) -> bool {
     screen(gui, WINDOW).find(sentence).is_ok()
 }
 
-/// Each sentence is in sight at `size`, with no scrolling: this is the check for a warning,
-/// a button, or anything else of the fixed part (DEC-071 (1)).
+/// Each sentence shows at `size` when the screen opens, its scrollables at their tops. It
+/// passes a text of the body, so it says nothing of what is left when the body has moved:
+/// a warning or a button takes `fixed_in_sight`.
 pub(crate) fn in_sight(gui: &Gui, size: Size, sentences: &[&str]) {
     if let Err(e) = see_in_sight(&mut screen(gui, size), size, sentences) {
         panic!("{e}");
@@ -154,6 +158,168 @@ fn body_has_room(ui: &mut Simulator<'_, M>, size: Size) -> Result<(), String> {
             "the body keeps {} at {size:?}: the fixed part is too tall, and may be cut",
             bounds.height
         ));
+    }
+    Ok(())
+}
+
+/// Each sentence is in sight at `size` and in no scrollable, so no scrolling can take it
+/// away (DEC-071 (1), DEC-078): a warning, a button, anything of the fixed part.
+pub(crate) fn fixed_in_sight(gui: &Gui, size: Size, sentences: &[&str]) {
+    if let Err(e) = see_fixed_in_sight(&mut screen(gui, size), size, sentences) {
+        panic!("{e}");
+    }
+}
+
+/// Each sentence shows in the scrollable of `id`, at its top, and that box is in the fixed
+/// part (DEC-071 (2), (3)). So the box's words can scroll, inside it, and no further.
+pub(crate) fn fixed_box_in_sight(gui: &Gui, size: Size, id: &'static str, sentences: &[&str]) {
+    if let Err(e) = see_fixed_box(&mut screen(gui, size), size, id, sentences) {
+        panic!("{e}");
+    }
+}
+
+/// One place the walk found what it was looking for.
+struct Place {
+    bounds: Rectangle,
+    seen: Option<Rectangle>,
+    /// The id and view of each scrollable the walk had met by then.
+    views: Vec<(Option<Id>, Option<Rectangle>)>,
+}
+
+impl Place {
+    /// The walk tells no parents, and each scrollable it meets comes before what is in
+    /// it. A thing in a scrollable shows inside its view, or not at all. A thing outside
+    /// shows its whole bounds, as the walk's first viewport is infinite, and so runs past
+    /// the view of one over it or beside it, however far that one's content goes. So only
+    /// a thing drawn on top of a scrollable can be taken for one in it.
+    fn held_by(&self, view: Option<Rectangle>) -> bool {
+        match (view, self.seen) {
+            (Some(view), Some(seen)) => {
+                seen.x >= view.x - ROUND
+                    && seen.y >= view.y - ROUND
+                    && seen.x + seen.width <= view.x + view.width + ROUND
+                    && seen.y + seen.height <= view.y + view.height + ROUND
+            }
+            _ => false,
+        }
+    }
+
+    fn in_any_scrollable(&self) -> bool {
+        self.views.iter().any(|(_, view)| self.held_by(*view))
+    }
+
+    /// In the scrollable of `id`, in sight or not. A thing with no height has no room
+    /// anywhere, and is in none.
+    fn in_scrollable(&self, id: &Id) -> bool {
+        self.views.iter().any(|(found, view)| {
+            found.as_ref() == Some(id)
+                && (self.held_by(*view) || (self.seen.is_none() && self.bounds.height > 0.0))
+        })
+    }
+
+    /// A scrollable can cut it, and must leave a line.
+    fn shows_a_line(&self) -> bool {
+        self.seen
+            .is_some_and(|seen| seen.height >= ONE_LINE.min(self.bounds.height - ROUND))
+    }
+}
+
+/// Every place `wanted` holds, in a walk of the whole tree.
+fn places_of(
+    ui: &mut Simulator<'_, M>,
+    wanted: impl Fn(&Candidate<'_>) -> bool + Sync,
+) -> Vec<Place> {
+    let mut places = Vec::new();
+    let mut views = Vec::new();
+    // Selects nothing, so the walk goes over the whole tree.
+    let _ = ui.find(|candidate: Candidate<'_>| {
+        if wanted(&candidate) {
+            places.push(Place {
+                bounds: candidate.bounds(),
+                seen: candidate.visible_bounds(),
+                views: views.clone(),
+            });
+        }
+        if let Candidate::Scrollable {
+            id, visible_bounds, ..
+        } = candidate
+        {
+            views.push((id.cloned(), visible_bounds));
+        }
+        None::<()>
+    });
+    places
+}
+
+/// Where the words stand, as `find` sees words: a text's, or a field's.
+fn places_of_words(ui: &mut Simulator<'_, M>, sentence: &str) -> Vec<Place> {
+    places_of(ui, |candidate| match candidate {
+        Candidate::Text { content, .. } => *content == sentence,
+        Candidate::TextInput { state, .. } => state.text() == sentence,
+        _ => false,
+    })
+}
+
+/// `fixed_in_sight`, on any element. A card can be named as a button is, so one place in
+/// the fixed part is enough.
+pub(crate) fn see_fixed_in_sight(
+    ui: &mut Simulator<'_, M>,
+    size: Size,
+    sentences: &[&str],
+) -> Result<(), String> {
+    body_has_room(ui, size)?;
+    for sentence in sentences {
+        let places = places_of_words(ui, sentence);
+        if places.is_empty() {
+            return Err(format!("{sentence:?} is not on the screen at {size:?}"));
+        }
+        if places
+            .iter()
+            .any(|place| place.shows_a_line() && !place.in_any_scrollable())
+        {
+            continue;
+        }
+        if places.iter().any(|place| place.seen.is_some()) {
+            return Err(format!(
+                "{sentence:?} is in a scrollable at {size:?}: it can scroll away"
+            ));
+        }
+        return Err(format!("{sentence:?} is out of sight at {size:?}"));
+    }
+    Ok(())
+}
+
+/// `fixed_box_in_sight`, on any element.
+pub(crate) fn see_fixed_box(
+    ui: &mut Simulator<'_, M>,
+    size: Size,
+    id: &'static str,
+    sentences: &[&str],
+) -> Result<(), String> {
+    body_has_room(ui, size)?;
+    let wanted = Id::new(id);
+    let boxes = places_of(ui, |candidate| {
+        matches!(candidate, Candidate::Scrollable { .. }) && candidate.id() == Some(&wanted)
+    });
+    let Some(the_box) = boxes.first() else {
+        return Err(format!("no box {id:?} at {size:?}"));
+    };
+    if the_box.in_any_scrollable() || the_box.seen.is_none() {
+        return Err(format!(
+            "the box {id:?} is in a scrollable or out of sight at {size:?}"
+        ));
+    }
+    for sentence in sentences {
+        let places = places_of_words(ui, sentence);
+        let mut inside = places.iter().filter(|place| place.in_scrollable(&wanted));
+        let Some(first) = inside.next() else {
+            return Err(format!("{sentence:?} is not in the box {id:?} at {size:?}"));
+        };
+        if !first.shows_a_line() && !inside.any(Place::shows_a_line) {
+            return Err(format!(
+                "{sentence:?} is out of sight in the box {id:?} at {size:?}"
+            ));
+        }
     }
     Ok(())
 }
@@ -187,33 +353,8 @@ fn see_in_body(ui: &mut Simulator<'_, M>, size: Size, sentences: &[&str]) -> Res
     body_has_room(ui, size)?;
     let body = Id::new(BODY);
     for sentence in sentences {
-        let mut view: Option<Option<Rectangle>> = None;
-        let mut inside = false;
-        let _ = ui.find(|candidate: Candidate<'_>| {
-            match candidate {
-                Candidate::Scrollable {
-                    id, visible_bounds, ..
-                } if id == Some(&body) => view = Some(visible_bounds),
-                Candidate::Text {
-                    content,
-                    bounds,
-                    visible_bounds,
-                    ..
-                } if content == *sentence => {
-                    inside |= match (view, visible_bounds) {
-                        (None, _) => false,
-                        (Some(_), None) => bounds.height > 0.0,
-                        (Some(view), Some(seen)) => view.is_some_and(|view| {
-                            seen.y >= view.y - ROUND
-                                && seen.y + seen.height <= view.y + view.height + ROUND
-                        }),
-                    };
-                }
-                _ => {}
-            }
-            None::<()>
-        });
-        if !inside {
+        let places = places_of_words(ui, sentence);
+        if !places.iter().any(|place| place.in_scrollable(&body)) {
             return Err(format!("{sentence:?} is not in the body at {size:?}"));
         }
     }
@@ -290,11 +431,23 @@ pub(crate) fn all_words(gui: &Gui, size: Size) -> Vec<String> {
     seen
 }
 
+/// The words a line clicks on. Only a click on words can fail for being out of sight.
+fn clicked_words(line: &str) -> String {
+    match Instruction::parse(line).unwrap() {
+        Instruction::Interact(Interaction::Mouse(Mouse::Click {
+            target: Some(ClickAt::Text(words)),
+            ..
+        })) => words,
+        _ => panic!("Step::Fails takes a click on words: {line}"),
+    }
+}
+
 /// One thing `play_steps` does.
 pub(crate) enum Step {
     /// An Emulator line that must pass.
     Line(&'static str),
-    /// One that must fail: a click on words out of sight.
+    /// A click on words that are on the screen and out of sight. A click fails on words
+    /// that are gone too, so `expect` runs first, or a script would pass on those.
     Fails(&'static str),
     /// The body to its end.
     ScrollEnd,
@@ -310,7 +463,7 @@ pub(crate) fn play(discover: Discover, lines: &[&'static str]) -> Gui {
     play_steps(discover, steps)
 }
 
-/// `play`, with lines that must fail and scrolling. `emu.update` runs its task unwaited
+/// `play`, with clicks that must fail and scrolling. `emu.update` runs its task unwaited
 /// when nothing is pending, so a scroll goes on when its one action has been performed.
 pub(crate) fn play_steps(discover: Discover, steps: Vec<Step>) -> Gui {
     let program = gui::program(discover, None);
@@ -319,18 +472,26 @@ pub(crate) fn play_steps(discover: Discover, steps: Vec<Step>) -> Gui {
     let mut steps = steps.into_iter();
     let started = Instant::now();
     let (mut go_on, mut must_fail, mut scrolling) = (false, false, false);
+    // The click of a `Step::Fails` whose `expect` is running.
+    let mut click_next = None;
     loop {
         if go_on {
             go_on = false;
             must_fail = false;
+            if let Some(line) = click_next.take() {
+                must_fail = true;
+                emulator.run(&program, Instruction::parse(line).unwrap());
+                continue;
+            }
             match steps.next() {
                 None => return emulator.into_state().0,
                 Some(Step::Line(line)) => {
                     emulator.run(&program, Instruction::parse(line).unwrap());
                 }
                 Some(Step::Fails(line)) => {
-                    must_fail = true;
-                    emulator.run(&program, Instruction::parse(line).unwrap());
+                    let words = clicked_words(line);
+                    click_next = Some(line);
+                    emulator.run(&program, Instruction::Expect(Expectation::Text(words)));
                 }
                 Some(Step::ScrollEnd) => {
                     scrolling = true;

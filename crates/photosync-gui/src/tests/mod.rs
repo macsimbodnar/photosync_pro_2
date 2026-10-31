@@ -13,7 +13,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use iced::widget::{Space, button, column, scrollable};
+use iced::widget::{Space, button, column, row, scrollable, text_input};
 use iced::{Color, Element, Length, Size, Theme, window};
 use iced_test::Simulator;
 use iced_test::core::Settings;
@@ -42,6 +42,8 @@ const DRIVE_B: &str = "/Volumes/DRIVE_B";
 const NO_DRIVE: &str = "No drive to sync to found. Plug in your external drive.";
 const CARDS_HEADING: &str = "1/5  Pick the cards to copy from";
 const DRIVE_HEADING: &str = "2/5  Pick the drive to copy to";
+const CARDS_BUTTONS: [&str; 3] = ["Next", "Look again", "Quit"];
+const DRIVE_BUTTONS: [&str; 4] = ["Next", "Back", "Look again", "Quit"];
 
 fn two_cards() -> Gui {
     booted(literal(&[CARD_A, CARD_B], &[]))
@@ -73,6 +75,7 @@ fn before_the_first_answer_it_says_looking_and_next_sends_nothing() {
 
     assert!(gui.looking());
     in_sight(&gui, LEAST, &[LOOKING, "Next", "Look again", "Quit"]);
+    fixed_in_sight(&gui, LEAST, &CARDS_BUTTONS);
     assert!(!says(&gui, NO_CARD), "nothing has said there is no card");
     assert!(clicks(&gui, "Next").is_empty(), "Next is held");
     let _ = update(&mut gui, M::Looked);
@@ -190,6 +193,8 @@ fn the_cards_screen_shows_its_rows_notes_and_buttons() {
     ];
     screen_check(&gui, "S051", "cards", &words);
     in_sight(&gui, LEAST, &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE]);
+    fixed_in_sight(&gui, LEAST, &CARDS_BUTTONS);
 }
 
 #[test]
@@ -198,6 +203,8 @@ fn an_empty_list_says_so_and_next_stays() {
     let words = [TITLE, NO_CARD, "Next", "Look again", "Quit"];
     screen_check(&gui, "S051", "cards_empty", &words);
     in_sight(&gui, LEAST, &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE]);
+    fixed_in_sight(&gui, LEAST, &CARDS_BUTTONS);
     assert_eq!(gui.app.empty_list_note(), NO_CARD);
     click(&mut gui, "Next");
     assert_eq!(gui.app.screen(), Screen::Sources);
@@ -231,7 +238,8 @@ fn next_takes_the_ticked_cards_to_the_drive_screen() {
     click(&mut gui, "Next");
     assert_eq!(gui.app.screen(), Screen::Drive);
     assert_eq!(picked(&gui), [CARD_B]);
-    in_sight(&gui, LEAST, &[TITLE]);
+    fixed_in_sight(&gui, LEAST, &[TITLE, DRIVE_HEADING]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
 }
 
 #[test]
@@ -346,6 +354,8 @@ fn two_picked_cards_show_ticked_with_their_buttons() {
     ];
     screen_check(&gui, "S052", "cards_two_picked", &words);
     in_sight(&gui, LEAST, &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE]);
+    fixed_in_sight(&gui, LEAST, &CARDS_BUTTONS);
 }
 
 #[test]
@@ -355,6 +365,8 @@ fn next_with_no_card_says_why_and_the_hint_names_a_button() {
     assert_eq!(gui.app.screen(), Screen::Sources);
     let hint = format!("{NO_CARD} Then click Look again.");
     in_sight(&gui, LEAST, &[NO_CARD, &hint, "Next", "Look again", "Quit"]);
+    fixed_in_sight(&gui, LEAST, &[&hint]);
+    fixed_in_sight(&gui, LEAST, &CARDS_BUTTONS);
     click(&mut gui, "Look again");
     settle(&mut gui);
     assert!(
@@ -391,6 +403,8 @@ fn the_looking_state_holds_on_the_cards_picture() {
     let words = [TITLE, CARDS_HEADING, LOOKING, "Next", "Look again", "Quit"];
     screen_check(&gui, "S052", "cards_looking", &words);
     in_sight(&gui, LEAST, &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE, CARDS_HEADING]);
+    fixed_in_sight(&gui, LEAST, &CARDS_BUTTONS);
 }
 
 #[test]
@@ -413,6 +427,8 @@ fn the_looking_state_holds_on_the_drive_screen() {
         LEAST,
         &[DRIVE_HEADING, LOOKING, "Next", "Back", "Look again", "Quit"],
     );
+    fixed_in_sight(&gui, LEAST, &[DRIVE_HEADING]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
     assert!(!says(&gui, DRIVE_A), "a row of the older look");
     assert!(
         !says(&gui, "warning: cannot scan note: test"),
@@ -497,6 +513,8 @@ fn the_drive_screen_shows_its_rows_and_buttons_and_marks_the_chosen_drive() {
     ];
     screen_check(&gui, "S052", "drive", &words);
     in_sight(&gui, LEAST, &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE, DRIVE_HEADING]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
 
     click(&mut gui, "Next");
     assert_eq!(gui.app.screen(), Screen::Library);
@@ -591,6 +609,8 @@ fn choose_a_go_back_click_b_and_the_one_mark_moves_at_once_and_next_takes_b() {
         "Quit",
     ];
     screen_check(&gui, "S063", "drive_marked", &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE, DRIVE_HEADING]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
 
     click(&mut gui, "Next");
     assert_eq!(gui.app.screen(), Screen::Library);
@@ -687,6 +707,8 @@ fn a_chosen_drive_gone_has_no_mark_and_next_is_held_with_a_hint() {
         "Quit",
     ];
     screen_check(&gui, "S063", "drive_gone", &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE, DRIVE_HEADING, DRIVE_GONE]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
 
     // Plugged in again it is a row like any other, to be clicked: the hint no longer says gone.
     look_gives(&mut gui, &looks, &[DRIVE_A, DRIVE_B]);
@@ -758,6 +780,8 @@ fn every_drive_gone_has_the_empty_lists_words_and_next_stays() {
         "Quit",
     ];
     screen_check(&gui, "S063", "drive_all_gone", &words);
+    fixed_in_sight(&gui, LEAST, &[&hint]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
     look_gives(&mut gui, &looks, &[DRIVE_B]);
     assert_eq!(mark_of(&gui), None, "not the one that went");
     assert!(says(&gui, DRIVE_GONE));
@@ -786,6 +810,8 @@ fn a_look_holds_the_mark_and_next_until_it_answers() {
         "Quit",
     ];
     screen_check(&gui, "S063", "drive_looking", &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE, DRIVE_HEADING]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
     out.send(volumes(&[CARD_A], &[DRIVE_A, DRIVE_B], &[]))
         .unwrap();
     settle(&mut gui);
@@ -817,6 +843,8 @@ fn a_double_click_on_the_cards_next_takes_no_drive_unseen() {
         "Quit",
     ];
     screen_check(&gui, "S063", "drive_first_visit", &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE, DRIVE_HEADING, PICK_A_DRIVE]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
 
     click(&mut gui, DRIVE_B);
     assert_eq!(clicks(&gui, "Next").len(), 1);
@@ -838,6 +866,8 @@ fn the_only_drive_is_marked_and_next_takes_it() {
         "Quit",
     ];
     screen_check(&gui, "S063", "drive_one", &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE, DRIVE_HEADING]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
     click(&mut gui, "Next");
     assert_eq!(gui.app.drive().unwrap().to_str(), Some(DRIVE_A));
 }
@@ -897,6 +927,9 @@ fn the_gone_hint_and_a_long_banner_leave_the_rows_and_next_at_the_least_size() {
         "Back",
     ];
     screen_check(&gui, "S063", "drive_gone_banner", &words);
+    fixed_in_sight(&gui, LEAST, &[NOT_SAFE, DRIVE_GONE]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
 }
 
 #[test]
@@ -917,6 +950,7 @@ fn next_with_no_drive_says_why_and_stays() {
     ];
     screen_check(&gui, "S052", "drive_empty", &words);
     in_sight(&gui, LEAST, &words);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
 }
 
 #[test]
@@ -997,6 +1031,8 @@ fn long_paths_and_a_wide_label_show_whole() {
     let words = [TITLE, long_card.as_str(), wide, "Next"];
     screen_check(&gui, "S052", "cards_long_paths", &words);
     in_sight(&gui, LEAST, &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE]);
+    fixed_in_sight(&gui, LEAST, &CARDS_BUTTONS);
     let mut ui = screen(&gui, LEAST);
     let found = ui.find(long_card.as_str()).unwrap();
     assert!(found.bounds().height > 30.0, "it wrapped: {found:?}");
@@ -1008,6 +1044,8 @@ fn long_paths_and_a_wide_label_show_whole() {
     let words = [TITLE, long_drive.as_str(), wide, "Next"];
     screen_check(&gui, "S052", "drive_long_paths", &words);
     in_sight(&gui, LEAST, &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
     let mut ui = screen(&gui, LEAST);
     let found = ui.find(long_drive.as_str()).unwrap();
     assert!(found.bounds().height > 30.0, "it wrapped: {found:?}");
@@ -1016,6 +1054,8 @@ fn long_paths_and_a_wide_label_show_whole() {
     click(&mut gui, long_drive.as_str());
     let words = [TITLE, long_drive.as_str(), wide, "Next"];
     screen_check(&gui, "S063", "drive_long_path_marked", &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
 }
 
 fn hundred_notes() -> Vec<String> {
@@ -1045,10 +1085,13 @@ fn many_notes_scroll_and_leave_the_rows_in_sight() {
     ];
     screen_check_scrolling(&gui, "S052", "cards_notes", &words, &[last]);
     in_sight(&gui, LEAST, &words);
+    fixed_in_sight(&gui, LEAST, &CARDS_BUTTONS);
     assert!(says(&gui, last), "found, though out of sight");
 
     click(&mut gui, "Next");
     in_sight(&gui, LEAST, &[DRIVE_HEADING, DRIVE_A, "Next", "Back"]);
+    fixed_in_sight(&gui, LEAST, &[DRIVE_HEADING]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
     assert!(says(&gui, last));
 }
 
@@ -1056,6 +1099,7 @@ fn many_notes_scroll_and_leave_the_rows_in_sight() {
 fn many_notes_leave_an_empty_lists_sentence_in_sight() {
     let gui = booted(with_notes(&[], &[]));
     in_sight(&gui, LEAST, &[NO_CARD, "Next"]);
+    fixed_in_sight(&gui, LEAST, &CARDS_BUTTONS);
 }
 
 #[test]
@@ -1253,12 +1297,18 @@ fn the_banner_stays_in_sight_on_both_screens_after_a_refusal() {
     let message = gui.app.exit().message.unwrap();
     let drive = dir.0.join("DRIVE").display().to_string();
     in_sight(&gui, LEAST, &[NOT_SAFE, &message, &drive, "Next", "Back"]);
+    fixed_in_sight(&gui, LEAST, &[NOT_SAFE]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
 
     let _ = key(&mut gui, Key::Esc);
     assert_eq!(gui.app.screen(), Screen::Sources);
     let card = dir.0.join("CARD").display().to_string();
     let words = [NOT_SAFE, message.as_str(), card.as_str(), "Next"];
     in_sight(&gui, LEAST, &words);
+    fixed_in_sight(&gui, LEAST, &[NOT_SAFE]);
+    fixed_in_sight(&gui, LEAST, &CARDS_BUTTONS);
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
     screen_check(&gui, "S052", "cards_banner", &words);
 }
 
@@ -1285,6 +1335,9 @@ fn a_long_library_in_the_refusal_leaves_the_drive_screens_buttons() {
     assert_eq!(gui.app.screen(), Screen::Drive);
     let message = gui.app.exit().message.unwrap();
     in_sight(&gui, LEAST, &[NOT_SAFE, &message, &drive, "Next", "Back"]);
+    fixed_in_sight(&gui, LEAST, &[NOT_SAFE]);
+    fixed_in_sight(&gui, LEAST, &DRIVE_BUTTONS);
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
 
     let mut ui = screen(&gui, LEAST);
     let (_, height, content) = scroll_of(&mut ui, BANNER);
@@ -1349,6 +1402,9 @@ fn forty_named_syncs_leave_the_rows_and_next_in_sight_and_the_wheel_reaches_the_
     ];
     in_sight(&gui, LEAST, &words);
     screen_check(&gui, "S052", "cards_banner_long", &words);
+    fixed_in_sight(&gui, LEAST, &[TITLE, heading, NOT_SAFE]);
+    fixed_in_sight(&gui, LEAST, &CARDS_BUTTONS);
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
     assert!(!says(&gui, "Back"), "no back on the cards in a session");
 
     let mut ui = screen(&gui, LEAST);
@@ -1380,6 +1436,7 @@ fn forty_named_syncs_leave_the_rows_and_next_in_sight_and_the_wheel_reaches_the_
             "{sentence}"
         );
     }
+    see_fixed_in_sight(&mut ui, LEAST, &[NOT_SAFE, "Next"]).unwrap();
 }
 
 #[test]
@@ -1398,6 +1455,8 @@ fn the_banner_and_a_hint_together_leave_the_empty_sentence_and_next() {
         LEAST,
         &[NOT_SAFE, NO_CARD, &hint, "Next", "Look again", "Quit"],
     );
+    fixed_in_sight(&gui, LEAST, &[NOT_SAFE, &hint]);
+    fixed_in_sight(&gui, LEAST, &CARDS_BUTTONS);
 }
 
 #[test]
@@ -1648,6 +1707,274 @@ fn in_sight_fails_on_a_screen_with_no_body() {
     let mut ui = simulator(LEAST, words(FIXED));
     let error = see_in_sight(&mut ui, LEAST, &[FIXED]).unwrap_err();
     assert!(error.contains("no body"), "{error}");
+}
+
+// What stays fixed and what scrolls (S064). `in_sight` passes any of these at offset 0.
+
+const IN_THE_BOX: &str = "A sentence in a box.";
+const FIELD: &str = "/Volumes/DRIVE_A/Photos";
+
+/// A fixed sentence, a box, the body, a sentence under it, as the real screens' are.
+fn a_screen_with_a_box<'a>() -> Element<'a, M> {
+    let body = column![words(IN_THE_BODY)];
+    column![
+        words(FIXED),
+        scrollable(words(IN_THE_BOX)).id(BANNER).height(60.0),
+        scrollable(body).id(BODY).height(Length::Fill),
+        words(UNDER_THE_BODY),
+    ]
+    .into()
+}
+
+#[test]
+fn fixed_in_sight_passes_for_what_is_over_and_under_the_body() {
+    let mut ui = simulator(LEAST, a_screen_with_a_box());
+    see_fixed_in_sight(&mut ui, LEAST, &[FIXED, UNDER_THE_BODY]).unwrap();
+}
+
+#[test]
+fn fixed_in_sight_fails_for_a_sentence_in_the_body() {
+    let mut ui = simulator(LEAST, a_screen_with_a_box());
+    see_in_sight(&mut ui, LEAST, &[IN_THE_BODY]).unwrap();
+    let error = see_fixed_in_sight(&mut ui, LEAST, &[IN_THE_BODY]).unwrap_err();
+    assert!(error.contains("in a scrollable"), "{error}");
+}
+
+#[test]
+fn fixed_in_sight_fails_for_a_sentence_in_a_box() {
+    let mut ui = simulator(LEAST, a_screen_with_a_box());
+    see_in_sight(&mut ui, LEAST, &[IN_THE_BOX]).unwrap();
+    let error = see_fixed_in_sight(&mut ui, LEAST, &[IN_THE_BOX]).unwrap_err();
+    assert!(error.contains("in a scrollable"), "{error}");
+}
+
+#[test]
+fn fixed_in_sight_fails_inside_a_scrollable_with_no_id_and_a_nested_one() {
+    let view = column![
+        scrollable(column![
+            words(FIXED),
+            scrollable(words(IN_THE_BOX)).height(40.0)
+        ])
+        .height(100.0),
+        scrollable(words(IN_THE_BODY)).id(BODY).height(Length::Fill),
+    ];
+    let mut ui = simulator(LEAST, view);
+    see_in_sight(&mut ui, LEAST, &[FIXED, IN_THE_BOX]).unwrap();
+    for sentence in [FIXED, IN_THE_BOX] {
+        let error = see_fixed_in_sight(&mut ui, LEAST, &[sentence]).unwrap_err();
+        assert!(error.contains("in a scrollable"), "{error}");
+    }
+}
+
+/// The whole screen could be put in a scrollable, with the body inside it.
+#[test]
+fn fixed_in_sight_fails_when_the_whole_screen_scrolls() {
+    let body = scrollable(column![words(IN_THE_BODY)])
+        .id(BODY)
+        .height(200.0);
+    let view = scrollable(column![words(FIXED), body, words(UNDER_THE_BODY)]);
+    let mut ui = simulator(LEAST, view);
+    see_in_sight(&mut ui, LEAST, &[FIXED, UNDER_THE_BODY]).unwrap();
+    for sentence in [FIXED, UNDER_THE_BODY] {
+        let error = see_fixed_in_sight(&mut ui, LEAST, &[sentence]).unwrap_err();
+        assert!(error.contains("in a scrollable"), "{error}");
+    }
+}
+
+/// The body's content runs far past what is under it, so its bounds hold that sentence.
+#[test]
+fn fixed_in_sight_passes_under_a_body_that_overflows_and_beside_a_scrollable() {
+    let rows = column![Space::new().height(5000.0), words(IN_THE_BODY)];
+    let side = scrollable(words(IN_THE_BOX)).width(100.0).height(60.0);
+    let view = column![
+        scrollable(rows).id(BODY).height(Length::Fill),
+        row![side, words(FIXED)],
+        words(UNDER_THE_BODY),
+    ];
+    let mut ui = simulator(LEAST, view);
+    see_fixed_in_sight(&mut ui, LEAST, &[FIXED, UNDER_THE_BODY]).unwrap();
+    see_fixed_in_sight(&mut ui, LEAST, &[IN_THE_BODY]).unwrap_err();
+    see_fixed_in_sight(&mut ui, LEAST, &[IN_THE_BOX]).unwrap_err();
+}
+
+#[test]
+fn fixed_in_sight_fails_for_a_sentence_out_of_sight_or_not_there() {
+    let body = column![words(IN_THE_BODY)];
+    let view = column![
+        scrollable(body).id(BODY).height(100.0),
+        Space::new().height(LEAST.height),
+        words(UNDER_THE_BODY),
+    ];
+    let mut ui = simulator(LEAST, view);
+    let error = see_fixed_in_sight(&mut ui, LEAST, &[UNDER_THE_BODY]).unwrap_err();
+    assert!(error.contains("out of sight"), "{error}");
+    let error = see_fixed_in_sight(&mut ui, LEAST, &["NOT THERE"]).unwrap_err();
+    assert!(error.contains("NOT THERE"), "{error}");
+}
+
+#[test]
+fn fixed_in_sight_fails_when_the_body_keeps_no_row_or_is_not_there() {
+    let mut ui = simulator(LEAST, a_screen(filling(FIXED) - 10.0, FIXED));
+    let error = see_fixed_in_sight(&mut ui, LEAST, &[FIXED]).unwrap_err();
+    assert!(error.contains("the body keeps"), "{error}");
+    let mut ui = simulator(LEAST, words(FIXED));
+    let error = see_fixed_in_sight(&mut ui, LEAST, &[FIXED]).unwrap_err();
+    assert!(error.contains("no body"), "{error}");
+}
+
+#[test]
+fn fixed_in_sight_sees_a_fields_words_as_find_does() {
+    let view = column![
+        text_input("", FIELD),
+        scrollable(column![text_input("", IN_THE_BODY)])
+            .id(BODY)
+            .height(Length::Fill),
+    ];
+    let mut ui = simulator(LEAST, view);
+    see_fixed_in_sight(&mut ui, LEAST, &[FIELD]).unwrap();
+    let error = see_fixed_in_sight(&mut ui, LEAST, &[IN_THE_BODY]).unwrap_err();
+    assert!(error.contains("in a scrollable"), "{error}");
+}
+
+/// A card can be named as a button is. `find` meets the row first.
+#[test]
+fn fixed_in_sight_passes_words_that_are_also_a_row_far_down_the_body() {
+    let rows = column![Space::new().height(5000.0), words(UNDER_THE_BODY)];
+    let view = column![
+        scrollable(rows).id(BODY).height(Length::Fill),
+        words(UNDER_THE_BODY),
+    ];
+    let mut ui = simulator(LEAST, view);
+    see_fixed_in_sight(&mut ui, LEAST, &[UNDER_THE_BODY]).unwrap();
+}
+
+#[test]
+fn on_a_real_screen_the_banners_line_and_the_buttons_are_fixed_and_the_rest_is_not() {
+    let (gui, _dir) = forty_named_syncs();
+    let message = gui.app.exit().message.unwrap();
+    fixed_in_sight(
+        &gui,
+        LEAST,
+        &[TITLE, NOT_SAFE, "Next", "Look again", "Quit"],
+    );
+    let mut ui = screen(&gui, LEAST);
+    for sentence in [message.as_str(), CARD_A] {
+        see_in_sight(&mut ui, LEAST, &[sentence]).unwrap();
+        let error = see_fixed_in_sight(&mut ui, LEAST, &[sentence]).unwrap_err();
+        assert!(error.contains("in a scrollable"), "{error}");
+    }
+}
+
+/// The check reads the tree, so a body at its end must change nothing it says, and what
+/// it calls fixed must not have moved.
+#[test]
+fn what_is_fixed_stays_and_what_is_not_goes_when_the_body_is_scrolled() {
+    let gui = booted(with_notes(&[CARD_A, CARD_B], &[DRIVE_A]));
+    let fixed = [TITLE, CARDS_HEADING, "Next", "Look again", "Quit"];
+    let mut ui = screen(&gui, LEAST);
+    let before = fixed.map(|sentence| ui.find(sentence).unwrap().visible_bounds());
+    see_fixed_in_sight(&mut ui, LEAST, &fixed).unwrap();
+
+    let inside = ui
+        .find(selector::id(BODY))
+        .unwrap()
+        .visible_bounds()
+        .unwrap()
+        .center();
+    ui.point_at(inside);
+    let wheel = iced_test::core::Event::Mouse(iced_test::core::mouse::Event::WheelScrolled {
+        delta: iced_test::core::mouse::ScrollDelta::Lines {
+            x: 0.0,
+            y: -100000.0,
+        },
+    });
+    let _ = ui.simulate([wheel]);
+
+    let (end, _, _) = scroll_of(&mut ui, BODY);
+    assert!(end > 0.0, "it scrolled");
+    let after = fixed.map(|sentence| ui.find(sentence).unwrap().visible_bounds());
+    assert_eq!(before, after);
+    see_fixed_in_sight(&mut ui, LEAST, &fixed).unwrap();
+    let error = see_in_sight(&mut ui, LEAST, &[CARD_A]).unwrap_err();
+    assert!(error.contains("out of sight"), "{error}");
+    let error = see_fixed_in_sight(&mut ui, LEAST, &[CARD_A]).unwrap_err();
+    assert!(error.contains("out of sight"), "{error}");
+}
+
+#[test]
+fn fixed_box_in_sight_passes_for_words_in_a_box_of_the_fixed_part() {
+    let mut ui = simulator(LEAST, a_screen_with_a_box());
+    see_fixed_box(&mut ui, LEAST, BANNER, &[IN_THE_BOX]).unwrap();
+    let (gui, _dir) = forty_named_syncs();
+    let message = gui.app.exit().message.unwrap();
+    fixed_box_in_sight(&gui, LEAST, BANNER, &[&message]);
+}
+
+#[test]
+fn fixed_box_in_sight_fails_for_words_outside_that_box() {
+    let mut ui = simulator(LEAST, a_screen_with_a_box());
+    for sentence in [FIXED, IN_THE_BODY, UNDER_THE_BODY] {
+        let error = see_fixed_box(&mut ui, LEAST, BANNER, &[sentence]).unwrap_err();
+        assert!(error.contains("not in the box"), "{error}");
+    }
+}
+
+/// So the banner's words moved into the body, box and all, fail.
+#[test]
+fn fixed_box_in_sight_fails_for_a_box_in_the_body_or_no_box() {
+    let boxed = scrollable(words(IN_THE_BOX)).id(BANNER).height(60.0);
+    let view = column![
+        words(FIXED),
+        scrollable(column![boxed]).id(BODY).height(Length::Fill),
+    ];
+    let mut ui = simulator(LEAST, view);
+    let error = see_fixed_box(&mut ui, LEAST, BANNER, &[IN_THE_BOX]).unwrap_err();
+    assert!(error.contains("in a scrollable"), "{error}");
+
+    let mut ui = simulator(LEAST, a_screen(100.0, FIXED));
+    let error = see_fixed_box(&mut ui, LEAST, BANNER, &[FIXED]).unwrap_err();
+    assert!(error.contains("no box"), "{error}");
+}
+
+#[test]
+fn fixed_box_in_sight_fails_for_words_below_the_boxs_fold() {
+    let inside = column![Space::new().height(500.0), words(IN_THE_BOX)];
+    let view = column![
+        scrollable(inside).id(BANNER).height(60.0),
+        scrollable(words(IN_THE_BODY)).id(BODY).height(Length::Fill),
+    ];
+    let mut ui = simulator(LEAST, view);
+    let error = see_fixed_box(&mut ui, LEAST, BANNER, &[IN_THE_BOX]).unwrap_err();
+    assert!(error.contains("out of sight"), "{error}");
+}
+
+// `Step::Fails` is a click on words that are there (S064).
+
+#[test]
+#[should_panic(expected = "line failed: expect")]
+fn a_line_that_must_fail_cannot_pass_on_words_that_are_gone() {
+    play_steps(
+        literal(&[CARD_A], &[]),
+        vec![Step::Fails(r#"click "/Volumes/CARD_GONE""#)],
+    );
+}
+
+#[test]
+#[should_panic(expected = "should have failed")]
+fn a_line_that_must_fail_cannot_pass_on_words_in_sight() {
+    play_steps(
+        literal(&[CARD_A], &[]),
+        vec![Step::Fails(r#"click "/Volumes/CARD_A""#)],
+    );
+}
+
+#[test]
+#[should_panic(expected = "a click on words")]
+fn a_line_that_must_fail_is_a_click_on_words() {
+    play_steps(
+        literal(&[CARD_A], &[]),
+        vec![Step::Fails(r#"expect "/Volumes/CARD_GONE""#)],
+    );
 }
 
 #[test]
