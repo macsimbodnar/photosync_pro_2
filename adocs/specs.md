@@ -164,8 +164,7 @@ picks. It is simple to use.
     within 0/1/2.
   - GUI: a native Rust GUI in iced (DEC-065), being built step by step: today its window
     and the cards, drive, library, name, check, copying, report and refused screens, and the next card in one session.
-    The process returns 0 until S056, so it does not yet say so to a script, and a real sync through it is not yet in
-    the gate (S057). What follows is what it must become. It
+    A real sync through it is not yet in the gate (S057). What follows is what it must become. It
     must need no change to the core beyond new API, which keeps INV-8 true.
     It is its own binary, `photosync-gui`, over the same model, worker and
     sentences as the TUI (DEC-067, DEC-068), so it walks the same screens by the
@@ -178,9 +177,12 @@ picks. It is simple to use.
     text of its own, byte for byte what `text` says, in the same order, in a fixed-width font so its tables line up; a line that is
     not all ASCII is in the window's font, as the fixed one loses kanji with nothing to see (DEC-082). Next card stands on the report,
     and on a refusal in a session: it goes to the cards with nothing picked, looks again, and Next then goes straight to the check. The
-    process still returns the code, as the TUI does. A quit that would hide a
-    session not complete first shows why, from any screen that does not already
-    say it. While the session is not complete, the cards, drive, library, name and
+    process still returns the code, prints the report and says its message, as the TUI does; a report it cannot write
+    keeps the code; a window that ended with nothing recorded gives 1, and one that cannot open says so and gives 2. A quit that would hide a
+    session not complete first shows why, "Before you quit", from any screen that does not already
+    say it: the warning stays in sight, its reason scrolls, Back returns, and Quit anyway or a close there quits. It stops the wait of a first start's
+    check as Back does, and takes no click left from the screen before. Once a quit is heard, no message does anything, as iced runs each message of a batch before the exit,
+    so a check's answer behind a quit or a close starts no sync (DEC-083). While the session is not complete, the cards, drive, library, name and
     check screens keep a warning in sight, "do not format the card" with the reason, whatever
     its length, so the buttons never leave. Closing the window during a copy cancels it, and the window stays for
     the report; closing it again then quits at once, which the screen says first,
@@ -192,8 +194,8 @@ picks. It is simple to use.
     scrolls; the progress words, each card's bar with two cards or more, and the scan lines do. No screen bounds a
     height but a box of words that scroll inside it, and the body takes all the height left, as a bound cuts a warning
     with nothing wrong in its bounds (DEC-080). Cancel is the copying screen's only button, drawn held once heard. A
-    worker gone with no end shows the crash sentence, never complete. It refuses to run as root: the sentence goes to
-    stderr and to a window that offers only Quit. Nothing it says is cut: every word
+    worker gone with no end shows the crash sentence, never complete. It refuses to run as root, with no look for volumes: the sentence goes to
+    stderr and to a window that offers only Quit, exit 2; not knowing where volumes are mounted is the same, with its own sentence. Nothing it says is cut: every word
     wraps, and what is too tall scrolls. A result too tall for its box, at most 240 high,
     scrolls in that box, with the report and buttons still in sight; a refusal too tall
     scrolls with the buttons in sight (DEC-071). Each screen, each report and each new look's list opens at its top

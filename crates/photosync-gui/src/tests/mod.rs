@@ -35,13 +35,15 @@ use photosync_front::{flow, text, worker};
 use crate::args::{Options, parse};
 use crate::common::TempDir;
 use crate::gui::{
-    self, BANNER, BODY, CANCELLING, CARDS_ONLY_READ, CHECKING, CLOSE_AGAIN, DO_NOT_FORMAT,
-    DRIVE_GONE, Discover, Gui, LEAST, LIBRARY_HELP, LOOKING, M, NAME_HELP, NOT_SAFE, PICK_A_DRIVE,
-    REPORT_HEADING, RESULT, SCANNING, THE_DATE_TO_COME, TITLE, WINDOW, WorkerSend, banner,
-    card_line, report_screen, share, update, view,
+    self, BANNER, BEFORE_YOU_QUIT, BODY, CANCELLING, CARDS_ONLY_READ, CHECKING, CLOSE_AGAIN,
+    DO_NOT_FORMAT, DRIVE_GONE, Discover, ExitSlot, Gui, LEAST, LIBRARY_HELP, LOOKING, M, NAME_HELP,
+    NOT_SAFE, Opening, PICK_A_DRIVE, QUIT_ANYWAY, REPORT_HEADING, RESULT, SCANNING,
+    THE_DATE_TO_COME, TITLE, WINDOW, WorkerSend, banner, before_you_quit_screen, card_line,
+    report_screen, share, update, view, warns_first,
 };
 use crate::png;
 use crate::widgets::{result_style, row_under_cursor, words};
+use crate::{after_the_window, ending, no_exit_recorded, opening};
 use harness::*;
 use one_picture::same_picture;
 
@@ -5282,4 +5284,827 @@ fn in_a_session_each_screen_opens_at_its_top() {
         sentence.contains("same"),
         "as they share a device: {sentence}"
     );
+}
+
+// Closing, quitting, root, and what the process returns (S056).
+
+fn recorded(gui: &Gui) -> Option<Exit> {
+    gui.exit_slot.lock().unwrap().clone()
+}
+
+/// What `ending` wrote to stdout and said on stderr, and its code.
+fn the_end_of(exit: &Exit) -> (String, Vec<String>, u8) {
+    let (mut out, mut said) = (Vec::new(), Vec::new());
+    let code = ending(exit, &mut out, &mut |line: &str| {
+        said.push(line.to_string())
+    });
+    (String::from_utf8(out).unwrap(), said, code)
+}
+
+/// On the check, Start copying pressed and its answer waiting, with no `M::Checked` yet.
+fn with_the_answer_waiting(folders: &Folders) -> Gui {
+    let (mut gui, asked) = held_at_the_check(folders);
+    gui.test_worker = Some(keeping_the_job(Arc::new(Mutex::new(Vec::new()))));
+    let check = press_start(&mut gui, &asked);
+    answer_as_the_real_one(check);
+    wait_for_the_answer(&gui);
+    gui
+}
+
+fn wait_for_the_answer(gui: &Gui) {
+    let started = Instant::now();
+    while gui.checks_answered.load(Ordering::SeqCst) == 0 {
+        assert!(started.elapsed() < LIMIT, "no answer came to the check");
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// iced_winit updates every message of a batch before any exit action, so a message after a
+/// quit is real, and the check's answer in it would start a copy with the window going away.
+#[test]
+fn a_check_answered_behind_a_quit_starts_no_sync() {
+    for way_out in [M::Quit, M::CloseRequested] {
+        let folders = Folders::new();
+        let mut gui = with_the_answer_waiting(&folders);
+        let _ = update(&mut gui, way_out);
+        assert!(gui.quit);
+        let _ = update(&mut gui, M::Checked);
+        assert_eq!(gui.syncs_started, 0);
+        assert!(gui.app.running().is_none());
+        assert!(!gui.app.in_session());
+    }
+}
+
+#[test]
+fn nothing_after_a_quit_reaches_the_model_or_what_it_recorded() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    gui.test_worker = Some(keeping_the_job(Arc::new(Mutex::new(Vec::new()))));
+    let _ = update(&mut gui, M::Quit);
+    assert!(gui.quit);
+    let exit = recorded(&gui).expect("the quit recorded it");
+    for late in [
+        M::Start,
+        M::Next,
+        M::Back,
+        M::Escape,
+        M::Quit,
+        M::Wake,
+        M::Gone,
+    ] {
+        let _ = update(&mut gui, late);
+    }
+    assert_eq!(gui.app.screen(), Screen::Confirm);
+    assert!(!gui.checking(), "no check was asked for");
+    assert_eq!(gui.syncs_started, 0);
+    assert_eq!(recorded(&gui), Some(exit));
+}
+
+/// A library not there, refused by the first start, before any session.
+fn refused_before_a_session(folders: &Folders) -> Gui {
+    let mut gui = to_the_check(folders);
+    start_copying(&mut gui);
+    assert_eq!(gui.app.screen(), Screen::Refused);
+    assert!(!gui.app.in_session());
+    assert_eq!(gui.app.exit().code, 2);
+    gui
+}
+
+/// "Before you quit" stands, with these words, and has quit nothing.
+fn stands_before_you_quit(gui: &Gui, reason: &str) {
+    assert!(gui.before_quit());
+    assert!(!gui.quit);
+    assert_eq!(recorded(gui), None);
+    let fixed = [TITLE, BEFORE_YOU_QUIT, NOT_SAFE, QUIT_ANYWAY, "Back"];
+    fixed_in_sight(gui, WINDOW, &fixed);
+    fixed_in_sight(gui, LEAST, &fixed);
+    in_sight(gui, LEAST, &[reason]);
+}
+
+/// The screens a quit warns from, each one Back from the one before, the first after a refusal.
+const WARNS_FROM: [Screen; 5] = [
+    Screen::Confirm,
+    Screen::Name,
+    Screen::Library,
+    Screen::Drive,
+    Screen::Sources,
+];
+
+#[test]
+fn each_screen_warns_before_a_quit_and_stands_under_the_banner_first() {
+    for (backs, on) in WARNS_FROM.into_iter().enumerate() {
+        let folders = Folders::new();
+        let mut gui = refused_before_a_session(&folders);
+        click(&mut gui, REFUSED_BACK);
+        for _ in 0..backs {
+            click(&mut gui, "Back");
+        }
+        assert_eq!(gui.app.screen(), on);
+        let exit = gui.app.exit();
+        let reason = exit.message.clone().unwrap();
+
+        // Nothing else warns of Cmd-Q (DEC-071 (5)).
+        for size in [WINDOW, LEAST] {
+            fixed_in_sight(&gui, size, &[NOT_SAFE]);
+            fixed_box_in_sight(&gui, size, BANNER, &[&reason]);
+        }
+
+        // Library and name have no Quit, as its key would type (DEC-079 (5)).
+        let has_quit = !matches!(on, Screen::Library | Screen::Name);
+        assert_eq!(says(&gui, "Quit"), has_quit, "{on:?}");
+        if has_quit {
+            click(&mut gui, "Quit");
+            stands_before_you_quit(&gui, &reason);
+            assert_eq!(gui.app.screen(), on, "the model has not moved");
+            no_key_named(&gui, "before you quit");
+            click(&mut gui, "Back");
+            assert!(!gui.before_quit());
+            assert_eq!(gui.app.screen(), on, "Back returns");
+            assert!(!gui.quit);
+        }
+
+        let _ = update(&mut gui, M::CloseRequested);
+        stands_before_you_quit(&gui, &reason);
+        click(&mut gui, "Back");
+        assert_eq!(gui.app.screen(), on);
+        fixed_in_sight(&gui, LEAST, &[NOT_SAFE]);
+
+        // Quit anyway.
+        let _ = update(&mut gui, M::CloseRequested);
+        click(&mut gui, QUIT_ANYWAY);
+        assert!(gui.quit);
+        assert_eq!(recorded(&gui), Some(exit.clone()));
+
+        // A close there is Quit anyway.
+        let folders = Folders::new();
+        let mut gui = refused_before_a_session(&folders);
+        click(&mut gui, REFUSED_BACK);
+        for _ in 0..backs {
+            click(&mut gui, "Back");
+        }
+        let _ = update(&mut gui, M::CloseRequested);
+        assert!(!gui.quit);
+        let _ = update(&mut gui, M::CloseRequested);
+        assert!(gui.quit);
+        assert_eq!(recorded(&gui).map(|e| e.code), Some(2));
+    }
+}
+
+#[test]
+fn after_a_real_refusal_in_a_session_quit_and_a_close_on_the_cards_warn_first() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    with_a_photo(&folders);
+    let mut gui = to_the_check(&folders);
+    let _kept = real_session(&mut gui);
+    start_and_be_refused(&mut gui);
+    assert!(gui.app.in_session());
+    click(&mut gui, NEXT_CARD);
+    settle(&mut gui);
+    assert_eq!(gui.app.screen(), Screen::Sources);
+    let reason = gui.app.exit().message.clone().unwrap_or_else(|| {
+        panic!("one refused sync of a session has a message");
+    });
+
+    click(&mut gui, "Quit");
+    stands_before_you_quit(&gui, &reason);
+    screen_check_scrolling(
+        &gui,
+        "S056",
+        "before_you_quit",
+        &[TITLE, BEFORE_YOU_QUIT, NOT_SAFE, QUIT_ANYWAY, "Back"],
+        &[&reason],
+    );
+    click(&mut gui, "Back");
+    assert_eq!(gui.app.screen(), Screen::Sources);
+    assert!(says(&gui, "Sync 2: pick the next card"));
+
+    let _ = update(&mut gui, M::CloseRequested);
+    stands_before_you_quit(&gui, &reason);
+    click(&mut gui, QUIT_ANYWAY);
+    assert!(gui.quit);
+    let exit = recorded(&gui).unwrap();
+    assert_eq!(exit, gui.app.exit());
+    assert_eq!(exit.code, 2);
+}
+
+#[test]
+fn forty_named_syncs_keep_quit_anyway_and_back_and_the_wheel_reaches_the_end() {
+    let (mut gui, _dir) = forty_named_syncs();
+    let reason = gui.app.exit().message.unwrap();
+    click(&mut gui, "Quit");
+    let fixed = [TITLE, BEFORE_YOU_QUIT, NOT_SAFE, QUIT_ANYWAY, "Back"];
+    screen_check_scrolling(&gui, "S056", "before_you_quit_40_syncs", &fixed, &[&reason]);
+    fixed_in_sight(&gui, LEAST, &fixed);
+
+    let mut ui = screen(&gui, LEAST);
+    assert_eq!(scroll_of(&mut ui, BODY).0, 0.0, "it opens at its top");
+    wheel(&mut ui, BODY, 1000.0);
+    at_its_end(&mut ui, BODY);
+    see_fixed_in_sight(&mut ui, LEAST, &fixed).unwrap();
+}
+
+#[test]
+fn before_you_quit_says_the_result_when_there_is_no_message() {
+    // One failed sync: `text::session_message` gives none, the commonest case (DEC-071 (2)).
+    let exit = Exit {
+        code: 1,
+        report: Some("the report\n".to_string()),
+        message: None,
+    };
+    let result = "NOT COMPLETE: 1 failed. Do not format the card.".to_string();
+    let outcome = Outcome::Report {
+        lines: vec![],
+        result: result.clone(),
+        complete: false,
+    };
+    let fixed = [TITLE, BEFORE_YOU_QUIT, NOT_SAFE, QUIT_ANYWAY, "Back"];
+    screen_check_of(
+        || before_you_quit_screen(&exit, Some(&outcome)),
+        "S056",
+        "before_you_quit_result",
+        &fixed,
+        &[&result],
+    );
+    let drawn = || before_you_quit_screen(&exit, Some(&outcome));
+    let mut ui = Simulator::with_size(Settings::default(), LEAST, drawn());
+    see_fixed_in_sight(&mut ui, LEAST, &fixed).unwrap();
+
+    // A message goes first, as on the banner, and a refusal's sentence stands in for none.
+    let with_message = Exit {
+        message: Some("The message.".to_string()),
+        ..exit.clone()
+    };
+    let drawn = before_you_quit_screen(&with_message, Some(&outcome));
+    let seen = all_words_of(&mut Simulator::with_size(Settings::default(), LEAST, drawn));
+    assert!(seen.iter().any(|w| w == "The message."), "{seen:?}");
+    assert!(!seen.contains(&result), "{seen:?}");
+    let refused = Outcome::Refused {
+        sentence: "The refusal.".to_string(),
+    };
+    let drawn = before_you_quit_screen(&exit, Some(&refused));
+    let seen = all_words_of(&mut Simulator::with_size(Settings::default(), LEAST, drawn));
+    assert!(seen.iter().any(|w| w == "The refusal."), "{seen:?}");
+
+    // No words at all: the line still says it.
+    let drawn = before_you_quit_screen(&exit, None);
+    let mut ui = Simulator::with_size(Settings::default(), LEAST, drawn);
+    see_fixed_in_sight(&mut ui, LEAST, &fixed).unwrap();
+}
+
+/// A press of Start copying out, as a stuck drive holds it, under the banner: "Before you quit"
+/// must stop the wait, as a Back does, with the model still on the check (DEC-081 (1)).
+#[test]
+fn a_quit_while_the_first_starts_check_is_out_stops_the_wait() {
+    for way_out in [M::Quit, M::CloseRequested] {
+        for answer_first in [false, true] {
+            let folders = Folders::new();
+            let mut gui = refused_before_a_session(&folders);
+            click(&mut gui, REFUSED_BACK);
+            fs::create_dir_all(&folders.library).unwrap();
+            let (check, asked) = blocked_check();
+            gui.check = check;
+            gui.test_worker = Some(keeping_the_job(Arc::new(Mutex::new(Vec::new()))));
+            let held = press_start(&mut gui, &asked);
+            fixed_in_sight(&gui, LEAST, &[NOT_SAFE, CHECKING]);
+            let reason = gui.app.exit().message.unwrap();
+            let mut held = Some(held);
+            if answer_first {
+                answer_as_the_real_one(held.take().unwrap());
+                wait_for_the_answer(&gui);
+            }
+
+            let _ = update(&mut gui, way_out.clone());
+            stands_before_you_quit(&gui, &reason);
+            assert_eq!(gui.app.screen(), Screen::Confirm);
+            assert!(!gui.checking(), "that screen stops the wait");
+
+            if let Some(held) = held {
+                answer_as_the_real_one(held);
+            }
+            wait_for_dropped_checks(&mut gui, 1);
+            assert_eq!(gui.syncs_started, 0, "the answer behind it starts nothing");
+            assert!(!gui.app.in_session());
+            assert!(gui.app.running().is_none());
+            assert!(gui.before_quit());
+
+            click(&mut gui, "Back");
+            assert_eq!(gui.app.screen(), Screen::Confirm);
+            assert!(!says(&gui, CHECKING));
+            assert_eq!(
+                clicks(&gui, "Start copying").len(),
+                1,
+                "a new press is live"
+            );
+        }
+    }
+}
+
+#[test]
+fn clicks_left_over_reach_nothing_behind_before_you_quit() {
+    let folders = Folders::new();
+    let mut gui = refused_before_a_session(&folders);
+    click(&mut gui, REFUSED_BACK);
+    fs::create_dir_all(&folders.library).unwrap();
+    gui.test_worker = Some(keeping_the_job(Arc::new(Mutex::new(Vec::new()))));
+    let _ = update(&mut gui, M::Quit);
+    assert!(gui.before_quit());
+    for late in [
+        M::Start,
+        M::Next,
+        M::Back,
+        M::Escape,
+        M::Quit,
+        M::Cancel,
+        M::NextCard,
+        M::LookAgain,
+        M::Row(PathBuf::from(&folders.card)),
+        M::Field(Screen::Confirm, "x".to_string()),
+    ] {
+        let _ = update(&mut gui, late.clone());
+        assert!(gui.before_quit(), "{late:?}");
+        assert!(!gui.quit, "{late:?}");
+        assert_eq!(gui.app.screen(), Screen::Confirm, "{late:?}");
+        assert!(!gui.checking(), "{late:?}");
+    }
+    assert_eq!(gui.syncs_started, 0);
+
+    // On a field, the keys would type.
+    let folders = Folders::new();
+    let mut gui = refused_before_a_session(&folders);
+    click(&mut gui, REFUSED_BACK);
+    click(&mut gui, "Back");
+    assert_eq!(gui.app.screen(), Screen::Name);
+    let _ = update(&mut gui, M::CloseRequested);
+    let _ = update(&mut gui, M::Field(Screen::Name, "typed".to_string()));
+    let _ = update(&mut gui, M::Escape);
+    assert_eq!(gui.app.name(), "");
+    assert_eq!(gui.app.screen(), Screen::Name);
+    assert!(gui.before_quit());
+}
+
+#[test]
+fn its_two_buttons_mean_nothing_anywhere_else() {
+    let folders = Folders::new();
+    let mut gui = refused_before_a_session(&folders);
+    click(&mut gui, REFUSED_BACK);
+    for late in [M::QuitAnyway, M::NotYet] {
+        let _ = update(&mut gui, late);
+        assert!(!gui.quit);
+        assert_eq!(gui.app.screen(), Screen::Confirm);
+    }
+}
+
+/// The second click of a double on Quit lands on the next screen's button (DEC-079 (2)), and
+/// past this one there is no second chance.
+#[test]
+fn quit_anyway_stands_apart_from_each_quit() {
+    for size in [WINDOW, LEAST] {
+        for backs in [0, 3, 4] {
+            let folders = Folders::new();
+            let mut gui = refused_before_a_session(&folders);
+            click(&mut gui, REFUSED_BACK);
+            for _ in 0..backs {
+                click(&mut gui, "Back");
+            }
+            let quit = across(&gui, size, "Quit");
+            click(&mut gui, "Quit");
+            let anyway = across(&gui, size, QUIT_ANYWAY);
+            assert!(apart(quit, anyway), "{size:?}: {quit:?}, {anyway:?}");
+        }
+    }
+}
+
+#[test]
+fn each_way_past_before_you_quit_opens_the_screen_at_its_top() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let cards: Vec<String> = (0..40)
+        .map(|n| {
+            let card = folders.dir.0.join(format!("CARD_{n:02}"));
+            fs::create_dir_all(card.join("DCIM")).unwrap();
+            card.display().to_string()
+        })
+        .collect();
+    let drive = folders.drive.clone();
+    let listed = cards.clone();
+    let discover: Discover = Arc::new(move || {
+        let cards: Vec<&str> = listed.iter().map(String::as_str).collect();
+        volumes(&cards, &[&drive], &[])
+    });
+    let first_card = Arc::new(Mutex::new(cards[0].clone()));
+    let steps = vec![
+        Step::Line(r#"click "Next""#),
+        Step::Line(r#"click "Next""#),
+        Step::Line(r#"click "Next""#),
+        Step::Line(r#"click "Next""#),
+        Step::Line(r#"click "Start copying""#),
+        Step::Line(r#"click "Next card""#),
+        Step::ScrollEnd,
+        Step::Line(r#"click "Quit""#),
+        Step::Line(r#"click "Back""#),
+        Step::ClickOn(first_card),
+    ];
+    let gui = play_steps(discover, steps);
+    assert_eq!(gui.app.screen(), Screen::Sources);
+    assert!(!gui.before_quit());
+    assert_eq!(gui.app.picked(), [PathBuf::from(&cards[0])], "in sight");
+}
+
+#[test]
+fn from_the_refused_screen_a_quit_is_at_once() {
+    for way_out in [M::Quit, M::CloseRequested] {
+        let folders = Folders::new();
+        let mut gui = refused_before_a_session(&folders);
+        let _ = update(&mut gui, way_out);
+        assert!(gui.quit);
+        assert!(!gui.before_quit());
+        let exit = recorded(&gui).unwrap();
+        assert_eq!(exit, gui.app.exit());
+        assert_eq!(exit.code, 2);
+        assert!(exit.message.is_some());
+    }
+}
+
+#[test]
+fn with_exit_0_a_quit_is_at_once_from_each_screen() {
+    for (backs, on) in WARNS_FROM.into_iter().enumerate() {
+        let folders = Folders::new();
+        let mut gui = to_the_check(&folders);
+        for _ in 0..backs {
+            click(&mut gui, "Back");
+        }
+        assert_eq!(gui.app.screen(), on);
+        let _ = update(&mut gui, M::CloseRequested);
+        assert!(gui.quit, "{on:?}");
+        assert!(!gui.before_quit());
+        let exit = recorded(&gui).unwrap();
+        assert_eq!((exit.code, exit.report, exit.message), (0, None, None));
+    }
+}
+
+/// Only images reach the report (DEC-082 (5)), so here it stands in the rule, and S057 goes
+/// through it.
+#[test]
+fn only_a_session_not_complete_and_a_screen_that_does_not_say_it_warn_first() {
+    for screen in WARNS_FROM {
+        assert!(!warns_first(screen, 0), "{screen:?}");
+        assert!(warns_first(screen, 1), "{screen:?}");
+        assert!(warns_first(screen, 2), "{screen:?}");
+    }
+    for screen in [Screen::Report, Screen::Refused, Screen::Running] {
+        for code in [0, 1, 2] {
+            assert!(!warns_first(screen, code), "{screen:?} {code}");
+        }
+    }
+}
+
+#[test]
+fn the_first_close_cancels_and_stays_and_the_second_quits_with_the_reason_and_exit_1() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    let given = Arc::new(Mutex::new(Vec::new()));
+    gui.test_worker = Some(keeping_the_job(given.clone()));
+    start_copying(&mut gui);
+    let lines = scan_lines(2);
+    hear_scans(&mut gui, &lines);
+
+    let _ = update(&mut gui, M::CloseRequested);
+    assert!(given.lock().unwrap()[0].0.cancel.is_cancelled());
+    assert!(!gui.quit);
+    assert_eq!(recorded(&gui), None);
+    assert!(!gui.before_quit());
+    assert_eq!(gui.app.screen(), Screen::Running);
+    let fixed = [TITLE, DO_NOT_FORMAT, CANCELLING, CLOSE_AGAIN, "Cancel"];
+    fixed_in_sight(&gui, LEAST, &fixed);
+    screen_check_scrolling(
+        &gui,
+        "S056",
+        "cancelling_then_close",
+        &fixed,
+        &[&lines[0], &lines[1]],
+    );
+
+    let _ = update(&mut gui, M::CloseRequested);
+    assert!(gui.quit);
+    assert!(!gui.before_quit(), "the screen said so before it");
+    let exit = recorded(&gui).unwrap();
+    assert_eq!(exit, gui.app.exit());
+    assert_eq!(exit.code, 1);
+    let message = exit.message.clone().unwrap();
+    assert!(message.contains("Do not format the card"), "{message}");
+    assert!(message.contains("Quit during sync 1"), "{message}");
+    let (out, said, code) = the_end_of(&exit);
+    assert_eq!((out.as_str(), code), ("", 1));
+    assert_eq!(said, [message]);
+}
+
+#[test]
+fn a_second_close_gives_the_report_so_far() {
+    let folders = Folders::new();
+    fs::create_dir_all(&folders.library).unwrap();
+    let mut gui = to_the_check(&folders);
+    gui.test_worker = Some(keeping_the_job(Arc::new(Mutex::new(Vec::new()))));
+    start_copying(&mut gui);
+    // One sync with no report of its own gives none, and two do: a real report needs images.
+    for sync in 1..=2 {
+        let crash = format!("test crash {sync}");
+        assert!(gui.app.update(Msg::Crashed(crash)).is_none());
+        assert_eq!(gui.app.screen(), Screen::Refused);
+        click(&mut gui, NEXT_CARD);
+        settle(&mut gui);
+        click(&mut gui, "Next");
+        assert_eq!(gui.app.screen(), Screen::Confirm);
+        click(&mut gui, "Start copying");
+        assert_eq!(gui.app.screen(), Screen::Running);
+    }
+    assert_eq!(gui.syncs_started, 3);
+    let earlier = gui.app.exit().report.expect("two syncs make a report");
+    assert!(earlier.contains("test crash 2"), "{earlier}");
+
+    let _ = update(&mut gui, M::CloseRequested);
+    assert!(!gui.quit);
+    let _ = update(&mut gui, M::CloseRequested);
+    assert!(gui.quit);
+    let exit = recorded(&gui).unwrap();
+    let message = exit.message.clone().unwrap();
+    assert!(message.contains("Quit during sync 3"), "{message}");
+    assert!(message.contains("Do not format the card"), "{message}");
+    assert!(message.contains("Not complete earlier"), "{message}");
+    let (out, said, code) = the_end_of(&exit);
+    assert_eq!(out, earlier);
+    assert_eq!(said, [message]);
+    assert_eq!(code, 1);
+}
+
+#[test]
+fn the_smoke_runs_quit_leaves_its_exit_too() {
+    let dir = TempDir::new();
+    let (mut gui, _) = Gui::boot(literal(&[], &[]), Some(dir.0.join("smoke.png")));
+    settle(&mut gui);
+    let shot = window::Screenshot::new(vec![9u8; 16], iced::Size::new(2u32, 2u32), 2.0);
+    let _ = update(&mut gui, M::SmokeShot(shot));
+    assert!(gui.quit);
+    assert_eq!(recorded(&gui).map(|e| e.code), Some(0));
+}
+
+/// A writer with nobody at its other end.
+struct NoReader;
+
+impl std::io::Write for NoReader {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::BrokenPipe.into())
+    }
+}
+
+#[test]
+fn a_report_that_cannot_be_written_keeps_the_exit_code() {
+    for code in [0, 1, 2] {
+        let exit = Exit {
+            code,
+            report: Some("the report\n".to_string()),
+            message: None,
+        };
+        let mut said = Vec::new();
+        let given = ending(&exit, &mut NoReader, &mut |line: &str| {
+            said.push(line.to_string())
+        });
+        assert_eq!(given, code);
+        let [line] = &said[..] else {
+            panic!("{said:?}");
+        };
+        assert!(line.contains("Cannot write the report to stdout"), "{line}");
+        assert!(line.contains(&format!("its exit code is {code}")), "{line}");
+
+        // A `Vec` gets it.
+        let (out, said, given) = the_end_of(&exit);
+        assert_eq!(out, "the report\n");
+        assert!(said.is_empty());
+        assert_eq!(given, code);
+    }
+}
+
+#[test]
+fn ending_gives_stdout_stderr_and_the_code_as_the_tui_does() {
+    let exit = Exit {
+        code: 1,
+        report: Some("the report\n".to_string()),
+        message: Some("The message.".to_string()),
+    };
+    let (out, said, code) = the_end_of(&exit);
+    assert_eq!(out, "the report\n");
+    assert_eq!(said, ["The message."]);
+    assert_eq!(code, 1);
+
+    let (out, said, code) = the_end_of(&Exit {
+        code: 0,
+        report: None,
+        message: None,
+    });
+    assert_eq!(out, "");
+    assert!(said.is_empty());
+    assert_eq!(code, 0);
+}
+
+/// What `after_the_window` wrote, said and gave.
+fn after(result: Result<(), iced::Error>, slot: &ExitSlot) -> (String, Vec<String>, u8) {
+    let (mut out, mut said) = (Vec::new(), Vec::new());
+    let code = after_the_window(result, slot, &mut out, &mut |line: &str| {
+        said.push(line.to_string())
+    });
+    (String::from_utf8(out).unwrap(), said, code)
+}
+
+#[test]
+fn a_window_that_ends_with_no_exit_recorded_gives_1_and_its_sentence() {
+    let exit = no_exit_recorded();
+    assert_eq!(exit.code, 1);
+    let sentence = exit.message.unwrap();
+    assert!(sentence.contains("no report"), "{sentence}");
+    assert!(sentence.contains("Do not format the card"), "{sentence}");
+    let (out, said, code) = after(Ok(()), &ExitSlot::default());
+    assert_eq!((out.as_str(), code), ("", 1));
+    assert_eq!(said, [sentence]);
+}
+
+#[test]
+fn a_window_that_cannot_open_says_so_and_gives_2() {
+    let failed = || {
+        Err(iced::Error::WindowCreationFailed(Box::new(
+            std::io::Error::other("no display"),
+        )))
+    };
+    let (out, said, code) = after(failed(), &ExitSlot::default());
+    assert_eq!((out.as_str(), code), ("", 2));
+    let [line] = &said[..] else {
+        panic!("{said:?}");
+    };
+    assert!(line.contains("could not open"), "{line}");
+    assert!(line.contains("Nothing was copied."), "{line}");
+
+    // After a quit it could say so wrongly: what was recorded stands.
+    let slot = ExitSlot::default();
+    *slot.lock().unwrap() = Some(Exit {
+        code: 1,
+        report: Some("the report\n".to_string()),
+        message: Some("The message.".to_string()),
+    });
+    let (out, said, code) = after(failed(), &slot);
+    assert_eq!((out.as_str(), code), ("the report\n", 1));
+    assert!(said.iter().any(|line| line == "The message."), "{said:?}");
+    assert!(
+        !said.iter().any(|line| line.contains("Nothing was copied")),
+        "{said:?}"
+    );
+    assert!(said.iter().any(|line| line.contains("stopped")), "{said:?}");
+}
+
+#[test]
+fn what_the_window_recorded_is_what_the_process_gives() {
+    let slot = ExitSlot::default();
+    *slot.lock().unwrap() = Some(Exit {
+        code: 1,
+        report: Some("the report\n".to_string()),
+        message: Some("The message.".to_string()),
+    });
+    let (out, said, code) = after(Ok(()), &slot);
+    assert_eq!((out.as_str(), code), ("the report\n", 1));
+    assert_eq!(said, ["The message."]);
+}
+
+/// The CLI's sentence, word for word (DEC-069 (7)).
+const ROOT: &str = "photosync does not run as root: root can write to system volumes. Run it again as your normal user, without sudo.";
+
+/// The opening for `euid`, and what it said.
+fn opening_as(
+    euid: u32,
+    find: impl FnOnce() -> Result<Discover, String>,
+) -> (Opening, Vec<String>) {
+    let mut said = Vec::new();
+    let opening = opening(euid, find, &mut |line: &str| said.push(line.to_string()));
+    (opening, said)
+}
+
+fn refused_to_run(sentence: &str) -> Gui {
+    let (opening, said) = opening_as(0, || panic!("root must not look for volumes"));
+    assert_eq!(said, [sentence]);
+    let (gui, _) = Gui::open(opening, None, ExitSlot::default());
+    gui
+}
+
+#[test]
+fn root_runs_no_discovery_says_its_sentence_and_shows_only_it_and_quit() {
+    let looked = Arc::new(AtomicU32::new(0));
+    let counted = looked.clone();
+    let discover: Discover = Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        panic!("root must not look for volumes");
+    });
+    let given = discover.clone();
+    let (opening, said) = opening_as(0, move || Ok(given));
+    assert_eq!(said, [ROOT]);
+    let (mut gui, _) = Gui::open(opening, None, ExitSlot::default());
+    assert!(!gui.looking());
+
+    assert_eq!(all_words(&gui, WINDOW), [ROOT, "Quit"]);
+    screen_check_scrolling(&gui, "S056", "root", &["Quit"], &[ROOT]);
+    fixed_in_sight(&gui, LEAST, &["Quit"]);
+
+    // Nothing left from another screen does anything, and none can look.
+    for late in [
+        M::Next,
+        M::Back,
+        M::Escape,
+        M::LookAgain,
+        M::Start,
+        M::NextCard,
+        M::Cancel,
+        M::QuitAnyway,
+        M::NotYet,
+    ] {
+        let _ = update(&mut gui, late.clone());
+        assert!(!gui.quit, "{late:?}");
+        assert!(!gui.looking(), "{late:?}");
+        assert_eq!(all_words(&gui, WINDOW), [ROOT, "Quit"], "{late:?}");
+    }
+
+    click(&mut gui, "Quit");
+    assert!(gui.quit);
+    assert!(!gui.before_quit(), "it gives no second screen");
+    let exit = recorded(&gui).unwrap();
+    assert_eq!(
+        exit,
+        Exit {
+            code: 2,
+            report: None,
+            message: None,
+        },
+        "the sentence went to stderr first"
+    );
+
+    // A close is the same.
+    let mut gui = refused_to_run(ROOT);
+    let _ = update(&mut gui, M::CloseRequested);
+    assert!(gui.quit);
+    assert_eq!(recorded(&gui).map(|e| e.code), Some(2));
+
+    thread::sleep(Duration::from_millis(50));
+    assert_eq!(looked.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn root_gives_2_with_a_window_or_with_none() {
+    let slot = ExitSlot::default();
+    let (opening, _) = opening_as(0, || panic!("no look"));
+    let (mut gui, _) = Gui::open(opening, None, slot.clone());
+    let _ = update(&mut gui, M::Quit);
+    assert_eq!(after(Ok(()), &slot), (String::new(), vec![], 2));
+
+    let failed = Err(iced::Error::WindowCreationFailed(Box::new(
+        std::io::Error::other("no display"),
+    )));
+    assert_eq!(after(failed, &ExitSlot::default()).2, 2);
+}
+
+#[test]
+fn root_goes_through_the_real_program() {
+    let slot = ExitSlot::default();
+    let (opening, _) = opening_as(0, || panic!("no look"));
+    let program = gui::program_of(opening, None, slot.clone());
+    let (events, mut heard) = emulator_channel::channel(1);
+    let mut emulator = Emulator::new(events, &program, Mode::Zen, WINDOW);
+    wait_for_ready(&mut emulator, &program, &mut heard);
+    emulator.run(&program, Instruction::parse(r#"click "Quit""#).unwrap());
+    wait_for_ready(&mut emulator, &program, &mut heard);
+    assert!(emulator.into_state().0.quit);
+    assert_eq!(slot.lock().unwrap().as_ref().map(|e| e.code), Some(2));
+}
+
+#[test]
+fn a_normal_user_looks_and_says_nothing() {
+    let (opening, said) = opening_as(501, || Ok(literal(&[CARD_A], &[DRIVE_A])));
+    assert!(said.is_empty(), "{said:?}");
+    let (mut gui, _) = Gui::open(opening, None, ExitSlot::default());
+    settle(&mut gui);
+    assert_eq!(gui.app.sources(), [PathBuf::from(CARD_A)]);
+    assert!(says(&gui, CARDS_HEADING));
+}
+
+/// DEC-069 (7): the same, with its own sentence.
+#[test]
+fn no_place_to_look_is_refused_as_root_is() {
+    let sentence = "Cannot tell where volumes are mounted: test.";
+    let (opening, said) = opening_as(501, || Err(sentence.to_string()));
+    assert_eq!(said, [sentence]);
+    let slot = ExitSlot::default();
+    let (mut gui, _) = Gui::open(opening, None, slot.clone());
+    assert_eq!(all_words(&gui, WINDOW), [sentence, "Quit"]);
+    click(&mut gui, "Quit");
+    assert_eq!(slot.lock().unwrap().as_ref().map(|e| e.code), Some(2));
 }

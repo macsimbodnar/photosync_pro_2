@@ -10,8 +10,8 @@ Status: early development. The CLI and the TUI work. A GUI is being built: `phot
 walks from the cards and the drives through the library, the name and the check, says why
 it refuses, copies with progress and cancel, shows the report, and takes the next card in one session.
 It is not ready to use: no real sync through it is in the tests yet (S057), so its report screen has
-been drawn only from lines given to it, and the process returns 0 whatever happened
-(S056). Use the CLI or the TUI for real cards. What it must do is in `adocs/specs.md`, and the plan is in `adocs/plan.md`.
+been drawn only from lines given to it. Quit, a close of the window and what the process returns
+are tested with no window; the real close button and Cmd-Q wait for a hand check (S060). Use the CLI or the TUI for real cards. What it must do is in `adocs/specs.md`, and the plan is in `adocs/plan.md`.
 
 ## Usage
 
@@ -280,7 +280,7 @@ of the body; `fixed_in_sight` is the check for what may never scroll, a warning 
 sight and in no scrollable; `fixed_box_in_sight` holds a box's words, in that box, itself in the
 fixed part; `click` fails
 on a click that sends nothing, and `clicks` proves a button held; `play` runs the real program, tasks and
-threads included, and a script ends by asserting on its state, as a click there shows no messages; `play_steps` adds a click that must fail, on words that are on the screen and out of sight, scrolling to the end, and `Step::Set` to reach the state, as to hold the copy thread with `before_send` or put a `test_worker` in `worker::spawn`'s place; `Step::Send` a message the Emulator cannot send, as its subscriptions hear no events; `Step::ClickOn` a click on words a `Step::Set` read from the state; `run_out` hears a real worker to its end with no runtime; `start_copying` clicks Start copying and takes its check's answer, and `blocked_check` holds that check as a stuck drive would. None of these sees a glyph a font draws as nothing, which only the picture shows (DEC-082 (3)). None sees a warning cut by a height bound, so `tests/gui_split.rs` holds that the screens have none outside `word_box` and `around_the_body`, the one place the body stands. One test opens a real window, so it is ignored and never in the gate. By hand,
+threads included, and a script ends by asserting on its state, as a click there shows no messages; `play_steps` adds a click that must fail, on words that are on the screen and out of sight, scrolling to the end, and `Step::Set` to reach the state, as to hold the copy thread with `before_send` or put a `test_worker` in `worker::spawn`'s place; `Step::Send` a message the Emulator cannot send, as its subscriptions hear no events; `Step::ClickOn` a click on words a `Step::Set` read from the state; `run_out` hears a real worker to its end with no runtime; `start_copying` clicks Start copying and takes its check's answer, and `blocked_check` holds that check as a stuck drive would. The Emulator ignores exit and close, so a test sends `M::CloseRequested` and reads what the quit left in the `ExitSlot`, and `ending` and `after_the_window` are tested on their own. None of these sees a glyph a font draws as nothing, which only the picture shows (DEC-082 (3)). None sees a warning cut by a height bound, so `tests/gui_split.rs` holds that the screens have none outside `word_box` and `around_the_body`, the one place the body stands. One test opens a real window, so it is ignored and never in the gate. By hand,
 with the mouse off the window, as a hovered button changes the picture:
 
 ```sh

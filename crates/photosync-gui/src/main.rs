@@ -3,5 +3,8 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    ExitCode::from(photosync_gui::run(std::env::args_os().skip(1)))
+    ExitCode::from(photosync_gui::run(
+        std::env::args_os().skip(1),
+        photosync_front::system::effective_uid(),
+    ))
 }

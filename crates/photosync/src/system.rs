@@ -9,6 +9,10 @@ use std::sync::OnceLock;
 
 use photosync_core::Cancel;
 
+/// What a refused user is told, by the CLI and the GUI.
+pub const ROOT_REFUSAL: &str = "photosync does not run as root: root can write to system volumes. \
+     Run it again as your normal user, without sudo.";
+
 /// Root may write to system volumes, such as `/Volumes/Recovery`, that
 /// discovery leaves out only because the user cannot write there (DEC-024
 /// (3)). So the app never runs as root (S007 fast check).

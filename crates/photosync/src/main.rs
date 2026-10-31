@@ -35,10 +35,7 @@ fn main() -> ExitCode {
 /// reaches the refusal: no test runs as root (DEC-047).
 fn run(cli: Cli, euid: u32) -> u8 {
     if system::refuses_user(euid) {
-        system::say(
-            "photosync does not run as root: root can write to system volumes. \
-             Run it again as your normal user, without sudo.",
-        );
+        system::say(system::ROOT_REFUSAL);
         return EXIT_REFUSED;
     }
     match cli.command {

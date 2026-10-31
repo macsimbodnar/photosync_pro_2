@@ -1,12 +1,15 @@
 //! `Gui`, its messages, and the plain functions iced runs. Each widget sends what the
 //! TUI's key does, so every rule stays in `App` (DEC-068 (2)), but for the drive's mark,
 //! as a window has no cursor to show what Next takes (DEC-077), and the first start's check,
-//! which the window must not wait for (DEC-081 (1)).
+//! which the window must not wait for (DEC-081 (1)), and "Before you quit" and the refusal
+//! before any screen, which the model has no screen for (DEC-069 (3), (7)).
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
 use iced::futures::channel::mpsc::{self as wake_channel, UnboundedReceiver, UnboundedSender};
@@ -18,6 +21,7 @@ use iced::{
 };
 use photosync_core::{Phase, Session, SourceProgress, Volumes};
 use photosync_front::app::{App, Effect, Exit, Job, Key, Msg, Outcome, Screen};
+use photosync_front::args::EXIT_REFUSED;
 use photosync_front::flow::{self, SyncError};
 use photosync_front::system::say;
 use photosync_front::{text, worker};
@@ -71,6 +75,9 @@ pub const CHECKING: &str =
 
 /// The banner's line (DEC-071 (2)).
 pub const NOT_SAFE: &str = "Not every photo is known to be on the drive: do not format the card.";
+/// The screen before a quit that would hide a session not complete (DEC-069 (3)).
+pub const BEFORE_YOU_QUIT: &str = "Before you quit";
+pub const QUIT_ANYWAY: &str = "Quit anyway";
 /// The scrollables' fixed ids, as `Scrollable::diff` never looks at an id (DEC-073 (1)).
 pub const BODY: &str = "body";
 pub const BANNER: &str = "banner";
@@ -87,6 +94,16 @@ pub type Discover = Arc<dyn Fn() -> Volumes + Send + Sync>;
 /// drive would be (DEC-081 (1)).
 pub(crate) type Check =
     Arc<dyn Fn(&Path, Option<&str>) -> Result<Session, SyncError> + Send + Sync>;
+
+/// What each quit leaves for `run`, as iced keeps the state and gives back only a `Result`.
+pub type ExitSlot = Arc<Mutex<Option<Exit>>>;
+
+/// What a run opens on: a look, or a sentence and Quit (DEC-069 (7)).
+#[derive(Clone)]
+pub enum Opening {
+    Look(Discover),
+    Refuse(String),
+}
 
 /// `Msg` is not `Clone` and a button needs that, so what the worker and discovery
 /// send stays in channels, and this only says to go and read them (DEC-068 (4)).
@@ -105,6 +122,11 @@ pub enum M {
     Back,
     LookAgain,
     Quit,
+    /// Its own message, never `Quit`: a click left from the screen before must not pass this
+    /// one (DEC-069 (3)).
+    QuitAnyway,
+    /// Back from "Before you quit": its own, as a Back left over must not reach the model.
+    NotYet,
     /// A look's thread has ended.
     Looked,
     /// The first start's check has ended (DEC-081 (1)).
@@ -218,8 +240,14 @@ pub struct Gui {
     answers: Receiver<(u64, Volumes)>,
     /// Answers dropped as older than the newest look: a test waits on it.
     pub dropped_looks: u64,
-    /// The model said to quit. iced's exit cannot be seen by a test.
+    /// The model said to quit. iced's exit cannot be seen by a test. From here on `update`
+    /// does nothing.
     pub quit: bool,
+    pub(crate) exit_slot: ExitSlot,
+    /// A run that must not go on: all it shows is this sentence and Quit (DEC-069 (7)).
+    refused_to_run: Option<String>,
+    /// "Before you quit" stands over the model's screen (DEC-069 (3)).
+    before_quit: bool,
     smoke: Option<Smoke>,
     /// The drive picked on the drive screen: what `marked_drive` shows and Next takes. The
     /// model hears only on Next, as its library goes with the drive, and clicks there and
@@ -242,6 +270,9 @@ pub struct Gui {
     pub(crate) before_send: Option<BeforeSend>,
     #[cfg(test)]
     pub(crate) test_worker: Option<TestWorker>,
+    /// How many answers the checks' threads have sent, so a test knows one is waiting.
+    #[cfg(test)]
+    pub(crate) checks_answered: Arc<AtomicU64>,
     /// How many `M::Wake`s came, to count against the messages.
     #[cfg(test)]
     pub(crate) wakes: u64,
@@ -253,6 +284,20 @@ pub struct Gui {
 impl Gui {
     /// The state, and the task of the first look.
     pub fn boot(discover: Discover, smoke_png: Option<PathBuf>) -> (Gui, Task<M>) {
+        Gui::open(Opening::Look(discover), smoke_png, ExitSlot::default())
+    }
+
+    /// `boot`, on what the run opens on, leaving each quit's `Exit` in `exit_slot`.
+    pub fn open(
+        opening: Opening,
+        smoke_png: Option<PathBuf>,
+        exit_slot: ExitSlot,
+    ) -> (Gui, Task<M>) {
+        let (discover, refused_to_run): (Discover, _) = match opening {
+            Opening::Look(discover) => (discover, None),
+            // Never called, as nothing here looks.
+            Opening::Refuse(sentence) => (Arc::new(Volumes::default), Some(sentence)),
+        };
         let (answers_tx, answers) = mpsc::channel();
         let (checks_tx, checks) = mpsc::channel();
         let mut gui = Gui {
@@ -265,6 +310,9 @@ impl Gui {
             answers,
             dropped_looks: 0,
             quit: false,
+            exit_slot,
+            refused_to_run,
+            before_quit: false,
             // Two: the first may be of the frame before the answer.
             smoke: smoke_png.map(|path| Smoke { path, frames: 2 }),
             picked_drive: None,
@@ -282,11 +330,17 @@ impl Gui {
             #[cfg(test)]
             test_worker: None,
             #[cfg(test)]
+            checks_answered: Arc::new(AtomicU64::new(0)),
+            #[cfg(test)]
             wakes: 0,
             #[cfg(test)]
             syncs_started: 0,
         };
-        let task = gui.look();
+        let task = if gui.refused_to_run.is_some() {
+            Task::none()
+        } else {
+            gui.look()
+        };
         (gui, task)
     }
 
@@ -373,9 +427,13 @@ impl Gui {
         let check = self.check.clone();
         let answers = self.checks_tx.clone();
         let (ended, heard) = oneshot::channel::<()>();
+        #[cfg(test)]
+        let answered = self.checks_answered.clone();
         thread::spawn(move || {
             let answer = check(&library, name.as_deref());
             let _ = answers.send((number, answer));
+            #[cfg(test)]
+            answered.fetch_add(1, Ordering::SeqCst);
             let _ = ended.send(());
         });
         Task::perform(heard, |_| M::Checked)
@@ -470,14 +528,40 @@ impl Gui {
         }
     }
 
+    /// A quit, unless it would hide a session not complete (DEC-069 (3)).
+    fn quit_asked(&mut self) -> Task<M> {
+        if warns_first(self.app.screen(), self.app.exit().code) {
+            self.before_quit = true;
+            return Task::none();
+        }
+        self.quit_now()
+    }
+
+    /// iced gives `run` nothing back from the state, so the `Exit` goes where it can read it.
+    fn quit_now(&mut self) -> Task<M> {
+        self.quit = true;
+        let exit = if self.refused_to_run.is_some() {
+            // Its sentence went to stderr before the window opened.
+            Exit {
+                code: EXIT_REFUSED,
+                report: None,
+                message: None,
+            }
+        } else {
+            self.app.exit()
+        };
+        *self
+            .exit_slot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(exit);
+        iced::exit()
+    }
+
     fn key(&mut self, key: Key) -> Task<M> {
         match self.app.update(Msg::Key(key)) {
             None => Task::none(),
             Some(Effect::Discover) => self.look(),
-            Some(Effect::Quit) => {
-                self.quit = true;
-                iced::exit()
-            }
+            Some(Effect::Quit) => self.quit_asked(),
             Some(Effect::Start(job)) => self.run(job),
         }
     }
@@ -552,11 +636,21 @@ impl Gui {
         self.key(Key::Enter)
     }
 
+    /// "Before you quit" is up.
+    pub fn before_quit(&self) -> bool {
+        self.before_quit
+    }
+
     /// What makes a scrollable's offset belong to something else. The look too: its
     /// sentence has no room to scroll, and the rows after it would open wherever the old
     /// ones were left.
-    fn place(&self) -> (Screen, u64, bool) {
-        (self.app.screen(), self.app.outcome_id(), self.looking())
+    fn place(&self) -> (Screen, u64, bool, bool) {
+        (
+            self.app.screen(),
+            self.app.outcome_id(),
+            self.looking(),
+            self.before_quit,
+        )
     }
 
     fn smoke_frame(&mut self) -> Task<M> {
@@ -590,10 +684,16 @@ impl Gui {
 }
 
 pub fn update(gui: &mut Gui, message: M) -> Task<M> {
+    // iced_winit updates every message of a batch before any exit action, so one can come after
+    // a quit: the check's answer would start a copy with the window going away.
+    if gui.quit {
+        return Task::none();
+    }
     let before = gui.place();
     let task = step(gui, message);
-    // The check was asked for by the screen left.
-    if gui.app.screen() != Screen::Confirm {
+    // The check was asked for by the screen left. "Before you quit" stands over the model's
+    // check: the press is taken back there too, or an answer behind it would start a copy.
+    if gui.app.screen() != Screen::Confirm || gui.before_quit {
         gui.waited_check = None;
     }
     if gui.place() == before {
@@ -612,6 +712,29 @@ pub fn update(gui: &mut Gui, message: M) -> Task<M> {
 }
 
 fn step(gui: &mut Gui, message: M) -> Task<M> {
+    if gui.refused_to_run.is_some() {
+        return match message {
+            M::Quit | M::CloseRequested => gui.quit_now(),
+            M::SmokeFrame => gui.smoke_frame(),
+            M::SmokeShot(shot) => gui.smoke_shot(&shot),
+            _ => Task::none(),
+        };
+    }
+    if gui.before_quit {
+        match message {
+            M::QuitAnyway | M::CloseRequested => return gui.quit_now(),
+            M::NotYet => {
+                gui.before_quit = false;
+                return Task::none();
+            }
+            // Answers to what was asked before: each goes on behind this screen.
+            M::Looked | M::Checked | M::Wake | M::Gone | M::SmokeFrame | M::SmokeShot(_) => {}
+            #[cfg(test)]
+            M::ScrollEndForTest | M::ForTest(_) => {}
+            // A click drawn on the screen before: behind this one it would start or type.
+            _ => return Task::none(),
+        }
+    }
     let held = gui.looking();
     let screen = gui.app.screen();
     let on_a_list = matches!(screen, Screen::Sources | Screen::Drive);
@@ -652,6 +775,7 @@ fn step(gui: &mut Gui, message: M) -> Task<M> {
         M::Start => gui.start(),
         M::LookAgain => gui.key(Key::Char('r')),
         M::Quit => gui.key(Key::Char('q')),
+        M::QuitAnyway | M::NotYet => Task::none(),
         M::Looked => {
             gui.take_answers();
             Task::none()
@@ -686,6 +810,12 @@ fn step(gui: &mut Gui, message: M) -> Task<M> {
 }
 
 pub fn view(gui: &Gui) -> Element<'_, M> {
+    if let Some(sentence) = &gui.refused_to_run {
+        return refused_to_run_screen(sentence);
+    }
+    if gui.before_quit {
+        return before_you_quit_screen(&gui.app.exit(), gui.app.outcome());
+    }
     match gui.app.screen() {
         Screen::Sources => cards(gui),
         Screen::Drive => drives(gui),
@@ -1059,6 +1189,42 @@ pub fn banner(exit: &Exit, outcome: Option<&Outcome>) -> Option<String> {
     Some(words.unwrap_or_default())
 }
 
+/// Whether a quit first says why: not with a session complete, and not from a screen that says
+/// it itself (DEC-069 (3)).
+pub fn warns_first(screen: Screen, code: u8) -> bool {
+    code != 0 && !matches!(screen, Screen::Report | Screen::Refused | Screen::Running)
+}
+
+/// "Before you quit", from what it is given, as only images reach a real report. The line stays
+/// while the reason scrolls. Quit anyway stands at the far right, past every screen's Quit: the
+/// second click of a double on one lands here, and there is no second chance after it
+/// (DEC-079 (2)).
+pub fn before_you_quit_screen<'a>(exit: &Exit, outcome: Option<&Outcome>) -> Element<'a, M> {
+    let over = column![
+        words(TITLE).size(24),
+        words(BEFORE_YOU_QUIT),
+        red_banner(NOT_SAFE, None),
+    ]
+    .spacing(12);
+    let mut body = column![];
+    if let Some(reason) = banner(exit, outcome).filter(|reason| !reason.is_empty()) {
+        body = body.push(red_box(reason));
+    }
+    let buttons = row![
+        action("Back", Some(M::NotYet)),
+        Space::new().width(Length::Fill),
+        action(QUIT_ANYWAY, Some(M::QuitAnyway)),
+    ]
+    .spacing(10);
+    around_the_body(over, body, column![buttons])
+}
+
+/// All a run refused before it began shows: the sentence, and Quit (DEC-069 (7)).
+fn refused_to_run_screen(sentence: &str) -> Element<'_, M> {
+    let buttons = row![action("Quit", Some(M::Quit))];
+    around_the_body(column![], column![red_box(sentence)], column![buttons])
+}
+
 /// What a press of Esc says. Not `keyboard::listen`, which hears only what no widget took: a
 /// focused field takes Esc, and only loses its focus. A held key repeats, and must not walk
 /// back past the screen it was pressed on (DEC-081 (4)).
@@ -1088,7 +1254,16 @@ pub fn program(
     discover: Discover,
     smoke_png: Option<PathBuf>,
 ) -> iced::Application<impl iced::Program<State = Gui, Message = M, Theme = Theme>> {
-    let boot = move || Gui::boot(discover.clone(), smoke_png.clone());
+    program_of(Opening::Look(discover), smoke_png, ExitSlot::default())
+}
+
+/// `program`, on what the run opens on, leaving each quit's `Exit` in `exit_slot`.
+pub fn program_of(
+    opening: Opening,
+    smoke_png: Option<PathBuf>,
+    exit_slot: ExitSlot,
+) -> iced::Application<impl iced::Program<State = Gui, Message = M, Theme = Theme>> {
+    let boot = move || Gui::open(opening.clone(), smoke_png.clone(), exit_slot.clone());
     iced::application(boot, update, view)
         .title(|_: &Gui| TITLE.to_string())
         .theme(|_: &Gui| Theme::Dark)
