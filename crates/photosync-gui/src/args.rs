@@ -51,6 +51,9 @@ pub fn parse(arguments: impl Iterator<Item = OsString>) -> Result<Options, Strin
 
 /// Fills what the arguments left empty from the seam's variables, read by `read`.
 pub fn with_seam(mut options: Options, read: impl Fn(&str) -> Option<OsString>) -> Options {
+    // Set but empty is unset: an empty root says "No camera card found" with a card
+    // mounted, and an empty picture path says "Cannot write" and gives 2 (DEC-090 (6)).
+    let read = |name: &str| read(name).filter(|value| !value.is_empty());
     if options.search_roots.is_empty()
         && let Some(root) = read(SEAM_SEARCH_ROOT)
     {

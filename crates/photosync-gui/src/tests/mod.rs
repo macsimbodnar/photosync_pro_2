@@ -2222,6 +2222,37 @@ fn the_seams_variables_fill_only_what_the_arguments_left_empty() {
     );
 }
 
+#[test]
+fn a_seam_variable_set_but_empty_counts_as_unset() {
+    let empty = |_: &str| Some(OsString::new());
+    assert_eq!(
+        args::with_seam(Options::default(), empty),
+        Options::default()
+    );
+    let only_root = |name: &str| match name {
+        args::SEAM_SEARCH_ROOT => Some(OsString::from("/seam")),
+        _ => Some(OsString::new()),
+    };
+    assert_eq!(
+        args::with_seam(Options::default(), only_root),
+        Options {
+            search_roots: vec![PathBuf::from("/seam")],
+            smoke_png: None,
+        }
+    );
+    let only_png = |name: &str| match name {
+        args::SEAM_SMOKE_PNG => Some(OsString::from("/seam.png")),
+        _ => Some(OsString::new()),
+    };
+    assert_eq!(
+        args::with_seam(Options::default(), only_png),
+        Options {
+            search_roots: vec![],
+            smoke_png: Some(PathBuf::from("/seam.png")),
+        }
+    );
+}
+
 // The PNG writer and the smoke run's end.
 
 #[test]
