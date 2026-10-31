@@ -1,0 +1,9 @@
+id:         S037
+goal:       the TUI's report shows every line whole, so a failed file's reason is never cut off
+accepts:    failing test first: at 80 columns a long "failed" line shows its reason on the report screen, and a duplicate line with a long Linux card path such as /run/media/max/NO NAME shows the card whole; the TUI's result box (3 rows) never cuts a session's result sentence (S033 fast note), it grows or wraps; scrolling still reaches the end; suite passes
+touches:    crates/photosync tui/view.rs, app.rs (scroll), tests
+excludes:   the wording of the report's lines
+closes:
+paused_by:
+author:     Claude
+done:       2026-10-31, Claude. cargo test --workspace 347 passed, 0 failed; scripts/test_exfat.sh exit 0, no image left attached. 9 tests seen failing first, on drawn screens: a_long_failed_line_shows_its_reason_at_80_columns, a_duplicate_line_shows_a_long_linux_card_whole_at_80_columns, a_line_of_wide_characters_is_shown_whole, a_long_result_grows_its_box_and_is_shown_whole; in tui/tests.rs every_part_of_a_wrapped_report_is_reached_by_line_and_by_page, a_line_taller_than_the_screen_is_read_to_its_end, scrolling_back_up_reaches_the_start, a_result_taller_than_the_screen_is_read_to_its_end, the_end_of_a_report_over_65535_rows_is_reached. Added with the fix: wrapping_keeps_words_whole_and_loses_nothing, tiny_terminal_draws_a_report_without_panic, a_resize_keeps_the_end_of_the_report_in_reach. No existing test changed, but a stale doc comment above one ("neither wraps nor scrolls") removed. Wording of the report's lines unchanged. Trivial fix here: specs.md Progress now says each source's bytes go whole, then the end of what is left is cut, as the_cut_drops_per_source_bytes_first asserts. Specs Report and README updated. DEC-061, not yet confirmed by the user. Discovered: the TUI's other screens can still cut lines (read only, not run): new step S047.

@@ -33,6 +33,142 @@ fn rows(backend: &TestBackend) -> Vec<String> {
         .collect()
 }
 
+/// The words of a report whose lines wrap: `w<n>` each, so a word seen is a
+/// part of a line read, and one never seen is a part that cannot be read.
+fn numbered_report(lines: usize, words_per_line: usize) -> (Vec<String>, Vec<String>) {
+    let words: Vec<String> = (0..lines * words_per_line).map(|n| format!("w{n}.")).collect();
+    let report = words
+        .chunks(words_per_line)
+        .map(|line| line.join(" "))
+        .collect();
+    (report, words)
+}
+
+fn report_app(lines: Vec<String>, result: String) -> App {
+    App::with_outcome_for_test(Outcome::Report {
+        lines,
+        result,
+        complete: false,
+    })
+}
+
+/// Sends `key` until the screen stops changing, keeping every row shown.
+/// Each draw goes through what `run_loop` draws with.
+fn read_with(key: Key, app: &mut App, terminal: &mut Terminal<TestBackend>) -> Vec<String> {
+    let mut seen = Vec::new();
+    loop {
+        draw_frame(terminal, app).unwrap();
+        let screen = rows(terminal.backend());
+        let same = seen.ends_with(&screen);
+        if same {
+            return seen;
+        }
+        seen.extend(screen);
+        app.update(Msg::Key(key));
+    }
+}
+
+fn missing(words: &[String], seen: &[String]) -> Vec<String> {
+    let seen: std::collections::HashSet<&str> =
+        seen.iter().flat_map(|row| row.split_whitespace()).collect();
+    words
+        .iter()
+        .filter(|w| !seen.contains(w.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// S037: wrapping makes more rows than lines, so scrolling by lines would stop
+/// short of the end. A small terminal must not lose what a page key jumps over.
+#[test]
+fn every_part_of_a_wrapped_report_is_reached_by_line_and_by_page() {
+    for (width, height) in [(80, 24), (40, 12), (30, 9), (80, 40)] {
+        for key in [Key::Down, Key::PageDown] {
+            let (lines, words) = numbered_report(30, 40);
+            let mut app = report_app(lines, "Result: NOT COMPLETE.".into());
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let seen = read_with(key, &mut app, &mut terminal);
+            assert_eq!(
+                missing(&words, &seen),
+                Vec::<String>::new(),
+                "{width}x{height} with {key:?}"
+            );
+        }
+    }
+}
+
+/// One line taller than the screen: its end is below the screen until the
+/// line's own rows scroll, so scrolling from line to line would lose it.
+#[test]
+fn a_line_taller_than_the_screen_is_read_to_its_end() {
+    let (lines, words) = numbered_report(1, 300);
+    let mut app = report_app(lines, "Result: NOT COMPLETE.".into());
+    let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
+    let seen = read_with(Key::Down, &mut app, &mut terminal);
+    assert_eq!(missing(&words, &seen), Vec::<String>::new());
+}
+
+/// Back up, the report's start shows again.
+#[test]
+fn scrolling_back_up_reaches_the_start() {
+    let (lines, words) = numbered_report(30, 40);
+    let mut app = report_app(lines, "Result: NOT COMPLETE.".into());
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    read_with(Key::PageDown, &mut app, &mut terminal);
+    let seen = read_with(Key::PageUp, &mut app, &mut terminal);
+    assert_eq!(missing(&words, &seen), Vec::<String>::new());
+    let top = rows(terminal.backend());
+    assert!(top.iter().any(|r| r.contains("w0. ")), "{top:#?}");
+}
+
+/// A resize changes how the report wraps: the end stays in reach, and a
+/// larger screen fills up rather than showing blank rows under the end.
+#[test]
+fn a_resize_keeps_the_end_of_the_report_in_reach() {
+    let (lines, words) = numbered_report(30, 40);
+    let end = words.last().unwrap().as_str();
+    let mut app = report_app(lines, "Result: NOT COMPLETE.".into());
+    let mut small = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    read_with(Key::PageDown, &mut app, &mut small);
+    let mut wide = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    draw_frame(&mut wide, &mut app).unwrap();
+    let screen = rows(wide.backend());
+    assert!(screen.iter().any(|r| r.contains(end)), "{screen:#?}");
+    assert!(screen[..6].iter().all(|r| !r.trim().is_empty()), "{screen:#?}");
+}
+
+/// A result too tall for a box over the report leaves no room for the report.
+/// It comes first, in the part that scrolls, so all of it can be read.
+#[test]
+fn a_result_taller_than_the_screen_is_read_to_its_end() {
+    let (lines, words) = numbered_report(5, 5);
+    let (_, result_words) = numbered_report(1, 200);
+    let result = result_words.join(" ");
+    let mut app = report_app(lines, result);
+    let mut terminal = Terminal::new(TestBackend::new(30, 10)).unwrap();
+    draw_frame(&mut terminal, &mut app).unwrap();
+    let top = rows(terminal.backend());
+    assert!(top.iter().any(|r| r.contains("w0. ")), "{top:#?}");
+    let seen = read_with(Key::Down, &mut app, &mut terminal);
+    assert_eq!(missing(&result_words, &seen), Vec::<String>::new());
+    assert_eq!(missing(&words, &seen), Vec::<String>::new());
+}
+
+/// A card can hold more photos than a `u16` of rows: all duplicates, say.
+#[test]
+fn the_end_of_a_report_over_65535_rows_is_reached() {
+    let lines: Vec<String> = (0..70_000).map(|n| format!("line {n}")).collect();
+    let mut app = report_app(lines, "Result: NOT COMPLETE.".into());
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    draw_frame(&mut terminal, &mut app).unwrap();
+    for _ in 0..7_001 {
+        app.update(Msg::Key(Key::PageDown));
+    }
+    draw_frame(&mut terminal, &mut app).unwrap();
+    let screen = rows(terminal.backend());
+    assert!(screen.iter().any(|r| r.contains("line 69999")), "{screen:#?}");
+}
+
 /// A key script: each step waits for its screen, then sends its keys.
 /// Gives up after a minute, so a stuck sync fails instead of hanging.
 fn script(steps: Vec<(Screen, Vec<Key>)>) -> impl FnMut(&App) -> io::Result<Option<Key>> {

@@ -17,8 +17,8 @@ not change the order.
 
 ## Open
 
-1. S037  TUI report cuts long lines (found in S028)
-2. S036  plan the GUI: confirm iced, layout, steps
+1. S036  plan the GUI: confirm iced, layout, steps
+2. S047  TUI's other screens cut lines (found in S037)
 3. S025  first run on Linux: build, tests, hand checks (waits for the user)
 4. S017  hardware hand checks on Mac (waits for the user)
 
@@ -29,8 +29,8 @@ it too; the audit loop stops when a run reports no high and no medium.
 
 Last five; the full record is `plan_done/`.
 
+- S037  TUI report cuts long lines (found in S028)
 - S046  closed-stdout test fails now and then (found in S045)
 - S045  a killed hdiutil never counts as ended well (found in S035)
 - S035  CLI bytes per source (F10)
 - S044  cancel is heard during the lock wait (S043 fast check)
-- S033  collision result names the way out (F08)

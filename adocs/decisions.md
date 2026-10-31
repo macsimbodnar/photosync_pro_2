@@ -77,6 +77,7 @@ Why: one line.
 - DEC-058 2026-10-30 — the CLI's line: each source's bytes in its bracket, dropped whole by the cut; the TUI's line stays (S035)
 - DEC-059 2026-10-30 — the harness stops a process before it kills its tree, and kills it last (S045)
 - DEC-060 2026-10-31 — the closed-stdout test proves its pipe has no reader; the binary was not at fault (S046)
+- DEC-061 2026-10-31 — the TUI's report wraps by itself and scrolls by rows; the result's box grows (S037)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -1556,3 +1557,23 @@ giving such a fd `/dev/null` would explain it, from an agent's recollection, not
 stdout that way asked for no output, and it would look like `>/dev/null`, so nothing changed (Parked).
 Why: S046: 1 failure in 18 gate runs; a flaky gate hurts every later step, and a retry could have hidden a
 real miss by the binary.
+
+## DEC-061  2026-10-31  the TUI's report wraps by itself and scrolls by rows; the result's box grows (S037)
+Tags: tui, report
+Decision: the agent's choice in S037, not yet confirmed by the user.
+(1) `view::wrapped` makes the rows, not ratatui's `Wrap`. Scrolling must know how many rows there are, and
+ratatui gives that count only behind its `unstable-rendered-line-info` feature; a `Paragraph`'s scroll is
+also a `u16`, so a report past 65535 rows would lose its end. It measures with ratatui's own graphemes and
+widths, so no new dependency, and a wide character never runs past the edge. It breaks after a space, or
+inside a word too long for a row. Nothing is dropped; continuation rows have no indent.
+(2) `App`'s scroll counts rows, not lines. Rejected: lines, drawing from a line on, which is smaller, but
+a line taller than the screen (a few rows, on a small terminal) could never show its end.
+(3) Only a drawing knows the terminal's size, so `tui::draw_frame` tells `App` the rows and how many show
+after each drawing (`report_drawn`), and the keys stop by these. The view stays a reader of the model.
+(4) The scroll stops when the end reaches the bottom row, not when the last line is on the top row. A page
+key moves 10 rows, or the screen's rows if fewer, so it never jumps over rows not shown.
+(5) The result's box is as tall as its wrapped result, no longer always three rows, so a short one leaves
+the report more room. This ends the limit DEC-056's sentence was kept short for; that sentence stays as is.
+(6) A result that would leave under three rows of report has no box: it comes first in what scrolls, in its
+colour, then a blank row. Rejected: a capped box, which cuts it; the box alone, which shows no report.
+Why: the prime rule: what the user must read is never cut, even on a small terminal.

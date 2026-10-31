@@ -41,6 +41,8 @@ count. To change the library or the name, quit and start again. Without a termin
 | refused | `Enter` back to fix it, `n` next card (only once the session has started), `q` quit |
 | report | `↑` `↓` `PgUp` `PgDn` scroll, `n` next card, `q` quit |
 
+On the report, a line too long for the terminal wraps: none is cut.
+
 `Ctrl-C` quits from any screen but the copy. Quitting during a copy is safe
 (no partial file is left under a photo's name), but exits 1: run the same
 sync again.

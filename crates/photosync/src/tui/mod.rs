@@ -110,13 +110,25 @@ pub fn run_loop<B: Backend>(
                 }
             }
         }
-        terminal
-            .draw(|frame| view::render(&app, frame))
-            .map_err(|e| io::Error::other(e.to_string()))?;
+        draw_frame(terminal, &mut app)?;
         if let Some(key) = next_key(&app)? {
             effects.extend(app.update(Msg::Key(key)));
         }
     }
+}
+
+/// Draws, then tells the model how the report wrapped: only a drawing knows
+/// the size of the screen, and the scroll keys stop by it.
+fn draw_frame<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+    let mut report = (0, 0);
+    terminal
+        .draw(|frame| {
+            view::render(app, frame);
+            report = view::report_rows(app, frame.area());
+        })
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    app.report_drawn(report.0, report.1);
+    Ok(())
 }
 
 fn read_key(_: &App) -> io::Result<Option<Key>> {

@@ -298,7 +298,7 @@ picks. It is simple to use.
 
 - Shows files and bytes done out of the total, per source and overall. The
   CLI's one line gives way first: past the terminal's width, each source's
-  bytes go, whole, and the rest stays (DEC-058).
+  bytes go, whole, and then the end of what is left is cut (DEC-058).
 - Shows an estimate of the time remaining.
 - With several cards at once, several files are in flight, at most one per
   card. Each progress event is a whole snapshot: the cards' counts add up
@@ -340,6 +340,11 @@ picks. It is simple to use.
   report is made: one never made, as every file failed, shows "none (not made,
   or no longer there)" (DEC-053). After several syncs in a session, the report ends
   with the totals of all of them and the session's result.
+- The TUI's report never cuts a line: one too long for the terminal wraps,
+  whatever the width, wide characters included, and scrolling (by rows) reaches
+  every part of it and the end. The result stands in a box over the report that
+  grows to hold it. Only a result too tall to leave three rows of report under
+  its box has no box: it comes first in what scrolls (DEC-061).
 - The report is never built from inputs that would make it wrong: a source
   given twice (in any spelling), or a plan or copy that is not of these
   scans (a file not listed, listed with another size or mtime, left out, a

@@ -147,7 +147,7 @@ pub struct Exit {
 const NO_CARD: &str =
     "No camera card found. Insert a card, or connect the X-T5 in \"USB card reader\" mode.";
 const NO_DRIVE: &str = "No drive to sync to found. Plug in your external drive.";
-/// Lines a page key scrolls the report.
+/// Rows a page key scrolls the report, on a screen that shows as many.
 const PAGE: usize = 10;
 
 #[derive(Debug)]
@@ -164,8 +164,11 @@ pub struct App {
     name: String,
     /// The list row under the cursor, on the list screens.
     cursor: usize,
-    /// The report's first line shown.
+    /// The report's first row shown, as the last drawing wrapped it.
     scroll: usize,
+    /// The report's rows and how many show at once, as of the last drawing.
+    report_rows: usize,
+    report_visible: usize,
     /// One line about the last key, e.g. why Enter did nothing.
     hint: Option<String>,
     running: Option<Running>,
@@ -213,6 +216,8 @@ impl App {
             name: String::new(),
             cursor: 0,
             scroll: 0,
+            report_rows: 0,
+            report_visible: 0,
             hint: None,
             running: None,
             session: None,
@@ -283,6 +288,14 @@ impl App {
     }
     pub fn scroll(&self) -> usize {
         self.scroll
+    }
+
+    /// What a drawing found: the report wrapped to `rows`, `visible` of them
+    /// on the screen. A resize can leave the scroll past the end.
+    pub fn report_drawn(&mut self, rows: usize, visible: usize) {
+        self.report_rows = rows;
+        self.report_visible = visible;
+        self.scroll = self.scroll.min(rows.saturating_sub(visible));
     }
     pub fn hint(&self) -> Option<&str> {
         self.hint.as_deref()
@@ -583,15 +596,14 @@ impl App {
     }
 
     fn report_key(&mut self, key: Key) -> Option<Effect> {
-        let last = match &self.outcome {
-            Some(Outcome::Report { lines, .. }) => lines.len().saturating_sub(1),
-            _ => 0,
-        };
+        let last = self.report_rows.saturating_sub(self.report_visible);
+        // A page never jumps over rows the screen did not show.
+        let page = PAGE.min(self.report_visible).max(1);
         match key {
             Key::Up => self.scroll = self.scroll.saturating_sub(1),
             Key::Down => self.scroll = (self.scroll + 1).min(last),
-            Key::PageUp => self.scroll = self.scroll.saturating_sub(PAGE),
-            Key::PageDown => self.scroll = (self.scroll + PAGE).min(last),
+            Key::PageUp => self.scroll = self.scroll.saturating_sub(page),
+            Key::PageDown => self.scroll = (self.scroll + page).min(last),
             Key::Char('n') => return self.next_card(),
             Key::Enter | Key::Esc | Key::Char('q') => return Some(Effect::Quit),
             _ => {}

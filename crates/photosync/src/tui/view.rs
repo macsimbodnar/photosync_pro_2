@@ -13,14 +13,22 @@ use ratatui::widgets::{Block, Gauge, List, ListItem, ListState, Paragraph, Wrap}
 use crate::app::{App, Outcome, Screen};
 use crate::text;
 
-pub fn render(app: &App, frame: &mut Frame) {
-    let [title, body, hint, keys] = Layout::vertical([
+/// Rows the report keeps under the result's box: with fewer, little of it
+/// could be read at a time, so the result scrolls with it instead.
+const MIN_REPORT_ROWS: usize = 3;
+
+fn screen_areas(area: Rect) -> [Rect; 4] {
+    Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(3),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
-    .areas(frame.area());
+    .areas(area)
+}
+
+pub fn render(app: &App, frame: &mut Frame) {
+    let [title, body, hint, keys] = screen_areas(frame.area());
 
     frame.render_widget(
         Line::from(vec![
@@ -302,25 +310,138 @@ fn outcome(app: &App, frame: &mut Frame, area: Rect) {
             result,
             complete,
         }) => {
-            let [top, rest] =
-                Layout::vertical([Constraint::Length(5), Constraint::Min(0)]).areas(area);
             let color = if *complete { Color::Green } else { Color::Red };
-            frame.render_widget(
-                Paragraph::new(result.as_str())
-                    .wrap(Wrap { trim: false })
-                    .fg(color)
-                    .bold()
-                    .block(Block::bordered()),
-                top,
-            );
-            let body: Vec<Line> = lines.iter().map(|l| Line::from(l.as_str())).collect();
-            frame.render_widget(
-                Paragraph::new(body).scroll((u16::try_from(app.scroll()).unwrap_or(u16::MAX), 0)),
-                rest,
-            );
+            let view = report_view(result, lines, area);
+            if view.result_in_rows == 0 {
+                let boxed: Vec<Line> = wrapped(result, view.top.width.saturating_sub(2))
+                    .into_iter()
+                    .map(Line::from)
+                    .collect();
+                frame.render_widget(
+                    Paragraph::new(boxed)
+                        .fg(color)
+                        .bold()
+                        .block(Block::bordered()),
+                    view.top,
+                );
+            }
+            // A drawing can come before the model hears of a resize.
+            let last = view.rows.len().saturating_sub(usize::from(view.rest.height));
+            let first = app.scroll().min(last);
+            let shown: Vec<Line> = view
+                .rows
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take(usize::from(view.rest.height))
+                .map(|(row, text)| {
+                    let line = Line::from(text.as_str());
+                    if row < view.result_in_rows {
+                        line.fg(color).bold()
+                    } else {
+                        line
+                    }
+                })
+                .collect();
+            frame.render_widget(Paragraph::new(shown), view.rest);
         }
         None => {}
     }
+}
+
+/// How many rows the report takes and how many show, in a screen of `area`.
+/// The model's scroll keys stop by these.
+pub fn report_rows(app: &App, area: Rect) -> (usize, usize) {
+    match app.outcome() {
+        Some(Outcome::Report { lines, result, .. }) if app.screen() == Screen::Report => {
+            let view = report_view(result, lines, screen_areas(area)[1]);
+            (view.rows.len(), usize::from(view.rest.height))
+        }
+        _ => (0, 0),
+    }
+}
+
+/// Where the report's parts go. The rows are drawn one by one, past any `u16`
+/// of a `Paragraph`'s scroll, and counted here as they are drawn.
+struct ReportView {
+    /// The result's box; no height when the result is in `rows`.
+    top: Rect,
+    rest: Rect,
+    rows: Vec<String>,
+    /// How many of `rows` are the result, when it has no box.
+    result_in_rows: usize,
+}
+
+fn report_view(result: &str, lines: &[String], area: Rect) -> ReportView {
+    let result_rows = wrapped(result, area.width.saturating_sub(2)).len();
+    let body = lines.iter().flat_map(|l| wrapped(l, area.width));
+    if result_rows + 2 + MIN_REPORT_ROWS <= usize::from(area.height) {
+        let [top, rest] = Layout::vertical([
+            Constraint::Length(result_rows as u16 + 2),
+            Constraint::Min(0),
+        ])
+        .areas(area);
+        return ReportView {
+            top,
+            rest,
+            rows: body.collect(),
+            result_in_rows: 0,
+        };
+    }
+    // Too tall for a box: nothing else would show, and its end would be lost.
+    let mut rows = wrapped(result, area.width);
+    let result_in_rows = rows.len();
+    rows.push(String::new());
+    rows.extend(body);
+    ReportView {
+        top: Rect::default(),
+        rest: area,
+        rows,
+        result_in_rows,
+    }
+}
+
+/// `text` in rows of at most `width` columns, none of it lost: it breaks after
+/// a space, or inside a word too long for a row. By graphemes and columns as
+/// the drawing counts them, so a wide character never runs past the edge.
+fn wrapped(text: &str, width: u16) -> Vec<String> {
+    let width = usize::from(width).max(1);
+    let mut rows = Vec::new();
+    for line in text.split('\n') {
+        if line.is_ascii() && line.len() <= width {
+            rows.push(line.to_string());
+            continue;
+        }
+        let span = Span::raw(line);
+        let mut row = String::new();
+        let mut used = 0;
+        // Where a break would keep a word whole: bytes and columns before it.
+        let mut after_space = None;
+        for grapheme in span.styled_graphemes(Style::new()) {
+            let columns = Line::from(grapheme.symbol).width();
+            if used > 0 && used + columns > width {
+                match after_space.take() {
+                    Some((bytes, columns_before)) => {
+                        let rest = row.split_off(bytes);
+                        rows.push(std::mem::replace(&mut row, rest));
+                        used -= columns_before;
+                    }
+                    None => {
+                        rows.push(std::mem::take(&mut row));
+                        used = 0;
+                    }
+                }
+            }
+            row.push_str(grapheme.symbol);
+            used += columns;
+            // Not in the indent: that would leave a row of spaces alone.
+            if grapheme.symbol == " " && !row.trim_start().is_empty() {
+                after_space = Some((row.len(), used));
+            }
+        }
+        rows.push(row);
+    }
+    rows
 }
 
 #[cfg(test)]
@@ -521,8 +642,6 @@ mod tests {
         }
     }
 
-    /// The report body neither wraps nor scrolls sideways: at the width of
-    /// a plain terminal, the two kinds of skipped and the card must fit.
     /// F08: the name stays for the session, so the way out is to start again,
     /// and the result's box must show it whole on a plain terminal.
     #[test]
@@ -603,6 +722,136 @@ mod tests {
             "  duplicate in session  100_FUJI/DSCF0002.RAF, on drive from /Volumes/UNTITLED",
         ] {
             assert!(has(&screen, part), "{part}: {screen:#?}");
+        }
+    }
+
+    /// The screen with its wrapping undone: no space and no box, so a line
+    /// reads the same wherever it broke.
+    fn unwrapped(screen: &[String]) -> String {
+        screen
+            .concat()
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '│')
+            .collect()
+    }
+
+    fn no_spaces(s: &str) -> String {
+        s.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    fn report_app(lines: Vec<String>, result: &str) -> App {
+        App::with_outcome_for_test(Outcome::Report {
+            lines,
+            result: result.to_string(),
+            complete: false,
+        })
+    }
+
+    /// S037: the reason comes last on the line, so it was what a cut took.
+    #[test]
+    fn a_long_failed_line_shows_its_reason_at_80_columns() {
+        let path = "/run/media/max/NO NAME/DCIM/100_FUJI/DSCF0001.RAF";
+        let error = std::io::Error::from_raw_os_error(libc::EIO);
+        let reason = no_spaces(&error.to_string());
+        let source = SourceReport {
+            root: PathBuf::from("/run/media/max/NO NAME"),
+            files: vec![FileReport {
+                file: SourceFile {
+                    path: PathBuf::from(path),
+                    media_type: Some(MediaType::Raw),
+                    size: 10,
+                    modified: std::time::UNIX_EPOCH,
+                },
+                outcome: FileOutcome::Failed(FailReason::Write {
+                    path: PathBuf::from(
+                        "/run/media/max/My Passport/Photos/2026-10-28 - Tirana/RAW/DSCF0001.RAF",
+                    ),
+                    error,
+                }),
+            }],
+            unreadable: Vec::new(),
+        };
+        let lines = text::source_section(&source);
+        let long = lines.iter().find(|l| l.contains(path)).unwrap();
+        assert!(long.chars().count() > 80, "not a long line: {long}");
+        let screen = draw(&report_app(lines.clone(), "Result: NOT COMPLETE."), 80, 24);
+        let shown = unwrapped(&screen);
+        assert!(shown.contains(&no_spaces(long)), "{screen:#?}");
+        assert!(shown.contains(&reason), "{screen:#?}");
+    }
+
+    /// S037: the card is what says which card to look at.
+    #[test]
+    fn a_duplicate_line_shows_a_long_linux_card_whole_at_80_columns() {
+        let file = |path: &str| SourceFile {
+            path: PathBuf::from(path),
+            media_type: Some(MediaType::Raw),
+            size: 10,
+            modified: std::time::UNIX_EPOCH,
+        };
+        let source = SourceReport {
+            root: PathBuf::from("/run/media/max/UNTITLED"),
+            files: vec![FileReport {
+                file: file("/run/media/max/UNTITLED/DCIM/100_FUJI/DSCF0002.RAF"),
+                outcome: FileOutcome::DuplicateInSession {
+                    of: PathBuf::from("/run/media/max/NO NAME/DCIM/100_FUJI/DSCF0002.RAF"),
+                },
+            }],
+            unreadable: Vec::new(),
+        };
+        let lines = text::source_section(&source);
+        let long = lines
+            .iter()
+            .find(|l| l.contains("on drive from /run/media/max/NO NAME"))
+            .unwrap();
+        assert!(long.chars().count() > 80, "not a long line: {long}");
+        let screen = draw(&report_app(lines.clone(), "Result: all fine."), 80, 24);
+        assert!(unwrapped(&screen).contains(&no_spaces(long)), "{screen:#?}");
+    }
+
+    /// A wide character takes two columns: counting chars would run past
+    /// the edge and lose the end all the same.
+    #[test]
+    fn a_line_of_wide_characters_is_shown_whole() {
+        let line = format!("  failed  {}.RAF: disk full", "/写真カード".repeat(12));
+        let screen = draw(&report_app(vec![line.clone()], "Result."), 40, 24);
+        assert!(unwrapped(&screen).contains(&no_spaces(&line)), "{screen:#?}");
+    }
+
+    /// S037, S033's note: a session's result can name many syncs, and it says
+    /// whether the cards are safe to format. The report below it still shows.
+    #[test]
+    fn a_long_result_grows_its_box_and_is_shown_whole() {
+        let result = (1..=20)
+            .map(|n| format!("Sync {n} on /run/media/max/CARD{n} was not complete."))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let app = report_app(vec!["first line of the report".into()], &result);
+        let screen = draw(&app, 80, 40);
+        assert!(unwrapped(&screen).contains(&no_spaces(&result)), "{screen:#?}");
+        assert!(has(&screen, "first line of the report"), "{screen:#?}");
+    }
+
+    #[test]
+    fn wrapping_keeps_words_whole_and_loses_nothing() {
+        let rows = |text, width| wrapped(text, width);
+        assert_eq!(rows("short", 80), ["short"]);
+        assert_eq!(rows("", 80), [""], "a blank line stays a row");
+        assert_eq!(rows("aaa bbb ccc", 7), ["aaa ", "bbb ccc"]);
+        assert_eq!(rows("aaaaaaaaaa", 4), ["aaaa", "aaaa", "aa"]);
+        assert_eq!(rows("aa bbbbbbbbbb", 4), ["aa ", "bbbb", "bbbb", "bb"]);
+        assert_eq!(rows("    aaaaaaaa", 6), ["    aa", "aaaaaa"], "no row of spaces");
+        assert_eq!(rows("写真カード", 4), ["写真", "カー", "ド"]);
+        assert_eq!(rows("写真", 1), ["写", "真"], "wider than a row: alone on one");
+        assert_eq!(rows("one\ntwo", 80), ["one", "two"]);
+    }
+
+    /// A report on a tiny terminal must not panic the view either.
+    #[test]
+    fn tiny_terminal_draws_a_report_without_panic() {
+        let app = report_app(vec!["a line".repeat(30), String::new()], &"word ".repeat(40));
+        for (width, height) in [(10, 4), (2, 2), (1, 1), (3, 12), (80, 3)] {
+            draw(&app, width, height);
         }
     }
 
