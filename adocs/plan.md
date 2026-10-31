@@ -17,10 +17,11 @@ not change the order.
 
 ## Open
 
-1. S060  GUI: hand checks on Mac (waits for the user and real hardware)
-2. S061  GUI: run on Linux, AppImage (waits for the user and a Linux machine)
-3. S025  first run on Linux: build, tests, hand checks (waits for the user)
-4. S017  hardware hand checks on Mac (waits for the user)
+1. S068  a Finder launch opens the window; what it cannot see is said (S058 fast check)
+2. S060  GUI: hand checks on Mac (waits for the user and real hardware)
+3. S061  GUI: run on Linux, AppImage (waits for the user and a Linux machine)
+4. S025  first run on Linux: build, tests, hand checks (waits for the user)
+5. S017  hardware hand checks on Mac (waits for the user)
 
 Later, not yet steps: re-run the adversarial audit after the GUI, covering
 it too; the audit loop stops when a run reports no high and no medium.

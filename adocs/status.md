@@ -8,7 +8,7 @@ Updated: 2026-10-31, by Claude (S059 done)
 
 - Last done: S059  GUI: the workspace, tests too, compiles for Linux on x86_64 and aarch64, checked from this Mac by script; nothing linked or run there (633 passed, 43 ignored; script 647)
 - In progress: none
-- Next: S060  GUI: hand checks on Mac (waits for the user and real hardware)
+- Next: S068  a Finder launch opens the window; then the audit re-run. S060, S061, S025, S017 wait for the user
 - Waiting for the user: S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
