@@ -8,7 +8,7 @@ Updated: 2026-10-31, by Claude (S057 done)
 
 - Last done: S057  GUI: real syncs by its clicks on disk images, in the gate (620 passed, 38 ignored, 95 s; script 630)
 - In progress: none
-- Next: S058  GUI: Mac .app package (signing for other Macs needs the user, left out)
+- Next: S066  double close, long paths, Cmd-Q code; then the rest of plan.md's Open list
 - Waiting for the user: S060 (Mac by hand), S061 (Linux), S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
