@@ -178,7 +178,7 @@ picks. It is simple to use.
     not all ASCII is in the window's font, as the fixed one loses kanji with nothing to see (DEC-082). Next card stands on the report,
     and on a refusal in a session: it goes to the cards with nothing picked, looks again, and Next then goes straight to the check. The
     process still returns the code, prints the report and says its message, as the TUI does; a report it cannot write
-    keeps the code; a window that ended with nothing recorded gives 1, and one that cannot open says so and gives 2. A quit that would hide a
+    keeps the code; a window that ended with nothing recorded gives 1, and one that cannot open says so and gives 2. Launched from Finder, stdout and stderr go nowhere, so the report is what the screen shows, and the sentence "The window closed with no report... Do not format the card." and the code are not seen there (DEC-090). An argument starting `-psn_` is ignored, as macOS may pass one there; any other is refused with exit 2. A quit that would hide a
     session not complete first shows why, "Before you quit", from any screen that does not already
     say it: the warning stays in sight, its reason scrolls, Back returns, and Quit anyway or a close there quits. It stops the wait of a first start's
     check as Back does, and takes no click left from the screen before. Once a quit is heard, no message does anything, as iced runs each message of a batch before the exit,

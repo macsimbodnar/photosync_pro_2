@@ -209,12 +209,14 @@ cargo test --workspace
 
 ```sh
 scripts/package_mac.sh        # target/package/phoosync pro 2.app and a .zip of it
-scripts/test_package_mac.sh   # checks them; a window shows for about a second
+scripts/test_package_mac.sh   # checks them; a window shows twice, for about a second each
 ```
 
 `package_mac.sh` makes a release build with only tools a Mac has: no network, no new crate, nothing written outside `target/`. It removes `target/package` first.
 
-`test_package_mac.sh` checks the Info.plist, the signature, that only system libraries are linked, and that the zip unzips to the same files. Then it opens the real `.app` on an empty folder, so a mounted card changes nothing, and compares what it drew with the headless picture, 0 pixels off, or says the screen's scale is not 2. Keep the mouse off the window: a hovered button changes the picture. The window is why neither script is in `cargo test` or `scripts/test_exfat.sh`. `open` tells macOS's app list (Launch Services) about the app, and that list is outside the repo.
+`test_package_mac.sh` checks the Info.plist, the signature, that only system libraries are linked, and that the zip unzips to the same files. Then it opens the real `.app` on an empty folder, so a mounted card changes nothing, and compares what it drew with the headless picture, 0 pixels off, or says the screen's scale is not 2. It does that twice, the second time with no arguments of its own, only a test seam's two environment variables, as near a Finder launch as a script comes. Keep the mouse off the window: a hovered button changes the picture. The window is why neither script is in `cargo test` or `scripts/test_exfat.sh`. `open` tells macOS's app list (Launch Services) about the app, and that list is outside the repo.
+
+Launched from Finder, stdout and stderr go nowhere, so the report is what the screen shows. The sentence "The window closed with no report: not every file is known to be on the drive. Do not format the card." and the exit code are not seen there, nor the sentence of a window that cannot open. To see them, run `Contents/MacOS/photosync-gui` from a shell. Measured under `open`, whose stdout and stderr are `/dev/null` and which passes no argument of its own; a real double click is S060's. An argument starting `-psn_` is ignored, as macOS may pass one from Finder (an agent's memory, not measured); any other is refused.
 
 Use it on the Mac that built it. It has no icon, and is signed only ad hoc, so what another Mac does:
 

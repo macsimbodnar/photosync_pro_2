@@ -106,6 +106,7 @@ Why: one line.
 - DEC-087 2026-10-31 — the check opens with where the copy goes; two cards at once proved by order, as a barrier in the watch cannot be met; a refusal in a session made by the library going away (S067)
 - DEC-088 2026-10-31 — small choices of the Mac package: what ends the wait, stderr must be empty, what the script removes and leaves (S058)
 - DEC-089 2026-10-31 — the Linux compile check: crates in the throwaway folder too, blake3 `pure` on aarch64 only, the shared library empty in test mode, no link (S059)
+- DEC-090 2026-10-31 — what a launch from Finder is given: `-psn_` ignored though not seen, a seam in the environment, what `open` measured (S068)
 
 ## DEC-001  2026-10-28  adopt moltke workflow and project rules
 Tags: workflow, rules
@@ -2036,3 +2037,13 @@ Decision: the agent's choice, not yet confirmed by the user. Under DEC-070 (3). 
 (4) No `cargo test --no-run` for Linux and no `cargo build`: they link, and there is no Linux linker or C library here. `--all-targets` type-checks the test code, Linux-only parts too, without linking. So not proved: that it links, that a C part of any crate compiles (build scripts run on this Mac), that any window opens or any test passes on Linux. S061 and S025 do that.
 (5) The script compares path, modified time and size of every entry of the user's rustup folder, before and after, and fails if they differ.
 Why: a future reader would ask why the crates are thrown away too, why one target has a flag, and why `lib.rs` is empty in test mode.
+
+## DEC-090  2026-10-31  what a launch from Finder is given: `-psn_` ignored though not seen, a seam in the environment, what `open` measured (S068)
+Tags: gui, packaging
+Decision: the agent's choice, not yet confirmed by the user.
+(1) `args.rs` ignores an argument starting `-psn_`, anywhere, not only first, and refuses every other. That macOS passes one from Finder is an agent's memory, not measured. Measured on this Mac (Darwin 27.0.0), under `open` with no arguments, by `ps` while the window stood: the binary's path and nothing else. So today it may never come; the cost of ignoring it is one branch, the cost of refusing it is a Finder launch with no window and no word. Finder itself is S060's. A value after `--search-root` or `--smoke-png` that starts `-psn_` is still taken as the value.
+(2) The package test's launch with no arguments needs something to end the window and keep off real volumes, as S068 allows. So two variables, `PHOTOSYNC_GUI_SEAM_SEARCH_ROOT` and `PHOTOSYNC_GUI_SEAM_SMOKE_PNG`, do what the two flags do, for what the flags left empty; passed by `open --env`. They are read in every build, as the flags are: someone who sets them gets a picture written and a window that ends, or other folders looked in, and nothing more. Not `PHOTOSYNC_GUI_SMOKE_PNG`: that one is `smoke_window.rs`'s, the picture to read.
+(3) Measured the same way: stdout and stderr are both `/dev/null`. That launch has no `--stderr`, so nothing reads its stderr: what proves it is the picture, 0 pixels off, and a refusal or early end fails as no picture. The launch with `--args` keeps the check that stderr is empty. The script prints what it saw and does not fail on it, as what macOS gives is a fact to read, not a promise; the README's words on Finder rest on that being the same road, an inference until S060.
+(4) The process is found by its binary's path, as it has no argument with a random name in it. So the script refuses to start this launch while that package is already running. The script's wait became a function, with the comparison, to serve both launches; what they check did not change.
+(5) A log file and a native dialog after the window ends stay out, as S068 excludes them. So a Finder launch whose window closes with no report ends with nothing said, but what the screen said before. For the user to take or leave: a new step if wanted.
+Why: a future reader would ask why an argument never seen is handled, why a release binary reads test variables, and what was measured against what was remembered.

@@ -5,5 +5,5 @@ touches:    crates/photosync-gui src/args.rs, tests; scripts/test_package_mac.sh
 excludes:   a log file; a native dialog after the window ends (a new step if the user wants one)
 closes:
 paused_by:
-author:
-done:
+author:     Claude (subagent)
+done:       2026-10-31. Red first: the `-psn_` test failed on `Err("photosync-gui takes no arguments.")`, the seam's on an empty stub; both pass. `args.rs` ignores `-psn_...` and still refuses the rest, exit 2 read from the binary with `--bad`. `test_package_mac.sh` launches the package by `open` with no arguments of its own, only the seam's two variables: picture 0 pixels off. Seen there, by `ps` and `lsof`: no argument added, stdout and stderr `/dev/null`. The `-psn_` claim stays an agent's memory, not measured: `open` passes none, and Finder itself is S060's, added to its `accepts` (DEC-090). README and specs say what a Finder launch cannot see. `cargo test --workspace` 635 passed, 0 failed, 43 ignored; `scripts/test_exfat.sh` 649 passed, 0 failed; `scripts/test_package_mac.sh` passed; `hdiutil info` shows no images.

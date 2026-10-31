@@ -27,6 +27,7 @@ pub fn run(arguments: impl Iterator<Item = OsString>, euid: u32) -> u8 {
             return EXIT_REFUSED;
         }
     };
+    let options = args::with_seam(options, |name| std::env::var_os(name));
     let search_roots = options.search_roots;
     let opening = opening(euid, || discovery(search_roots), &mut say);
     let slot = ExitSlot::default();

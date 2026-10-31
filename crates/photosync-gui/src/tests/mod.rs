@@ -33,7 +33,7 @@ use photosync_core::{
 use photosync_front::app::{Effect, Exit, Job, Key, Msg, Outcome, Screen};
 use photosync_front::{flow, text, worker};
 
-use crate::args::{Options, parse};
+use crate::args::{self, Options, parse};
 use crate::common::TempDir;
 use crate::gui::{
     self, BANNER, BEFORE_YOU_QUIT, BODY, CANCELLING, CARDS_ONLY_READ, CHECKING, CLOSE_AGAIN,
@@ -2174,6 +2174,52 @@ fn arguments_are_the_two_hidden_flags_and_nothing_else() {
     ] {
         assert!(arguments(refused).is_err(), "{refused:?}");
     }
+}
+
+#[test]
+fn an_argument_macos_may_add_at_a_finder_launch_is_ignored_and_others_still_refused() {
+    assert_eq!(arguments(&["-psn_0_12345"]), Ok(Options::default()));
+    assert_eq!(
+        arguments(&["-psn_0_12345", "--smoke-png", "/p.png"]),
+        Ok(Options {
+            search_roots: vec![],
+            smoke_png: Some(PathBuf::from("/p.png")),
+        })
+    );
+    for refused in [
+        &["-psn"][..],
+        &["--psn_0_1"],
+        &["psn_0_1"],
+        &["-psn_0_1", "--smoke"],
+        &["--smoke", "-psn_0_1"],
+    ] {
+        assert!(arguments(refused).is_err(), "{refused:?}");
+    }
+}
+
+#[test]
+fn the_seams_variables_fill_only_what_the_arguments_left_empty() {
+    let set = |name: &str| match name {
+        args::SEAM_SEARCH_ROOT => Some(OsString::from("/seam")),
+        args::SEAM_SMOKE_PNG => Some(OsString::from("/seam.png")),
+        _ => None,
+    };
+    assert_eq!(
+        args::with_seam(Options::default(), set),
+        Options {
+            search_roots: vec![PathBuf::from("/seam")],
+            smoke_png: Some(PathBuf::from("/seam.png")),
+        }
+    );
+    let given = || Options {
+        search_roots: vec![PathBuf::from("/a")],
+        smoke_png: Some(PathBuf::from("/p.png")),
+    };
+    assert_eq!(args::with_seam(given(), set), given());
+    assert_eq!(
+        args::with_seam(Options::default(), |_| None),
+        Options::default()
+    );
 }
 
 // The PNG writer and the smoke run's end.

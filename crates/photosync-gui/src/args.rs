@@ -1,10 +1,19 @@
 //! The binary's arguments, read by hand: the only two are hidden, for tests, so
-//! the GUI needs no parser of its own (no new dependency).
+//! the GUI needs no parser of its own (no new dependency). The same two can come from
+//! the environment, so a test can launch the app with no arguments of its own, as Finder does.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 
 const NO_ARGUMENTS: &str = "photosync-gui takes no arguments.";
+/// What macOS may pass to an app launched from Finder: an agent's memory, as `open` passes
+/// none here and Finder is not measured (DEC-090 (1)). A refusal there would be no window
+/// and a sentence nobody sees.
+const FINDER_PREFIX: &[u8] = b"-psn_";
+/// `--search-root`, for a launch with no arguments of its own (S068).
+pub const SEAM_SEARCH_ROOT: &str = "PHOTOSYNC_GUI_SEAM_SEARCH_ROOT";
+/// `--smoke-png`, for a launch with no arguments of its own (S068).
+pub const SEAM_SMOKE_PNG: &str = "PHOTOSYNC_GUI_SEAM_SMOKE_PNG";
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Options {
@@ -31,9 +40,24 @@ pub fn parse(arguments: impl Iterator<Item = OsString>) -> Result<Options, Strin
                 return Err(NO_ARGUMENTS.to_string());
             };
             options.smoke_png = Some(PathBuf::from(path));
+        } else if argument.as_encoded_bytes().starts_with(FINDER_PREFIX) {
+            continue;
         } else {
             return Err(NO_ARGUMENTS.to_string());
         }
     }
     Ok(options)
+}
+
+/// Fills what the arguments left empty from the seam's variables, read by `read`.
+pub fn with_seam(mut options: Options, read: impl Fn(&str) -> Option<OsString>) -> Options {
+    if options.search_roots.is_empty()
+        && let Some(root) = read(SEAM_SEARCH_ROOT)
+    {
+        options.search_roots.push(PathBuf::from(root));
+    }
+    if options.smoke_png.is_none() {
+        options.smoke_png = read(SEAM_SMOKE_PNG).map(PathBuf::from);
+    }
+    options
 }
