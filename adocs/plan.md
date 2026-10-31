@@ -17,8 +17,8 @@ not change the order.
 
 ## Open
 
-1. S036  plan the GUI: confirm iced, layout, steps
-2. S047  TUI's other screens cut lines (found in S037)
+1. S047  TUI's other screens cut lines (found in S037)
+2. S036  plan the GUI: confirm iced, layout, steps
 3. S025  first run on Linux: build, tests, hand checks (waits for the user)
 4. S017  hardware hand checks on Mac (waits for the user)
 

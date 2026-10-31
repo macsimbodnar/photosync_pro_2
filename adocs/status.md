@@ -8,7 +8,7 @@ Updated: 2026-10-31, by Claude (S037 done)
 
 - Last done: S037  TUI report cuts long lines: every line wraps, scrolling by rows reaches the end, the result's box grows (DEC-061)
 - In progress: none
-- Next: S036, plan the GUI: confirm iced, layout, steps; then the rest of plan.md's Open list
+- Next: S047  the TUI's other screens do not cut; then S036 and the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:
