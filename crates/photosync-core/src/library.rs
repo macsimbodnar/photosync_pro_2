@@ -79,7 +79,8 @@ mod tests {
     #[test]
     fn photosync_temp_files_are_not_library_files() {
         let dir = std::env::temp_dir().join(format!("photosync-unit-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        // Not removed first: `$TMPDIR` is a variable, and only what this run made may go.
+        fs::create_dir(&dir).unwrap();
         fs::create_dir_all(dir.join("2026-10-28/RAW")).unwrap();
         fs::write(dir.join("2026-10-28/RAW/.photosync-tmp-DSCF0001.RAF"), b"part").unwrap();
         fs::write(dir.join("2026-10-28/RAW/DSCF0002.RAF"), b"full").unwrap();

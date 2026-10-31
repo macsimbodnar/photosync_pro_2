@@ -55,12 +55,18 @@ pub struct TempDir(pub PathBuf);
 impl TempDir {
     pub fn new() -> TempDir {
         static NEXT: AtomicU32 = AtomicU32::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir()
-            .join(format!("photosync-test-{}-{n}", std::process::id()));
-        let _ = fs::remove_dir_all(&path); // left over from a killed run
-        fs::create_dir_all(&path).unwrap();
-        TempDir(path)
+        // `$TMPDIR` is a variable: only what this run made is ever removed, so a name left by
+        // a killed run is passed over.
+        loop {
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("photosync-test-{}-{n}", std::process::id()));
+            match fs::create_dir(&path) {
+                Ok(()) => return TempDir(path),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => panic!("{}: {e}", path.display()),
+            }
+        }
     }
 }
 

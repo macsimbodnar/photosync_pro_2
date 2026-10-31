@@ -16,9 +16,10 @@
 
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
@@ -49,6 +50,9 @@ const IMAGES: [(&str, &str, &str, &str); 5] = [
     (TWIN_A, "PSTWINA", "16m", "twin_a"),
     (TWIN_B, "PSTWINB", "16m", "twin_b"),
 ];
+
+/// What the folder holding the mounts starts with: `Images::mount`'s, and the script's.
+const WORK_FOLDERS: [&str; 2] = ["photosync-images-", "photosync-exfat."];
 
 /// Waits on stdin, which only this process holds. "done" means the images
 /// are dealt with. The end of the input with no "done" means the test binary
@@ -519,5 +523,139 @@ pub fn ignored_tests_pass_on_images(vars: &[&str], must_run: &[&str]) {
         (Ok(count), Ok(())) => println!("{count} tests passed on real mounts"),
         (Ok(_), Err(e)) | (Err(e), Ok(())) => panic!("{e}"),
         (Err(tests), Err(detach)) => panic!("{tests}\n{detach}"),
+    }
+}
+
+/// What every image test says when a variable names what is no image.
+pub const NO_IMAGE: &str = "is not a test image's mount";
+
+/// `path`, resolved, if it is the mount of an image these tests or `scripts/test_exfat.sh` made:
+/// a mount point of the harness's name, beside its image file, in a folder of the harness's name.
+/// Image tests delete what they find there, as the images are theirs, so a variable that names a
+/// real card or drive must stop them first. No shell-out: this runs before every test's first
+/// file. The Linux run in the README names its folder and images to fit.
+pub fn test_image_mount(path: &Path) -> Result<PathBuf, String> {
+    let no = |why: &str| format!("{} {NO_IMAGE}: {why}", path.display());
+    let path = fs::canonicalize(path).map_err(|e| no(&e.to_string()))?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let Some((_, volume, ..)) = IMAGES.iter().find(|(_, _, _, point)| *point == name) else {
+        return Err(no("its name is not one the harness gives"));
+    };
+    let Some(work) = path.parent() else {
+        return Err(no("it has no parent"));
+    };
+    let work_name = work.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if !WORK_FOLDERS.iter().any(|start| work_name.starts_with(start)) {
+        return Err(no("its folder's name is not one the harness gives"));
+    }
+    let has_image = |file: String| work.join(file).is_file();
+    if !has_image(format!("{volume}.dmg")) && !has_image(format!("{name}.img")) {
+        return Err(no("no image file stands beside it"));
+    }
+    let device = |at: &Path| fs::metadata(at).map(|m| m.dev()).map_err(|e| no(&e.to_string()));
+    if device(&path)? == device(work)? {
+        return Err(no("nothing is mounted there"));
+    }
+    Ok(path)
+}
+
+/// Whether a test may remove `path`: inside a test image, not the mount itself, or inside this
+/// test binary's own build folder.
+pub fn may_delete(path: &Path) -> bool {
+    let build = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .and_then(|dir| fs::canonicalize(dir).ok());
+    path.ancestors().skip(1).any(|above| {
+        test_image_mount(above).is_ok() || fs::canonicalize(above).ok() == build
+    })
+}
+
+/// Called before a helper deletes what a test gave it.
+pub fn assert_may_delete(path: &Path) {
+    assert!(
+        may_delete(path),
+        "refusing to delete {}: it {NO_IMAGE}, nor in one, nor in this test's build folder",
+        path.display()
+    );
+}
+
+/// Every file under `dir`, with its bytes, and every folder.
+fn all_under(dir: &Path, out: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if fs::symlink_metadata(&path).unwrap().is_dir() {
+            out.insert(path.clone(), None);
+            all_under(&path, out);
+        } else {
+            out.insert(path.clone(), Some(fs::read(&path).unwrap()));
+        }
+    }
+}
+
+/// The test each binary with image tests has beside `ignored_tests_pass_on_images`: with `vars`
+/// set to folders that hold photos and are no images, every ignored test of the binary fails,
+/// saying so, and not a file is gone. Once with plain folders, and once with folders named as
+/// the harness names mounts, beside an image file, with nothing mounted there.
+pub fn ignored_tests_delete_nothing_outside_images(vars: &[&str]) {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let exe = std::env::current_exe().unwrap();
+    let list = Command::new(&exe).args(["--list", "--ignored"]).output().unwrap();
+    let list = String::from_utf8(list.stdout).unwrap();
+    let count = list.lines().filter(|l| l.ends_with(": test")).count();
+    assert!(count > 0, "no ignored test to run: {list}");
+
+    /// Removed on a failure too, as it holds nothing of anyone's.
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    for folder in ["plain", "photosync-images-0-0"] {
+        let scratch = std::env::temp_dir().join(format!(
+            "photosync-no-image-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&scratch).unwrap();
+        let scratch = Scratch(fs::canonicalize(scratch).unwrap());
+        let temp = scratch.0.join("temp");
+        let work = scratch.0.join(folder);
+        fs::create_dir_all(&temp).unwrap();
+        let mut env = vec![("TMPDIR", temp.clone())];
+        for var in vars {
+            let (_, volume, _, point) = IMAGES.iter().find(|(v, ..)| v == var).unwrap();
+            let there = work.join(point);
+            fs::create_dir_all(&work).unwrap();
+            fs::write(work.join(format!("{volume}.dmg")), b"").unwrap();
+            for held in ["DCIM/100_FUJI", "Photos/2020-01-01/RAW"] {
+                fs::create_dir_all(there.join(held)).unwrap();
+                fs::write(there.join(held).join("DSCF0001.RAF"), b"a real photo").unwrap();
+            }
+            env.push((*var, there));
+        }
+        let mut before = BTreeMap::new();
+        all_under(&work, &mut before);
+
+        let log = scratch.0.join("log");
+        fs::create_dir(&log).unwrap();
+        let running = start(
+            Command::new(&exe)
+                .args(["--ignored", "--nocapture"])
+                .envs(env.iter().cloned()),
+            &log,
+        )
+        .unwrap();
+        let (status, output) = running.finish(TESTS_LIMIT, "the tests on no image").unwrap();
+
+        let mut after = BTreeMap::new();
+        all_under(&work, &mut after);
+        assert!(after == before, "{folder}: a test deleted or changed files:\n{output}");
+        let want = format!("test result: FAILED. 0 passed; {count} failed; 0 ignored");
+        assert!(!status.success() && output.contains(&want), "{folder}: wanted \"{want}\":\n{output}");
+        let said = output.matches(NO_IMAGE).count();
+        assert!(said >= count, "{folder}: {said} of {count} say why:\n{output}");
     }
 }

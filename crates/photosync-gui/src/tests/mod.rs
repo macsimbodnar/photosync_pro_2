@@ -6311,3 +6311,11 @@ fn ignored_image_tests_pass_on_real_mounts() {
     use crate::common::images::{CARD, LIBRARY, TWIN_A, TWIN_B, ignored_tests_pass_on_images};
     ignored_tests_pass_on_images(&[CARD, LIBRARY, TWIN_A, TWIN_B], &on_images::MUST_RUN);
 }
+
+/// S067: variables that name what is no image delete nothing, and each test here says so.
+#[cfg(unix)]
+#[test]
+fn ignored_image_tests_delete_nothing_outside_images() {
+    use crate::common::images::{CARD, LIBRARY, TWIN_A, TWIN_B, ignored_tests_delete_nothing_outside_images};
+    ignored_tests_delete_nothing_outside_images(&[CARD, LIBRARY, TWIN_A, TWIN_B]);
+}

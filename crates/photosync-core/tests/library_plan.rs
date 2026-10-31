@@ -338,6 +338,14 @@ fn ignored_image_tests_pass_on_real_mounts() {
     );
 }
 
+/// S067: variables that name what is no image delete nothing, and each test here says so.
+#[cfg(unix)]
+#[test]
+fn ignored_image_tests_delete_nothing_outside_images() {
+    use common::images::{CARD, ignored_tests_delete_nothing_outside_images};
+    ignored_tests_delete_nothing_outside_images(&[CARD]);
+}
+
 /// End to end, with the real volume lookup: a library on a mounted volume
 /// with `DCIM` at its top is refused. Its image is named in
 /// `PHOTOSYNC_TEST_CARD`; the source is a temp folder, on another image.
@@ -349,7 +357,7 @@ fn inv10_library_on_a_mounted_card_is_refused_end_to_end() {
         "PHOTOSYNC_TEST_CARD is not set: this test needs a disk image. On macOS plain \
          `cargo test` runs it on its own images; on Linux see the README.",
     );
-    let card = fs::canonicalize(card).unwrap();
+    let card = common::images::test_image_mount(Path::new(&card)).unwrap_or_else(|e| panic!("{e}"));
     assert!(card.join("DCIM").is_dir(), "{} has no DCIM folder", card.display());
     let dir = TempDir::new();
     let src = dir.0.join("src");

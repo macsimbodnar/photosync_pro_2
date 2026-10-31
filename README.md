@@ -226,7 +226,8 @@ Linux is built in but not yet verified on a real machine. What is known:
 Image tests on Linux (needs root to mount; not yet run, S025 checks it):
 
 ```sh
-work=$(mktemp -d)
+# The name matters: a test deletes on a mount only if it is named as the harness names it.
+work=$(mktemp -d /tmp/photosync-exfat.XXXXXX)
 for n in mnt card lib twin_a twin_b; do
     truncate -s 64M "$work/$n.img"
     mkfs.ext4 -q "$work/$n.img"
@@ -302,6 +303,8 @@ mounts them itself, with nothing to set up: it adds about 70 seconds. Those test
 unless every one passed. So a line such as `9 ignored` next to that test's `ok`
 means those nine ran. If `hdiutil` fails, the gate fails; it never passes with
 nothing checked.
+
+A variable that names anything but a test image's mount, named as the harness names it, fails the test before it touches a file (DEC-086): a real card or drive is safe from a stray `--ignored`.
 
 The images are detached on a failure, a panic, a kill or a Ctrl-C. Every
 `hdiutil` call and each test run has a time limit (macOS's disk-image service

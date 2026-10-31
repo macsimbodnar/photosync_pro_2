@@ -14,7 +14,7 @@ use std::thread::ThreadId;
 use photosync_core::{Cancel, RunEnd, SourceScan, Watch, discover_volumes};
 
 use super::*;
-use crate::common::images::{CARD, TWIN_A, TWIN_B};
+use crate::common::images::{CARD, TWIN_A, TWIN_B, assert_may_delete};
 use crate::common::{
     LoseOnCopy, OnDrive, at, date_command, image_path, manifest, test_drive, twin_cards, write_file,
 };
@@ -44,6 +44,7 @@ struct Gone(PathBuf);
 
 impl Gone {
     fn new(path: PathBuf) -> Gone {
+        assert_may_delete(&path);
         let _ = fs::remove_dir_all(&path); // left over from a killed run
         fs::create_dir_all(&path).unwrap();
         Gone(path)
@@ -283,7 +284,9 @@ fn a_one_card_found_for_real_goes_under_its_name_and_the_same_sync_copies_nothin
     // The script's card has run other binaries' tests, and this sync takes all of it. `DCIM`
     // itself stays: (f) needs it there to be refused.
     for left in fs::read_dir(card.join("DCIM")).unwrap() {
-        fs::remove_dir_all(left.unwrap().path()).unwrap();
+        let left = left.unwrap().path();
+        assert_may_delete(&left);
+        fs::remove_dir_all(left).unwrap();
     }
     let _photos = Gone::new(card.join("DCIM/900_S057"));
     let library_gone = Gone::new(drive.join("Photos"));

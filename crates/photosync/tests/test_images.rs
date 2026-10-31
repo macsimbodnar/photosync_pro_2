@@ -17,7 +17,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use common::TempDir;
-use common::images::{CARD, Images, attached_under, limited, watchdog_command};
+use common::images::{
+    CARD, Images, NO_IMAGE, attached_under, limited, may_delete, test_image_mount, watchdog_command,
+};
 
 /// Waits for the images under `work` to be gone, and the folder with them.
 fn gone_within(work: &Path, limit: Duration) -> bool {
@@ -299,5 +301,67 @@ fn missing_tools_are_named_and_nothing_is_left() {
             .map(|e| e.unwrap().path())
             .collect();
         assert!(left.is_empty(), "left behind: {left:?}");
+    }
+}
+
+/// S067: the guard takes a real mount of the harness's, and nothing else that looks like one.
+#[test]
+fn only_a_test_images_own_mount_passes_the_guard() {
+    let images = Images::mount(&[CARD]).unwrap();
+    let card = images.work().join("card");
+    assert_eq!(test_image_mount(&card).unwrap(), card);
+    assert!(!may_delete(&card), "the mount itself never goes");
+    assert!(may_delete(&card.join("DCIM")));
+    assert!(may_delete(&card.join("not/there/yet")));
+    images.detach().unwrap();
+
+    let refused = |path: &Path, why: &str| {
+        let said = test_image_mount(path).unwrap_err();
+        assert!(said.contains(NO_IMAGE) && said.contains(why), "{said}");
+        assert!(!may_delete(&path.join("Photos")), "{}", path.display());
+    };
+    let dir = TempDir::new();
+    let plain = dir.0.join("card");
+    fs::create_dir(&plain).unwrap();
+    refused(&plain, "its folder's name");
+    refused(&dir.0, "its name");
+    refused(Path::new("/dev"), "its name");
+    refused(&dir.0.join("not_there"), "No such file");
+    // All as the harness has it but the mount, and then but the image file.
+    let work = dir.0.join("photosync-images-1-1");
+    let lib = work.join("lib");
+    fs::create_dir_all(&lib).unwrap();
+    refused(&lib, "no image file");
+    fs::write(work.join("PSLIB.dmg"), b"").unwrap();
+    refused(&lib, "nothing is mounted there");
+    // Through a link it is the link's target that counts.
+    let link = work.join("twin_a");
+    symlink("/dev", &link).unwrap();
+    refused(&link, "its name");
+}
+
+/// S067: `$TMPDIR` is a variable, so a `TempDir` never removes what stands at its name.
+#[test]
+fn a_temp_dir_passes_over_what_a_killed_run_left() {
+    let first = TempDir::new();
+    let name = first.0.file_name().unwrap().to_str().unwrap();
+    let (start, n) = name.rsplit_once('-').unwrap();
+    let n: u32 = n.parse().unwrap();
+    // Tests run side by side, so the next few names are taken, as a killed run's would be.
+    let left: Vec<PathBuf> = (1..=64)
+        .map(|by| first.0.with_file_name(format!("{start}-{}", n + by)))
+        .collect();
+    for dir in &left {
+        if fs::create_dir(dir).is_ok() {
+            fs::write(dir.join("kept"), b"of no test here").unwrap();
+        }
+    }
+    let next = TempDir::new();
+    assert!(next.0.read_dir().unwrap().next().is_none(), "it is not fresh");
+    for dir in &left {
+        if *dir != next.0 && dir.join("kept").exists() {
+            assert_eq!(fs::read(dir.join("kept")).unwrap(), b"of no test here");
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 }

@@ -59,6 +59,7 @@ skip+=(
     an_hdiutil_killed_at_its_limit_never_counts_as_ended_well   # test_images
     mounts_on_the_path_it_is_given                              # test_images
     missing_tools_are_named_and_nothing_is_left                 # test_images
+    only_a_test_images_own_mount_passes_the_guard               # test_images
 )
 
 # A helper: only the two-process tests that start it give it what it needs.

@@ -20,13 +20,19 @@ pub struct TempDir(pub PathBuf);
 impl TempDir {
     pub fn new() -> TempDir {
         static NEXT: AtomicU32 = AtomicU32::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("photosync-cli-test-{}-{n}", std::process::id()));
-        let _ = fs::remove_dir_all(&path); // left over from a killed run
-        fs::create_dir_all(&path).unwrap();
-        // Resolved, so paths compare equal to what the binary prints.
-        TempDir(fs::canonicalize(path).unwrap())
+        // `$TMPDIR` is a variable: only what this run made is ever removed, so a name left by
+        // a killed run is passed over.
+        loop {
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("photosync-cli-test-{}-{n}", std::process::id()));
+            match fs::create_dir(&path) {
+                // Resolved, so paths compare equal to what the binary prints.
+                Ok(()) => return TempDir(fs::canonicalize(path).unwrap()),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => panic!("{}: {e}", path.display()),
+            }
+        }
     }
 }
 
@@ -86,7 +92,8 @@ pub fn manifest(root: &Path) -> BTreeMap<PathBuf, (SystemTime, Option<Vec<u8>>)>
 
 /// A disk image's mount point, resolved. Only the tests that are
 /// `#[ignore]`d for their images call this, so a test that needs mounts can
-/// never pass with nothing checked: run outside the images, it fails.
+/// never pass with nothing checked: run outside the images, it fails. It fails
+/// too on a variable that names anything else, before a test can delete there.
 pub fn image_path(var: &str) -> PathBuf {
     let Some(path) = std::env::var_os(var) else {
         panic!(
@@ -94,7 +101,7 @@ pub fn image_path(var: &str) -> PathBuf {
              on its own images; on Linux see the README."
         );
     };
-    fs::canonicalize(path).unwrap()
+    images::test_image_mount(Path::new(&path)).unwrap_or_else(|e| panic!("{var}: {e}"))
 }
 
 /// The drive image: another device than the temp dir, so a sync of temp
@@ -118,6 +125,7 @@ pub struct OnDrive(pub PathBuf);
 impl OnDrive {
     pub fn new(drive: &Path, name: &str) -> OnDrive {
         let path = drive.join(format!("{name}-{}", std::process::id()));
+        images::assert_may_delete(&path);
         let _ = fs::remove_dir_all(&path); // left over from a killed run
         fs::create_dir(&path).unwrap();
         OnDrive(path)
@@ -165,6 +173,7 @@ impl photosync_core::Watch for LoseOnCopy<'_> {
         if event.progress.phase == photosync_core::Phase::Copying
             && event.kind == photosync_core::EventKind::Started
         {
+            images::assert_may_delete(&self.path);
             fs::remove_file(&self.path).unwrap();
         }
         self.inner.event(event);

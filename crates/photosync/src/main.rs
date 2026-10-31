@@ -339,6 +339,14 @@ mod tests {
         );
     }
 
+    /// S067: variables that name what is no image delete nothing, and each test here says so.
+    #[cfg(unix)]
+    #[test]
+    fn ignored_image_tests_delete_nothing_outside_images() {
+        use crate::common::images::{CARD, LIBRARY, TWIN_A, TWIN_B, ignored_tests_delete_nothing_outside_images};
+        ignored_tests_delete_nothing_outside_images(&[CARD, LIBRARY, TWIN_A, TWIN_B]);
+    }
+
     /// S030 (M13): root gets the refusal whatever the command, and the same
     /// command as another user runs. No command last: past a removed guard
     /// it would open the TUI, so it is reached only if the others held.

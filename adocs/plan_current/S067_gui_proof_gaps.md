@@ -5,5 +5,5 @@ touches:    crates/photosync-gui src/tests/on_images.rs, tests/mod.rs, src/gui.r
 excludes:   new screens; window stall timing
 closes:
 paused_by:
-author:
+author:     Claude (subagent)
 done:

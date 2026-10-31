@@ -54,6 +54,14 @@ fn ignored_image_tests_pass_on_real_mounts() {
     );
 }
 
+/// S067: variables that name what is no image delete nothing, and each test here says so.
+#[cfg(unix)]
+#[test]
+fn ignored_image_tests_delete_nothing_outside_images() {
+    use common::images::{CARD, LIBRARY, ignored_tests_delete_nothing_outside_images};
+    ignored_tests_delete_nothing_outside_images(&[CARD, LIBRARY]);
+}
+
 /// One reader, five cards in one session: a complete one, one whose photo
 /// collides with the first's (failed), the mounted card found by Enter,
 /// a card that is gone (refused), and the mounted card again, which is all
