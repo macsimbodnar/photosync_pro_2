@@ -8,7 +8,7 @@ Updated: 2026-10-31, by Claude (S047 done)
 
 - Last done: S047  the TUI's other screens do not cut: every sentence wraps, what is too tall scrolls, a refusal read to its end (DEC-062)
 - In progress: none
-- Next: S036  plan the GUI: confirm iced, layout, steps
+- Next: S048  a large report stays quick to scroll; then S036 and the rest of plan.md's Open list
 - Waiting for the user: S025 (Linux), S017 (Mac hardware)
 - Blocked: none
 - Parked:

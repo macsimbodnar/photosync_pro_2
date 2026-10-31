@@ -17,9 +17,10 @@ not change the order.
 
 ## Open
 
-1. S036  plan the GUI: confirm iced, layout, steps
-2. S025  first run on Linux: build, tests, hand checks (waits for the user)
-3. S017  hardware hand checks on Mac (waits for the user)
+1. S048  a large report stays quick to scroll (S037 fast check)
+2. S036  plan the GUI: confirm iced, layout, steps
+3. S025  first run on Linux: build, tests, hand checks (waits for the user)
+4. S017  hardware hand checks on Mac (waits for the user)
 
 Later, not yet steps: re-run the adversarial audit after the GUI, covering
 it too; the audit loop stops when a run reports no high and no medium.
